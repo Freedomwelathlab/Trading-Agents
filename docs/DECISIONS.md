@@ -175,3 +175,36 @@ concrete gap this decision leaves open.
 Status: Implemented (routing/normalization contract only), tested
 (`tests/marketdata/`, 9 tests, all against in-process fakes - never a real
 network call).
+
+---
+
+**D009 — Trades endpoint uses an in-process PaperBrokerRegistry; tests use httpx.AsyncClient, not TestClient**
+Date: 2026-08-23
+Decision: `POST /brokers/{broker_id}/trades` (`apps/api/app/api/routes/trades.py`)
+looks up a `PaperBrokerAdapter` from a new `PaperBrokerRegistry`
+(`apps/api/app/execution/registry.py`) keyed by `broker_id`, held on
+`app.state` and created once at startup. Separately, `tests/api/test_trades.py`
+uses `httpx.AsyncClient` + `ASGITransport` instead of FastAPI's `TestClient`.
+Reason: (a) the registry is the smallest thing that lets the HTTP layer
+call a real (paper) broker without inventing per-broker persistence this
+phase didn't scope - see the Consequences below for what it doesn't solve.
+(b) `TestClient` runs the ASGI app in a separate thread with its own event
+loop; combined with the module-level, loop-bound DB engine (D007), any test
+that both drives `TestClient` and touches the DB directly hits the same
+cross-event-loop crash D007 fixed for `tests/db/`. `AsyncClient` with
+`ASGITransport` runs entirely in-process on the test's own event loop, so
+there's only ever one loop involved.
+Alternatives: (a) require the caller to pass starting cash/positions on
+every request instead of a server-side registry - rejected, that's not
+what a broker account is. (b) keep using `TestClient` and dodge the crash
+by never touching the DB directly in the same test - rejected, that would
+make the tests unable to set up a `Broker` row or verify persisted `Order`
+rows, i.e. unable to test the thing that matters.
+Consequences: broker state (cash/positions, via `PaperBrokerRegistry`) is
+still in-memory and per-process (same limitation as D005, now reachable
+over HTTP) - a restart loses it even though the `Order`/`Fill` audit trail
+in Postgres survives. Any future async endpoint test must use
+`AsyncClient`/`ASGITransport`, not `TestClient`, or it will hit this same
+crash.
+Status: Implemented, tested (`tests/api/test_trades.py`, 6 integration
+tests against a real Postgres instance).

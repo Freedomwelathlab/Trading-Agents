@@ -5,6 +5,7 @@ structurally unavoidable rather than a convention someone can forget.
 """
 
 import enum
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -28,6 +29,9 @@ class OMSResult(BaseModel):
     status: OMSStatus
     risk_decision: RiskDecision
     fill: Fill | None = None
+    order_id: uuid.UUID | None = None
+    """Set only by submit_trade_and_record() (apps/api/app/oms/persistence.py)
+    - the pure submit_trade() has no database, so this stays None there."""
 
 
 def submit_trade(

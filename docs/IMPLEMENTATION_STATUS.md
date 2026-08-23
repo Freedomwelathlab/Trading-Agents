@@ -57,6 +57,23 @@ Update this after meaningful implementation work — not for every commit.
   9 new tests (all against in-process fakes, no network calls), 44/44
   total passing (41 non-DB + 3 DB-backed, run separately since they need
   a live Postgres), ruff+mypy clean (24 source files).
+- Phase 6: HTTP endpoint for trade submission (2026-08-23).
+  `POST /brokers/{broker_id}/trades` (`apps/api/app/api/routes/trades.py`)
+  — the first externally-reachable path to `submit_trade_and_record()`.
+  Looks up the broker (404 if missing, 400 `NOT_CONFIGURED` if not a paper
+  broker — no live execution path exists), resolves a per-broker
+  `PaperBrokerAdapter` from a new in-process `PaperBrokerRegistry`, builds
+  `RiskLimits`/emergency-stop from new `Settings` fields, and returns the
+  risk decision plus fill (if any). A missing mark for an existing
+  position is a 400 `DATA_UNAVAILABLE`, never a guessed price. Verified
+  live against a real running server + Postgres (manual curl, not just
+  tests): a fill and a rejection both persisted correctly, readable
+  directly via SQL. Found and fixed a second cross-event-loop issue (see
+  D009) — FastAPI's `TestClient` runs in its own thread/loop, incompatible
+  with the shared DB engine the same way D007's bug was; fixed by using
+  `httpx.AsyncClient` + `ASGITransport` instead, which was the correct
+  test client for an async app all along. 6 new integration tests, 50/50
+  total passing, ruff+mypy clean (30 source files).
 
 ## In Progress
 
@@ -69,10 +86,10 @@ data vendor to wire (D008) — code is ready to accept one, none is chosen.
 
 ## Planned
 
-Phase 6+ (order not finalized): a concrete `MarketDataProvider`
-implementation once a vendor is chosen, an HTTP endpoint that actually
-calls `submit_trade_and_record()` (nothing external can submit a trade yet
-— everything is exercised only by tests), agent/LLM layer, frontend.
+Phase 7+ (order not finalized): a concrete `MarketDataProvider`
+implementation once a vendor is chosen, authentication (no auth exists —
+the trades endpoint has none), persisted `PaperBrokerAdapter` state
+(D005/D009 gap), agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -86,10 +103,10 @@ optimization.
 
 ## Tests
 
-44 tests, all passing: fail-closed live-mode gate (3), log redaction (1),
+50 tests, all passing: fail-closed live-mode gate (3), log redaction (1),
 health endpoint (1), risk engine (14), paper broker (5), OMS (3), execution
-context (5), order/fill persistence (3, DB-backed against real Postgres),
-market data router + snapshot model (9).
+context (5), order/fill persistence (3, DB-backed), market data router +
+snapshot model (9), trades HTTP endpoint (6, DB-backed).
 
 ## Known Issues
 

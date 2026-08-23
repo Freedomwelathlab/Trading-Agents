@@ -1,13 +1,13 @@
 # Architecture
 
-## Current (Phase 1-5)
+## Current (Phase 1-6)
 
 ```mermaid
 flowchart LR
-    client[Client] --> api[FastAPI app]
-    api --> settings[Settings\nfail-closed live gate]
-    api --> db[(Postgres/TimescaleDB)]
-    api -.future.-> redis[(Redis)]
+    client[Client] --> route["POST /brokers/{id}/trades\nunauthenticated"]
+    client --> health[GET /health]
+    route --> settings[Settings\nfail-closed live gate\n+ risk limit defaults]
+    route --> db[(Postgres/TimescaleDB)]
 
     vendors[No vendor wired yet\nD008] -.-> router[MarketDataRouter\nno-fabrication fallback]
     router -.-> snapshot[MarketSnapshot]
@@ -16,23 +16,27 @@ flowchart LR
     proposal[TradeProposal] --> persist[OMS submit_trade_and_record]
     persist --> oms[submit_trade]
     oms --> risk[Risk Engine\nevaluate_trade]
-    risk -->|approved| broker[PaperBrokerAdapter\nin-memory fills]
+    risk -->|approved| broker[PaperBrokerAdapter\nvia PaperBrokerRegistry]
     risk -->|blocked| rejected[RiskDecision: rejected]
     broker --> fill[Fill]
     persist --> orders[(orders / fills\nappend-only)]
+    route --> proposal
 ```
 
-`apps/api/app/main.py` boots the app, logs startup mode, exposes `/health`.
-`apps/api/app/core/config.py` is the single source of the execution-mode gate.
-`apps/api/app/db/` holds SQLAlchemy models and the async session factory.
-The trading path (right half of the diagram) is wired end-to-end, including
-persistence — but has no HTTP entrypoint yet, so it's exercised only by
-tests today. The market-data router (dotted lines, left) is built and
-tested but has no provider plugged in and nothing yet calls it to build a
-`TradeProposal` — that wiring is future work once a vendor is chosen
-(D008). The `PaperBrokerAdapter` itself still doesn't persist its own
-cash/position ledger (D005) even though the `Order`/`Fill` decision record
-now does — those are two different things, and only the latter is done.
+`apps/api/app/main.py` boots the app, logs startup mode, creates the
+`PaperBrokerRegistry`, exposes `/health` and the trades router.
+`apps/api/app/core/config.py` is the single source of the execution-mode
+gate and now also the default risk limits / emergency-stop flag.
+The trading path is now reachable from outside the process via
+`POST /brokers/{broker_id}/trades` — verified live against a running
+server. The market-data router (dotted lines, left) is built and tested
+but has no provider plugged in and nothing yet calls it to build a
+`TradeProposal`; the HTTP endpoint currently takes price/timestamp
+directly from the caller instead (future work once a vendor is chosen,
+D008). The `PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
+cash/position state (D005/D009) even though the `Order`/`Fill` decision
+record now does — a restart resets accounts silently while the audit trail
+survives. No auth exists on the trades endpoint (D009).
 
 ## Target (per governing spec, not yet built)
 

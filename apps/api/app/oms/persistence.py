@@ -68,4 +68,5 @@ async def submit_trade_and_record(
         )
 
     await session.commit()
+    result.order_id = order_row.id
     return result

@@ -46,17 +46,17 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-5 complete: repo skeleton, deterministic risk engine, paper broker
-+ OMS, order/fill persistence, market-data routing skeleton. See
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Nothing external can
-submit a trade yet — no HTTP endpoint calls the OMS; it's exercised only by
-tests. No real market-data vendor is wired (D008) — that's an open decision
-for the user, not a technical gap.
+Phases 1-6 complete: repo skeleton, deterministic risk engine, paper broker
++ OMS, order/fill persistence, market-data routing skeleton, HTTP trade
+submission. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+`POST /brokers/{broker_id}/trades` is live and verified end-to-end against
+a real server + Postgres. No real market-data vendor is wired (D008) — open
+decision for the user. No auth exists — the trades endpoint is unauthenticated.
 
 ## Planned Work
 
-Phase 6+: a concrete market-data vendor adapter (once chosen), an HTTP
-endpoint for trade submission, agent/LLM layer, frontend. Order not
+Phase 7+: authentication, a concrete market-data vendor adapter (once
+chosen), persisted paper-broker state, agent/LLM layer, frontend. Order not
 finalized.
 
 ## Known Problems
@@ -76,9 +76,10 @@ what this repo's docs can verify.)
   duplicate-order detection and an explicit emergency-stop *source*
   (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —
   where it reads from in production is undecided).
-- Order/fill persistence: done (D006). Still open: nothing external can
-  reach `submit_trade_and_record()` — no auth, no HTTP endpoint. That's the
-  natural next piece.
+- Order/fill persistence: done (D006). HTTP endpoint: done (D009) — but
+  unauthenticated; anyone who can reach the API can submit paper trades on
+  any broker_id. Auth is the natural next piece before this goes anywhere
+  near a real deployment.
 - **Which market data vendor to wire is an open decision requiring user
   input (D008).** The routing/normalization contract is built and tested;
   no concrete provider exists. Options include a paid data vendor, a free

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from enum import Enum
 from functools import lru_cache
 
@@ -30,6 +31,20 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://trading_os:trading_os@localhost:5432/trading_os"
     redis_url: str = "redis://localhost:6379/0"
+
+    emergency_stop_active: bool = False
+    """Global kill switch, flippable without a redeploy. Checked on every
+    trade submission (spec §46's 'emergency stop' control)."""
+
+    paper_broker_starting_cash: Decimal = Decimal(100_000)
+    """Starting cash for a paper broker the first time an order references
+    it. Not persisted per-broker yet - see docs/DECISIONS.md."""
+
+    risk_max_position_pct_of_equity: Decimal = Decimal("0.10")
+    risk_max_portfolio_exposure_pct_of_equity: Decimal = Decimal("0.50")
+    risk_max_risk_pct_of_equity_per_trade: Decimal = Decimal("0.01")
+    risk_require_stop_price: bool = True
+    risk_max_market_data_age_seconds: int = 300
 
     @model_validator(mode="after")
     def _enforce_fail_closed_live_gate(self) -> "Settings":

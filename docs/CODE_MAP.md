@@ -124,6 +124,44 @@ Important: `LiveContext` construction re-checks `live_trading_enabled` even
 though `Settings` already enforces it — deliberate defense in depth
 (spec §46), not redundant code to simplify away.
 
+## HTTP API layer
+
+Purpose: the FastAPI-facing surface — DTOs, route handlers,
+request-scoped dependency wiring. Separate from the domain models
+(risk/oms/execution) so the HTTP contract can evolve independently.
+Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest`,
+`TradeSubmissionResponse`), `apps/api/app/api/dependencies.py`
+(`get_paper_broker_registry`), `apps/api/app/api/routes/trades.py`
+(`POST /brokers/{broker_id}/trades`)
+Dependencies: `apps.api.app.oms.persistence`, `apps.api.app.execution.registry`,
+`apps.api.app.db.models`, `apps.api.app.core.config`
+Tests: `tests/api/test_trades.py` (6 integration tests against a real
+Postgres instance, using `httpx.AsyncClient` + `ASGITransport` — see the
+Important note below, and D009)
+Important: this route is the *only* sanctioned way to reach
+`submit_trade_and_record()` from outside the process. It is unauthenticated
+(D009) — do not treat that as fine for anything beyond local development.
+**Testing an async endpoint that also touches the DB directly in the same
+test must use `httpx.AsyncClient(transport=ASGITransport(app=app), ...)`,
+never FastAPI's `TestClient`** — `TestClient` runs the app in a separate
+thread with its own event loop, which crashes against the shared, loop-bound
+DB engine the same way D007's bug did. See `tests/api/test_trades.py`'s
+`api_client()` helper for the pattern (manually driving
+`app.router.lifespan_context(app)` since `AsyncClient` doesn't do that
+automatically the way `TestClient` does).
+
+## Broker registry
+
+Purpose: resolves a `PaperBrokerAdapter` per `broker_id`, held on
+`app.state`, created once at startup.
+Main file: `apps/api/app/execution/registry.py` (`PaperBrokerRegistry`)
+Important: in-memory, per-process (same limitation as `PaperBrokerAdapter`
+itself, D005) — now reachable over HTTP, so a restart silently resets every
+paper account's cash/positions even though the `Order`/`Fill` audit trail
+in Postgres survives. Would break with more than one worker process (each
+gets its own, divergent registry) — fine for now, a real blocker before any
+horizontal scaling.
+
 ## Market data
 
 Purpose: vendor routing with an explicit fallback chain and a hard
