@@ -52,3 +52,24 @@ Consequences: `docs/AI_OPTIMIZATION.md`, `TOKEN_POLICY.md`,
 not descriptions of running systems — revisit their content once the first
 agent ships.
 Status: Implemented.
+
+---
+
+**D004 — Risk engine as a pure function, block-not-resize**
+Date: 2026-08-23
+Decision: `evaluate_trade()` is a pure function (no I/O, no LLM, no DB) that
+returns a typed `RiskDecision` for every input, never raises for a business
+rule violation, and never silently resizes a rejected order — it surfaces
+`max_quantity_allowed` as information only.
+Reason: purity is what makes the MVP acceptance test possible (blocks a bad
+trade with every LLM stubbed to raise — see `tests/risk/test_engine.py`'s
+last test). Not resizing preserves the audit trail: what got approved is
+always exactly what was proposed, never a value the engine invented.
+Alternatives: engine clips an oversized proposal down to the max allowed
+quantity and approves the clipped version. Rejected — that would make the
+engine an implicit second proposer, blurring the "LLM proposes, engine
+decides" boundary spec Sec3 requires.
+Consequences: whatever calls this later (Phase 3 OMS) must handle a
+rejection by generating a genuinely new proposal, not by assuming the engine
+already picked a safe fallback size.
+Status: Implemented, tested (`tests/risk/test_engine.py`, 14 tests).

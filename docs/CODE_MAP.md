@@ -50,6 +50,27 @@ Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
 comment history in `0001_initial.py` if adding a new enum column.
 
+## Risk Engine
+
+Purpose: deterministic validation of a proposed trade — the boundary spec
+Sec3/Sec46 require between any LLM and a real order.
+Main files: `apps/api/app/risk/models.py` (`TradeProposal`, `AccountState`,
+`RiskLimits`, `RiskDecision`, `BlockReason`), `apps/api/app/risk/engine.py`
+(`evaluate_trade()`)
+Interface: `evaluate_trade(proposal, account, limits, *, emergency_stop_active=False, now=None) -> RiskDecision`
+Dependencies: none — pure function, no LLM/network/DB/I-O import. This is
+load-bearing, not incidental: don't add an import here that could make the
+engine unable to run with every external service down.
+Tests: `tests/risk/test_engine.py` (14 tests, including one that proves the
+engine still blocks a bad trade when a stubbed LLM provider raises)
+Important: every rejection is a typed `BlockReason`, never a bare `False` —
+add a new enum member rather than reusing an existing reason for a new rule.
+`RiskLimits` has no defaults; an unconfigured limit is a bug to fix, not a
+value to fall back to. The engine never resizes an order itself
+(`max_quantity_allowed` is informational only) — a caller must submit a new,
+explicit proposal, keeping the audit trail honest about what was actually
+approved.
+
 ## Packages (placeholders, not yet populated)
 
 `packages/llm_providers/`, `packages/data_providers/` — destinations for

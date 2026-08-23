@@ -46,31 +46,32 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phase 1 complete: repo skeleton, DB models (users/roles/assets/brokers),
-first migration, `/health` endpoint. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+Phase 1 (repo skeleton) and Phase 2 (deterministic risk engine) complete.
+See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
 ## Planned Work
 
-Phase 2: deterministic risk engine. Phase 3+: broker adapter (paper first),
-OMS, market-data service, agent/LLM layer, frontend. Order not finalized
-beyond Phase 2 — the spec's MVP acceptance test is the risk engine blocking a
-bad trade with every LLM stubbed to raise, which is why it comes before any
-agent code.
+Phase 3+: broker adapter (paper first), OMS wired to the risk engine,
+market-data service, agent/LLM layer, frontend. Order not finalized.
 
 ## Known Problems
 
-- `Freedomwelathlab/Trading-Agents` had its `main` accidentally overwritten
-  with an unrelated personal work-folder history (2026-08-22); repo was
-  briefly public with that content. Remediation (force-push clean history +
-  credential rotation) — check current status before assuming this is fixed.
+None open. (`Freedomwelathlab/Trading-Agents` had its `main` accidentally
+overwritten with an unrelated personal work-folder history and was briefly
+public — resolved 2026-08-22 via force-push of clean history. Credential
+rotation for the briefly-exposed `.env` files is the user's action, outside
+what this repo's docs can verify.)
 
 ## Open Decisions
 
-- Exact risk-engine rule set (position sizing formula, exposure limit
-  shape) — proposed as a plan before Phase 2 code, not decided yet.
 - Whether `packages/llm_providers` / `packages/data_providers` get vendored
   from TradingAgents now or deferred until the agent layer phase (currently
   leaning deferred — no consumer exists yet).
+- Risk-engine rule set is now decided and implemented (D004) for the
+  position-size/exposure/per-trade-risk/freshness/stop-price rules. Still
+  open: duplicate-order detection and an explicit emergency-stop *source*
+  (currently just a boolean parameter — where it reads from in Phase 3 is
+  undecided).
 
 ## Important Constraints
 
