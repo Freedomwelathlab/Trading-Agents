@@ -46,13 +46,14 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phase 1 (repo skeleton) and Phase 2 (deterministic risk engine) complete.
-See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+Phase 1 (repo skeleton), Phase 2 (deterministic risk engine), and Phase 3
+(paper broker adapter + OMS) complete. See
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
 ## Planned Work
 
-Phase 3+: broker adapter (paper first), OMS wired to the risk engine,
-market-data service, agent/LLM layer, frontend. Order not finalized.
+Phase 4+: order/fill persistence, market-data service, agent/LLM layer,
+frontend. Order not finalized.
 
 ## Known Problems
 
@@ -67,11 +68,13 @@ what this repo's docs can verify.)
 - Whether `packages/llm_providers` / `packages/data_providers` get vendored
   from TradingAgents now or deferred until the agent layer phase (currently
   leaning deferred — no consumer exists yet).
-- Risk-engine rule set is now decided and implemented (D004) for the
-  position-size/exposure/per-trade-risk/freshness/stop-price rules. Still
-  open: duplicate-order detection and an explicit emergency-stop *source*
-  (currently just a boolean parameter — where it reads from in Phase 3 is
-  undecided).
+- Risk-engine rule set is decided and implemented (D004). Still open:
+  duplicate-order detection and an explicit emergency-stop *source*
+  (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —
+  where it reads from in production is undecided).
+- Order/fill persistence deliberately deferred (D005) — the paper broker is
+  in-memory only. Needs a real schema before Phase 4 broker work builds on
+  top of it.
 
 ## Important Constraints
 

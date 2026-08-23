@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1)
+## Current (Phase 1-3)
 
 ```mermaid
 flowchart LR
@@ -8,11 +8,19 @@ flowchart LR
     api --> settings[Settings\nfail-closed live gate]
     api --> db[(Postgres/TimescaleDB)]
     api -.future.-> redis[(Redis)]
+
+    proposal[TradeProposal] --> oms[OMS submit_trade]
+    oms --> risk[Risk Engine\nevaluate_trade]
+    risk -->|approved| broker[PaperBrokerAdapter\nin-memory, not persisted]
+    risk -->|blocked| rejected[RiskDecision: rejected]
+    broker --> fill[Fill]
 ```
 
 `apps/api/app/main.py` boots the app, logs startup mode, exposes `/health`.
 `apps/api/app/core/config.py` is the single source of the execution-mode gate.
 `apps/api/app/db/` holds SQLAlchemy models and the async session factory.
+The trading path (bottom half of the diagram) is wired end-to-end but has no
+HTTP entrypoint yet and no persistence — it's exercised only by tests today.
 
 ## Target (per governing spec, not yet built)
 

@@ -71,6 +71,41 @@ value to fall back to. The engine never resizes an order itself
 explicit proposal, keeping the audit trail honest about what was actually
 approved.
 
+## Execution (broker adapters)
+
+Purpose: broker-agnostic port + a deterministic paper implementation.
+Main files: `apps/api/app/execution/broker.py` (`BrokerAdapter` Protocol,
+`OrderRequest`, `Fill`), `apps/api/app/execution/paper_broker.py`
+(`PaperBrokerAdapter`)
+Dependencies: `apps.api.app.risk.models` (reuses `Side`, `AccountState`)
+Tests: `tests/execution/test_paper_broker.py`
+Important: in-memory only, not persisted — see `docs/DECISIONS.md` D005.
+Market orders only; limit orders raise rather than fake a fill. No short
+selling. `get_account_state()` requires a mark for every open position and
+raises rather than guessing a stale/missing price.
+
+## OMS
+
+Purpose: the one sanctioned path from a `TradeProposal` to a `BrokerAdapter`
+call — application code must go through `submit_trade()`, never call a
+broker adapter directly, or the risk gate becomes optional by accident.
+Main file: `apps/api/app/oms/service.py`
+Interface: `submit_trade(proposal, account, limits, broker, *, emergency_stop_active=False, now=None) -> OMSResult`
+Dependencies: `apps.api.app.risk.engine`, `apps.api.app.execution.broker`
+Tests: `tests/oms/test_service.py` — includes a spy broker adapter proving a
+rejected proposal never reaches `submit_order()`.
+
+## Execution context
+
+Purpose: structural guarantee that a research/backtest code path can't hold
+a live credential (`ResearchContext | PaperContext | LiveContext`).
+Main file: `apps/api/app/core/execution_context.py`
+Interface: `build_execution_context(settings, *, broker_id=None)`
+Tests: `tests/core/test_execution_context.py`
+Important: `LiveContext` construction re-checks `live_trading_enabled` even
+though `Settings` already enforces it — deliberate defense in depth
+(spec §46), not redundant code to simplify away.
+
 ## Packages (placeholders, not yet populated)
 
 `packages/llm_providers/`, `packages/data_providers/` — destinations for
@@ -79,5 +114,5 @@ layer phase starts. Currently just READMEs. See root `NOTICE`.
 
 ## Not yet present
 
-Risk engine, OMS, broker adapters, market-data service, agent/LLM layer,
-frontend, auth. Do not import from paths that don't exist yet.
+Order/fill persistence, market-data service, agent/LLM layer, frontend,
+auth. Do not import from paths that don't exist yet.

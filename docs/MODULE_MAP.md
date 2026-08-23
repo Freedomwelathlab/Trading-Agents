@@ -9,9 +9,9 @@ System-level view. "—" means not built yet; do not assume it exists.
 | Frontend | — | — | — | API | Not started |
 | Agents | — | — | — | LLM providers, market data | Not started |
 | Research (debate) | — | — | — | Agents | Not started |
-| Risk Engine | Deterministic trade validation, fail-closed | Trade proposal, account state | Approve/block | Portfolio, market data | Not started — Phase 2 |
-| Portfolio | Track positions/P&L | Fills, prices | Position/P&L state | Risk Engine, Broker | Not started |
-| Execution/OMS | Order lifecycle | Approved trade | Order status | Risk Engine, Broker Adapter | Not started |
+| Risk Engine | Deterministic trade validation, fail-closed | Trade proposal, account state | Approve/block | Portfolio, market data | Phase 2 (done) |
+| Portfolio | Track positions/P&L | Fills, prices | Position/P&L state | Risk Engine, Broker | Not started — paper broker tracks cash/positions itself for now, no separate portfolio module |
+| Execution/OMS | Order lifecycle, structurally enforces risk gate | Approved trade | Fill or rejection | Risk Engine, Broker Adapter | Phase 3 (done) — paper broker only, no persistence |
 | Market Data | Vendor routing, no-fabrication sentinels | Vendor APIs | Normalized snapshots | External vendors | Not started |
 | Backtesting | — | — | — | Market Data, Risk Engine | Not started |
 | Reporting | — | — | — | Portfolio | Not started |

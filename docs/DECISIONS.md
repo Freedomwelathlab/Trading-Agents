@@ -73,3 +73,23 @@ Consequences: whatever calls this later (Phase 3 OMS) must handle a
 rejection by generating a genuinely new proposal, not by assuming the engine
 already picked a safe fallback size.
 Status: Implemented, tested (`tests/risk/test_engine.py`, 14 tests).
+
+---
+
+**D005 — Paper broker adapter is in-memory, not persisted**
+Date: 2026-08-23
+Decision: `PaperBrokerAdapter` holds cash/positions/fills in process memory
+only; no `orders`/`fills` DB tables were added this phase.
+Reason: designing a real Order/Fill persistence schema (append-only,
+audit-ready, matching spec §17's decision-chain requirement) is a bigger
+decision than Phase 3's scope of "prove the OMS→risk→broker path works
+end-to-end." Building persistence now, ahead of knowing what the OMS's
+eventual async/DB-session shape looks like, risks a schema that has to be
+redone.
+Alternatives: add `orders` table + wire the OMS to a DB session this phase.
+Consequences: `PaperBrokerAdapter` state doesn't survive a process restart,
+and there's no audit trail yet — acceptable for proving the risk-gate
+boundary, not acceptable to keep once real (even paper) trading matters
+across sessions. Must be revisited before Phase 4 broker work goes further.
+Status: Implemented (deliberately partial), tested
+(`tests/execution/test_paper_broker.py`, `tests/oms/test_service.py`).
