@@ -9,8 +9,9 @@ No auth yet (no auth exists in the codebase). Reflects the actual configured
 ## `POST /auth/login`
 
 OAuth2 password flow (form-encoded, not JSON) — `username` carries the
-email. No registration endpoint exists; users must be created by direct DB
-insert (see `docs/DECISIONS.md` D010).
+email. No public registration endpoint exists; users are created via
+`POST /admin/users` (D013) or, for the first admin, direct DB insert
+(D010).
 
 Request (form fields): `username=<email>&password=<password>`
 
@@ -77,6 +78,44 @@ but missing the `trade:submit:paper` permission; 404 if `broker_id` doesn't
 exist; 400 with a `NOT_CONFIGURED:`-prefixed detail if the broker isn't a
 paper broker; 400 with a `DATA_UNAVAILABLE:`-prefixed detail if a mark is
 missing for an existing position.
+
+## `POST /admin/users`
+
+Requires `Authorization: Bearer <token>` from a user whose role grants
+`admin:manage` — 403 otherwise (D013). No public registration; this is
+the only way to create a user via HTTP.
+
+Request (`CreateUserRequest`): `{"email": "...", "password": "...",
+"is_active": true, "role_id": null}` — `role_id` optional, 404 if it
+doesn't reference an existing role.
+
+Response (201, `CreateUserResponse`): `{"id": "...", "email": "...",
+"is_active": true, "role_id": null}` — never includes the password or its
+hash. 409 for a duplicate email.
+
+## `POST /admin/roles`
+
+Requires `admin:manage`. Request (`CreateRoleRequest`): `{"name": "...",
+"description": null, "permissions": ["trade:submit:paper"]}`. Response
+(201, `CreateRoleResponse`) echoes back the created row. 409 for a
+duplicate name.
+
+## `POST /admin/broker-grants`
+
+Requires `admin:manage`. Request (`CreateBrokerGrantRequest`):
+`{"user_id": "...", "broker_id": "..."}`. Response (201,
+`BrokerGrantResponse`): `{"id": "...", "user_id": "...", "broker_id":
+"..."}`. 404 if the user or broker doesn't exist; 409 if the grant already
+exists.
+
+## `DELETE /admin/broker-grants/{grant_id}`
+
+Requires `admin:manage`. 204 on success, 404 if the grant doesn't exist.
+Revoking takes effect immediately — a subsequent trade attempt on that
+broker by that user gets 403.
+
+No update or deactivate endpoints for users/roles, and no listing
+endpoints anywhere (D013 — deliberate scope cut, not an oversight).
 
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

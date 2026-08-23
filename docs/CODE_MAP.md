@@ -143,12 +143,14 @@ Tests: `tests/auth/test_security.py` (8 unit tests),
 `tests/auth/test_authorization.py` (3 unit tests against the
 `require_permission` checker directly), `tests/api/test_auth.py`
 (4 integration tests against real Postgres)
-Important: **no registration/admin endpoint exists** — users AND roles are
-created by inserting rows directly (see how the tests do it; D010, D011).
+Important: **no public registration endpoint exists** — users and roles are
+created either via the `/admin/*` routes (see the HTTP API layer section
+below and D013) or, for the very first admin, by direct DB insert.
 Authorization is *permission-based via `Role.permissions`*, not
-per-resource — any user whose role grants `SUBMIT_PAPER_TRADE` can act on
-any `broker_id` they know (D011's deliberately out-of-scope gap; a
-per-broker grants table would be the fix). `get_current_user` eager-loads
+per-resource for trading — a user whose role grants `SUBMIT_PAPER_TRADE`
+still needs a `BrokerGrant` for the specific broker (D012).
+`Permission.ADMIN` ("admin:manage") gates every `/admin/*` route.
+`get_current_user` eager-loads
 `User.role` via `selectinload` — lazy-loading it later in an async context
 would raise, not silently work. `require_permission(Permission.X)` returns
 403 for a missing permission, distinct from `get_current_user`'s 401 for
@@ -193,6 +195,30 @@ DB engine the same way D007's bug did. See `tests/api/test_trades.py`'s
 `api_client()` helper for the pattern (manually driving
 `app.router.lifespan_context(app)` since `AsyncClient` doesn't do that
 automatically the way `TestClient` does).
+
+## Admin routes
+
+Purpose: the minimal HTTP surface that replaces raw SQL for creating
+users, roles, and broker grants (D013). Not a general admin panel.
+Main files: `apps/api/app/api/schemas_admin.py` (request/response DTOs —
+`CreateUserResponse` deliberately never includes a password or hash),
+`apps/api/app/api/routes/admin.py` (`POST /admin/users`, `POST /admin/roles`,
+`POST /admin/broker-grants`, `DELETE /admin/broker-grants/{id}`)
+Dependencies: `apps.api.app.auth.dependencies` (`require_permission`),
+`apps.api.app.auth.security` (`hash_password`), `apps.api.app.db.models`
+Tests: `tests/api/test_admin.py` (9 integration tests against real
+Postgres, including one that grants then revokes broker access via the
+API and confirms trade authorization actually flips both ways)
+Important: the whole router is gated by a single
+`Depends(require_permission(Permission.ADMIN))` passed to `APIRouter(...,
+dependencies=[...])` — every route inherits it without each function
+needing its own parameter for it. **No update or deactivate for
+users/roles, no listing endpoints** — deliberate scope cut (D013), not an
+oversight; grants got both create *and* revoke because access control is
+the realistic day-to-day lever, users/roles are comparatively
+rarely-changing setup. **The very first admin user and role still require
+one direct DB insert** — there's no user holding `admin:manage` to call
+these routes with the first time.
 
 ## Broker registry
 

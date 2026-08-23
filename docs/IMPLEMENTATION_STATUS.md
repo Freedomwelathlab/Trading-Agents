@@ -116,6 +116,22 @@ Update this after meaningful implementation work — not for every commit.
   files). Verified live against a running server with two real broker
   rows: the same trader got 200 on a granted broker and 403 on an
   ungranted one.
+- Phase 10: minimal admin API (2026-08-23). `apps/api/app/api/routes/admin.py`
+  — `POST /admin/users`, `POST /admin/roles`, `POST /admin/broker-grants`,
+  `DELETE /admin/broker-grants/{id}`, all gated by one new coarse
+  `Permission.ADMIN` ("admin:manage"). Closes the D010/D011/D012
+  "raw SQL only" gap for day-to-day operation — the very first admin
+  user/role still needs one direct DB insert (documented bootstrap step,
+  D013), but everything after that goes through the API. Deliberately no
+  update/deactivate for users or roles, no listing endpoints — scoped to
+  what's actually needed routinely (grants especially, since revoking
+  broker access is the realistic day-to-day lever). 9 new tests, 83/83
+  total passing, ruff+mypy clean (39 source files). Verified live against
+  a running server: bootstrapped one admin via SQL, then created a role,
+  a user, and a broker grant entirely through the API, confirming the new
+  user could trade only after the grant existed — the same
+  grant/trade/revoke/trade-again round-trip is also covered as an
+  integration test, not just a manual check.
 
 ## In Progress
 
@@ -128,10 +144,10 @@ data vendor to wire (D008) — code is ready to accept one, none is chosen.
 
 ## Planned
 
-Phase 10+ (order not finalized): a concrete `MarketDataProvider`
-implementation once a vendor is chosen, a user/role/grant-management admin
-path (D010/D011/D012 — everything is still direct DB insert), persisted
-`PaperBrokerAdapter` state (D005/D009 gap), agent/LLM layer, frontend.
+Phase 11+ (order not finalized): a concrete `MarketDataProvider`
+implementation once a vendor is chosen, persisted `PaperBrokerAdapter`
+state (D005/D009 gap), user/role update+deactivate endpoints (D013's
+deliberately-cut scope), agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -145,12 +161,13 @@ optimization.
 
 ## Tests
 
-74 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+83 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), trades HTTP endpoint
 (14, DB-backed, all require auth+permission+broker grant), auth security
-unit tests (8), authorization unit tests (3), login route (4, DB-backed).
+unit tests (8), authorization unit tests (3), login route (4, DB-backed),
+admin routes (9, DB-backed).
 
 ## Known Issues
 

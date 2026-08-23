@@ -46,23 +46,25 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-9 complete: repo skeleton, deterministic risk engine, paper broker
-+ OMS, order/fill persistence, market-data routing skeleton, HTTP trade
-submission, authentication, role-based authorization, per-broker access
-grants. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+Phases 1-10 complete: repo skeleton, deterministic risk engine, paper
+broker + OMS, order/fill persistence, market-data routing skeleton, HTTP
+trade submission, authentication, role-based authorization, per-broker
+access grants, a minimal admin API. See
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
-`broker_id` — verified live against a real server + Postgres with two
-broker rows: same trader, 200 on the granted one, 403 on the other. No
-real market-data vendor is wired (D008) — open decision for the user. No
-admin path exists (D010/D011/D012) — every user, role, and grant is
-created by direct DB insert.
+`broker_id` — all of which can now be set up via `/admin/*` routes after
+one bootstrap admin is created by direct SQL (D013). Verified live end to
+end: bootstrap via SQL, then role → user → broker grant → successful trade,
+entirely through the API. No real market-data vendor is wired (D008) —
+open decision for the user.
 
 ## Planned Work
 
-Phase 10+: user/role/grant-management admin path, a concrete market-data
-vendor adapter (once chosen), persisted paper-broker state, agent/LLM
-layer, frontend. Order not finalized.
+Phase 11+: a concrete market-data vendor adapter (once chosen), persisted
+paper-broker state (D005/D009), user/role update+deactivate endpoints
+(D013's deliberately-cut scope), agent/LLM layer, frontend. Order not
+finalized.
 
 ## Known Problems
 
@@ -84,9 +86,10 @@ what this repo's docs can verify.)
 - Order/fill persistence: done (D006). HTTP endpoint: done (D009).
   Authentication: done (D010). Authorization: done (D011) — requires the
   `trade:submit:paper` permission. Per-broker access grants: done (D012).
-  Still open: no admin path for any of it — every user, role, and grant is
-  created by direct DB insert. That's the natural next piece if this ever
-  needs to support more than one operator manually running SQL.
+  Minimal admin API: done (D013) — create users/roles, create+revoke
+  broker grants, all gated by `admin:manage`. Still open: no update or
+  deactivate for users/roles (D013's deliberate scope cut), and the very
+  first admin user/role still requires one direct DB insert to bootstrap.
 - **Which market data vendor to wire is an open decision requiring user
   input (D008).** The routing/normalization contract is built and tested;
   no concrete provider exists. Options include a paid data vendor, a free

@@ -290,6 +290,49 @@ two real broker rows, not simulated.
 
 ---
 
+**D013 — Minimal admin API: one coarse permission, create-only for users/roles, create+revoke for grants**
+Date: 2026-08-23
+Decision: `POST /admin/users`, `POST /admin/roles`, `POST /admin/broker-grants`,
+`DELETE /admin/broker-grants/{id}` (`apps/api/app/api/routes/admin.py`),
+all gated by one new coarse permission, `Permission.ADMIN` ("admin:manage")
+- not per-resource admin permissions (`admin:create_user`,
+`admin:create_role`, etc.). No update/deactivate for users, no update for
+roles, no listing endpoints anywhere.
+Reason: this closes the "raw SQL only" gap D010/D011/D012 each left open,
+without building a general admin panel the user didn't ask for. Grants
+got both create *and* revoke because access control is the lever an
+operator will realistically need to flip routinely (onboarding/offboarding
+a trader from a specific broker); users and roles are comparatively
+rarely-changing setup, so create-only is enough to remove the SQL
+dependency without over-building. One coarse permission (not several
+granular ones) matches "minimal" - a real per-action admin permission
+model is a straightforward follow-up if ever needed, not a foundational
+decision to get right on the first pass.
+Alternatives: (a) per-action admin permissions - rejected as premature
+granularity with only one admin operator persona so far. (b) update/delete
+for users and roles too - rejected as scope creep past "minimal"; a user
+can already be effectively disabled by revoking every broker grant and
+role permission, even without a dedicated deactivate endpoint. (c) a
+public self-registration endpoint - never considered; this is explicitly
+an *admin* path, not open account creation (would contradict D010's
+original reasoning).
+Consequences: **the very first admin user and role still require one
+direct DB insert** - there is no user holding `admin:manage` to call
+these routes with the first time. Documented as the one unavoidable
+bootstrap step; everything after it can go through the API. If a role or
+user needs to change after creation (e.g. revoke `admin:manage` from a
+compromised account), that still requires SQL - a real, acknowledged gap.
+Status: Implemented, tested (`tests/api/test_admin.py`, 9 integration
+tests against real Postgres, including one that grants and then revokes
+broker access via the API and confirms trade authorization actually
+flips both ways - not just that the grant/revoke calls return the right
+status code). Verified live against a running server: bootstrapped one
+admin via SQL, then created a role, a user, and a broker grant entirely
+through the API, and confirmed the new user could trade only after the
+grant existed.
+
+---
+
 **D011 — Authorization: permission-list-on-Role, not a fixed enum or per-broker grants**
 Date: 2026-08-23
 Decision: `roles.permissions` (migration `0004`) is a flat Postgres

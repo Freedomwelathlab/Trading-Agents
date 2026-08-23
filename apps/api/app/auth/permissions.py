@@ -15,3 +15,10 @@ class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     live confirmation flow spec Sec56 requires; granting this permission
     today would be a permission that does nothing, not a shortcut to live
     trading."""
+    ADMIN = "admin:manage"
+    """Gates every route under /admin - creating users, roles, and broker
+    grants. One coarse permission, not per-resource ones (admin:create_user
+    etc.) - see docs/DECISIONS.md D013 for why. The very first admin user
+    and role still have to be created by direct DB insert; there is no
+    user holding this permission to call these routes with the first time
+    (bootstrap problem, documented, not solved by this permission alone)."""

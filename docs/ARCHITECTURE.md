@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-9)
+## Current (Phase 1-10)
 
 ```mermaid
 flowchart LR
@@ -10,6 +10,8 @@ flowchart LR
     perm -->|403 if missing| grantcheck["require_broker_access\nbroker exists? grant exists?"]
     grantcheck -->|404 / 403| route["POST /brokers/{id}/trades"]
     client --> health[GET /health]
+    client --> admin["/admin/users, /admin/roles,\n/admin/broker-grants\nrequires admin:manage"]
+    admin --> db
     route --> settings[Settings\nfail-closed live gate\n+ risk limit defaults\n+ fail-closed JWT secret]
     route --> db[(Postgres/TimescaleDB)]
 
@@ -28,16 +30,18 @@ flowchart LR
 ```
 
 `apps/api/app/main.py` boots the app, logs startup mode, creates the
-`PaperBrokerRegistry`, exposes `/health` and both routers (`/auth/login`,
-the trades router). `apps/api/app/core/config.py` is the single source of
-the execution-mode gate, default risk limits, emergency-stop flag, and now
-also `jwt_secret_key` — fail-closed the same way, no default.
+`PaperBrokerRegistry`, exposes `/health` and three routers (`/auth/login`,
+the trades router, the admin router). `apps/api/app/core/config.py` is the
+single source of the execution-mode gate, default risk limits,
+emergency-stop flag, and `jwt_secret_key` — all fail-closed, no defaults.
 The trading path requires a Bearer token from `/auth/login`, a role
 granting `trade:submit:paper`, AND an explicit `BrokerGrant` for that
-specific `broker_id` — verified live against a running server with two
-real broker rows: the same trader got 200 on the one they were granted
-and 403 on the one they weren't (the resulting order's
-`submitted_by_user_id` also confirmed via SQL). The market-data router
+specific `broker_id` — all of which can now be set up through
+`/admin/users`, `/admin/roles`, `/admin/broker-grants` after one bootstrap
+admin is created by direct SQL (D013). Verified live end to end: SQL
+bootstrap → role created via API → user created via API (with that role)
+→ trade blocked (403, no grant) → grant created via API → trade succeeds
+→ grant revoked via API → trade blocked again. The market-data router
 (dotted lines, left) is built and tested but has no provider plugged in
 and nothing yet calls it to build a `TradeProposal`; the HTTP endpoint
 currently takes price/timestamp directly from the caller instead (future
@@ -45,8 +49,7 @@ work once a vendor is chosen, D008). The
 `PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
 cash/position state (D005/D009) even though the `Order`/`Fill` decision
 record now does — a restart resets accounts silently while the audit
-trail survives. No admin endpoint exists for any of users/roles/grants
-(D010/D011/D012) — all created by direct DB insert.
+trail survives.
 
 ## Target (per governing spec, not yet built)
 
