@@ -11,7 +11,7 @@ System-level view. "—" means not built yet; do not assume it exists.
 | Research (debate) | — | — | — | Agents | Not started |
 | Risk Engine | Deterministic trade validation, fail-closed | Trade proposal, account state | Approve/block | Portfolio, market data | Phase 2 (done) |
 | Portfolio | Track positions/P&L | Fills, prices | Position/P&L state | Risk Engine, Broker | Not started — paper broker tracks cash/positions itself for now, no separate portfolio module |
-| Execution/OMS | Order lifecycle, structurally enforces risk gate | Approved trade | Fill or rejection | Risk Engine, Broker Adapter | Phase 3-4, 6 (done) — paper broker, persisted to `orders`/`fills`, reachable via `POST /brokers/{broker_id}/trades` |
+| Execution/OMS | Order lifecycle, structurally enforces risk gate | Approved trade | Fill or rejection | Risk Engine, Broker Adapter | Phase 3-4, 6, 11 (done) — paper broker, persisted to `orders`/`fills` (decision audit) AND `broker_accounts`/`broker_positions` (current cash/positions), reachable via `POST /brokers/{broker_id}/trades`; survives a restart |
 | Market Data | Vendor routing, no-fabrication sentinels | Vendor APIs | Normalized snapshots | External vendors | Phase 5 (done) — routing/normalization contract only, no vendor wired (D008) |
 | Backtesting | — | — | — | Market Data, Risk Engine | Not started |
 | Reporting | — | — | — | Portfolio | Not started |

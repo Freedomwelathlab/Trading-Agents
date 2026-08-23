@@ -371,3 +371,59 @@ server: a user with no role got 403 with the missing-permission detail
 message; a user with a role granting `trade:submit:paper` got 200 filled
 - both created via direct SQL insert (no registration endpoint, per D010),
 confirmed via curl, not just the test suite.
+
+---
+
+**D014 — Persisted paper-broker state: new tables, row-locked load, PaperBrokerRegistry removed entirely**
+Date: 2026-08-23
+Decision: `broker_accounts` (cash, one row per broker) and
+`broker_positions` (nonzero quantities only, one row per broker+symbol) -
+migration `0006`. `apps/api/app/execution/persistence.py`'s
+`load_paper_broker()`/`save_paper_broker()` reconstruct a `PaperBrokerAdapter`
+from these tables at the start of a request and write it back at the end,
+mirroring the pure/persisted split D006 already established for
+`submit_trade`/`submit_trade_and_record`. `load_paper_broker()` takes the
+`broker_accounts` row with `SELECT ... FOR UPDATE`, and
+`submit_trade_and_record()` no longer commits internally (it now only
+`flush()`es) so that lock is held for the entire trade - risk evaluation,
+order/fill persistence, and the account/position save - and released only
+by one commit at the very end, in `trades.py`. The old in-process
+`PaperBrokerRegistry` (D009) is deleted, not deprecated - it's fully
+superseded by DB-backed state.
+Reason: D005/D009 explicitly flagged that a restart silently resets every
+paper account despite the `Order`/`Fill` audit trail surviving - this
+closes that gap for real, not just for one process's lifetime. The
+`FOR UPDATE` lock exists because loading cash, mutating it, then writing
+it back without holding a lock across that whole span is exactly the kind
+of check-then-act race that lets two concurrent trades on the same broker
+both read the same starting cash and both succeed when only one should -
+a double-spend bug, which this project's fail-closed posture (already
+applied to the risk engine and to auth) should extend to as well.
+Alternatives: (a) an application-level in-memory lock/mutex per
+`broker_id` - rejected, doesn't survive a restart or work across multiple
+worker processes, the exact class of problem this phase exists to solve.
+(b) optimistic concurrency (a version column, retry on conflict) -
+rejected as more complexity than a single-process paper-trading MVP
+needs; `SELECT ... FOR UPDATE` is the simpler correct tool given trades
+are already short, single-row-locking transactions. (c) keeping
+`submit_trade_and_record()`'s internal commit and accepting the small
+window where the lock releases early - rejected, that reopens exactly
+the race the lock exists to close.
+Consequences: `submit_trade_and_record()`'s commit contract changed - any
+future direct caller must commit the session itself (or accept
+rollback-on-close, which the direct-test callers in
+`tests/db/test_order_persistence.py` already do implicitly, since they
+verify state within the same still-open transaction). Every test fixture
+that creates a `Broker` row now also needs to clean up `broker_accounts`/
+`broker_positions` before deleting the `Broker` itself, or hit the new FK
+constraint - the same append-only-FK cleanup-ordering lesson D011's tests
+already had to learn.
+Status: Implemented, tested (`tests/execution/test_persistence.py`, 3
+new tests: default-seed on first load, a load→mutate→save→reload
+round-trip, and confirming a position closed back to zero is deleted, not
+kept as a zero row). Verified live end to end in the way that actually
+matters for this decision: submitted a trade, killed the running server
+process, started a fresh one, and submitted a second trade on the same
+broker - the resulting cash balance (99,000 − 250 = 98,750) and both
+positions (AAPL from before the restart, MSFT from after) were only
+explainable if state genuinely survived the restart, not coincidental.

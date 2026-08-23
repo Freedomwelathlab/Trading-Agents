@@ -27,7 +27,7 @@ unexpected key name, check the pattern still catches it.
 Purpose: async SQLAlchemy engine/session + ORM models.
 Main files: `apps/api/app/db/base.py` (engine, session, `Base`),
 `apps/api/app/db/models.py` (`User`, `Role`, `Asset`, `Broker`, `BrokerGrant`,
-`Order`, `Fill`)
+`BrokerAccount`, `BrokerPosition`, `Order`, `Fill`)
 Dependencies: `apps.api.app.core.config`, `apps.api.app.risk.models` (reuses `Side`)
 Tests: migration round-trip (manual, docker-compose) + `tests/db/test_order_persistence.py`
 (integration, real Postgres)
@@ -42,6 +42,9 @@ convention (no code path updates or deletes a row) — enforced by discipline,
 not a DB trigger, so don't add one. `Role.permissions` is a flat
 `text[]` — see the Auth section below and D011. `BrokerGrant` is a
 `(user_id, broker_id)` join table (unique constraint) — see D012.
+`BrokerAccount`/`BrokerPosition` are, unlike `Order`/`Fill`, mutable
+current-state (not append-only) — see D014; `BrokerPosition` only keeps
+rows for nonzero quantities.
 `apps/api/app/db/base.py`'s engine is created once at module import and its
 asyncpg connections are loop-bound — async tests must share one event loop
 (`pyproject.toml`'s `asyncio_default_test_loop_scope = "session"`), not the
@@ -58,9 +61,10 @@ Tests: `tests/test_health.py`
 
 Purpose: schema history.
 Location: `migrations/` (Alembic, async env)
-Current head: `0005_broker_grants` (`0001` users/roles/assets/brokers,
+Current head: `0006_broker_state` (`0001` users/roles/assets/brokers,
 `0002` orders/fills, `0003` adds `orders.submitted_by_user_id`, `0004` adds
-`roles.permissions`, `0005` adds `broker_grants`)
+`roles.permissions`, `0005` adds `broker_grants`, `0006` adds
+`broker_accounts`/`broker_positions`)
 Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
 comment history in `0001_initial.py` if adding a new enum column.
@@ -91,13 +95,22 @@ approved.
 Purpose: broker-agnostic port + a deterministic paper implementation.
 Main files: `apps/api/app/execution/broker.py` (`BrokerAdapter` Protocol,
 `OrderRequest`, `Fill`), `apps/api/app/execution/paper_broker.py`
-(`PaperBrokerAdapter`)
-Dependencies: `apps.api.app.risk.models` (reuses `Side`, `AccountState`)
-Tests: `tests/execution/test_paper_broker.py`
-Important: in-memory only, not persisted — see `docs/DECISIONS.md` D005.
-Market orders only; limit orders raise rather than fake a fill. No short
-selling. `get_account_state()` requires a mark for every open position and
-raises rather than guessing a stale/missing price.
+(`PaperBrokerAdapter`), `apps/api/app/execution/persistence.py`
+(`load_paper_broker`, `save_paper_broker` — see D014)
+Dependencies: `apps.api.app.risk.models` (reuses `Side`, `AccountState`),
+`apps.api.app.db.models` (`BrokerAccount`, `BrokerPosition`, persistence only)
+Tests: `tests/execution/test_paper_broker.py` (pure, no DB),
+`tests/execution/test_persistence.py` (DB-backed load/save round-trips)
+Important: `PaperBrokerAdapter` itself is still pure in-memory (no DB
+import) — persistence is a wrapping layer around it (D014), same pattern
+as D006's `submit_trade`/`submit_trade_and_record` split. Market orders
+only; limit orders raise rather than fake a fill. No short selling.
+`get_account_state()` requires a mark for every open position and raises
+rather than guessing a stale/missing price. **`load_paper_broker()` locks
+the `broker_accounts` row with `SELECT ... FOR UPDATE`** — that lock must
+stay held until `save_paper_broker()` + one final commit, in the same
+request; this is why `submit_trade_and_record()` no longer commits
+internally (see the OMS section below).
 
 ## OMS
 
@@ -113,9 +126,11 @@ rejected proposal never reaches `submit_order()`.
 `apps/api/app/oms/persistence.py`'s `submit_trade_and_record()` wraps
 `submit_trade()` with append-only Order/Fill persistence — see the Database
 layer section and D006. Use `submit_trade` for pure/unit-tested logic,
-`submit_trade_and_record` anywhere an audit trail is needed (which, once an
-HTTP endpoint exists, should be everywhere reachable from outside the
-process).
+`submit_trade_and_record` anywhere an audit trail is needed (everywhere
+reachable from outside the process). **It deliberately does not commit**
+(only `flush()`es) — the caller (`trades.py`) commits once after also
+calling `save_paper_broker()`, so `load_paper_broker()`'s row lock (D014)
+covers the whole trade, not just the order/fill write.
 
 ## Execution context
 
@@ -172,9 +187,9 @@ request-scoped dependency wiring. Separate from the domain models
 (risk/oms/execution) so the HTTP contract can evolve independently.
 Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest`,
 `TradeSubmissionResponse`), `apps/api/app/api/dependencies.py`
-(`get_paper_broker_registry`, `require_broker_access`, `AuthorizedBroker`),
+(`require_broker_access`, `AuthorizedBroker`),
 `apps/api/app/api/routes/trades.py` (`POST /brokers/{broker_id}/trades`)
-Dependencies: `apps.api.app.oms.persistence`, `apps.api.app.execution.registry`,
+Dependencies: `apps.api.app.oms.persistence`, `apps.api.app.execution.persistence`,
 `apps.api.app.db.models`, `apps.api.app.core.config`, `apps.api.app.auth.dependencies`
 Tests: `tests/api/test_trades.py` (14 integration tests against a real
 Postgres instance, using `httpx.AsyncClient` + `ASGITransport` — see the
@@ -219,18 +234,6 @@ the realistic day-to-day lever, users/roles are comparatively
 rarely-changing setup. **The very first admin user and role still require
 one direct DB insert** — there's no user holding `admin:manage` to call
 these routes with the first time.
-
-## Broker registry
-
-Purpose: resolves a `PaperBrokerAdapter` per `broker_id`, held on
-`app.state`, created once at startup.
-Main file: `apps/api/app/execution/registry.py` (`PaperBrokerRegistry`)
-Important: in-memory, per-process (same limitation as `PaperBrokerAdapter`
-itself, D005) — now reachable over HTTP, so a restart silently resets every
-paper account's cash/positions even though the `Order`/`Fill` audit trail
-in Postgres survives. Would break with more than one worker process (each
-gets its own, divergent registry) — fine for now, a real blocker before any
-horizontal scaling.
 
 ## Market data
 

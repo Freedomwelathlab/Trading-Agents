@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-10)
+## Current (Phase 1-11)
 
 ```mermaid
 flowchart LR
@@ -19,37 +19,39 @@ flowchart LR
     router -.-> snapshot[MarketSnapshot]
     snapshot -.would feed.-> proposal
 
-    proposal[TradeProposal] --> persist[OMS submit_trade_and_record]
+    proposal[TradeProposal] --> loadbroker["load_paper_broker\nSELECT ... FOR UPDATE"]
+    loadbroker --> persist[OMS submit_trade_and_record]
     persist --> oms[submit_trade]
     oms --> risk[Risk Engine\nevaluate_trade]
-    risk -->|approved| broker[PaperBrokerAdapter\nvia PaperBrokerRegistry]
+    risk -->|approved| broker[PaperBrokerAdapter\nin-memory, this request only]
     risk -->|blocked| rejected[RiskDecision: rejected]
     broker --> fill[Fill]
     persist --> orders[(orders / fills\nappend-only)]
+    broker --> savebroker[save_paper_broker]
+    savebroker --> brokerstate[(broker_accounts /\nbroker_positions)]
     route --> proposal
+    route -->|one commit\nreleases the lock| db
 ```
 
-`apps/api/app/main.py` boots the app, logs startup mode, creates the
-`PaperBrokerRegistry`, exposes `/health` and three routers (`/auth/login`,
-the trades router, the admin router). `apps/api/app/core/config.py` is the
-single source of the execution-mode gate, default risk limits,
-emergency-stop flag, and `jwt_secret_key` — all fail-closed, no defaults.
-The trading path requires a Bearer token from `/auth/login`, a role
-granting `trade:submit:paper`, AND an explicit `BrokerGrant` for that
-specific `broker_id` — all of which can now be set up through
+`apps/api/app/main.py` boots the app, logs startup mode, exposes `/health`
+and three routers (`/auth/login`, the trades router, the admin router).
+`apps/api/app/core/config.py` is the single source of the execution-mode
+gate, default risk limits, emergency-stop flag, and `jwt_secret_key` — all
+fail-closed, no defaults. The trading path requires a Bearer token from
+`/auth/login`, a role granting `trade:submit:paper`, AND an explicit
+`BrokerGrant` for that specific `broker_id` — all settable through
 `/admin/users`, `/admin/roles`, `/admin/broker-grants` after one bootstrap
-admin is created by direct SQL (D013). Verified live end to end: SQL
-bootstrap → role created via API → user created via API (with that role)
-→ trade blocked (403, no grant) → grant created via API → trade succeeds
-→ grant revoked via API → trade blocked again. The market-data router
-(dotted lines, left) is built and tested but has no provider plugged in
-and nothing yet calls it to build a `TradeProposal`; the HTTP endpoint
-currently takes price/timestamp directly from the caller instead (future
-work once a vendor is chosen, D008). The
-`PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
-cash/position state (D005/D009) even though the `Order`/`Fill` decision
-record now does — a restart resets accounts silently while the audit
-trail survives.
+admin is created by direct SQL (D013). A broker's cash/positions are now
+loaded from and saved back to Postgres around every trade (D014) — the
+in-process `PaperBrokerRegistry` is gone entirely. Verified live in the
+way that matters most for this: submitted a trade, killed the running
+server process, started a fresh one, submitted a second trade on the same
+broker — the resulting cash balance and both positions were only
+explainable if state genuinely survived the restart. The market-data
+router (dotted lines, left) is built and tested but has no provider
+plugged in and nothing yet calls it to build a `TradeProposal`; the HTTP
+endpoint currently takes price/timestamp directly from the caller instead
+(future work once a vendor is chosen, D008).
 
 ## Target (per governing spec, not yet built)
 
@@ -77,8 +79,11 @@ still fail closed if the Risk Engine itself is unreachable.
 ## Database
 
 Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,
-`brokers` (`0001`), `orders`, `fills` (`0002`), `broker_grants` (`0005`).
-Money columns (`orders`/`fills`) already use `NUMERIC`, never float.
+`brokers` (`0001`), `orders`, `fills` (`0002`), `broker_grants` (`0005`),
+`broker_accounts`, `broker_positions` (`0006`). Money columns already use
+`NUMERIC`, never float. `orders`/`fills` are append-only audit history;
+`broker_accounts`/`broker_positions` are mutable current-state — the two
+serve different purposes and are not duplicates of each other (D014).
 
 ## Deployment
 

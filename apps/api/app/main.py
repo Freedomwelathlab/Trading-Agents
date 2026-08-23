@@ -7,7 +7,6 @@ from apps.api.app.api.routes.trades import router as trades_router
 from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
-from apps.api.app.execution.registry import PaperBrokerRegistry
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -15,10 +14,7 @@ logger = get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.paper_broker_registry = PaperBrokerRegistry(
-        starting_cash=settings.paper_broker_starting_cash
-    )
+async def lifespan(_app: FastAPI):
     logger.info(
         "trading_os_startup",
         trading_mode=settings.trading_mode.value,

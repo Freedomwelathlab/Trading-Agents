@@ -115,6 +115,45 @@ class Broker(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class BrokerAccount(Base):
+    """Current cash balance for one (paper) broker. One row per broker,
+    created lazily the first time apps.api.app.execution.persistence loads
+    a broker that has no row yet (seeded with Settings.paper_broker_starting_cash).
+
+    This is mutable, current-state data - unlike Order/Fill, it is NOT
+    append-only. It is the thing Order/Fill's append-only history exists
+    to make reconstructible if this row is ever lost or wrong; the two are
+    complementary, not duplicates of the same information."""
+
+    __tablename__ = "broker_accounts"
+
+    broker_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brokers.id"), primary_key=True)
+    cash: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class BrokerPosition(Base):
+    """Current open-position quantity for one (broker, symbol) pair.
+    Mutable current-state, like BrokerAccount - not append-only. Rows are
+    only kept for nonzero quantities; a position closed back to zero is
+    deleted rather than kept as a zero row."""
+
+    __tablename__ = "broker_positions"
+    __table_args__ = (
+        UniqueConstraint("broker_id", "symbol", name="uq_broker_position_broker_symbol"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    broker_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brokers.id"), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class BrokerGrant(Base):
     """Explicit per-user, per-broker access grant. A user must hold both
     the relevant Role permission (apps.api.app.auth.permissions) AND a

@@ -132,6 +132,25 @@ Update this after meaningful implementation work — not for every commit.
   user could trade only after the grant existed — the same
   grant/trade/revoke/trade-again round-trip is also covered as an
   integration test, not just a manual check.
+- Phase 11: persisted paper-broker state (2026-08-23). Migration `0006`
+  adds `broker_accounts` (cash) and `broker_positions` (nonzero
+  quantities only). `apps/api/app/execution/persistence.py`'s
+  `load_paper_broker()`/`save_paper_broker()` reconstruct/save a
+  `PaperBrokerAdapter` around each trade request, with
+  `load_paper_broker()` taking a `SELECT ... FOR UPDATE` lock on the
+  account row held for the entire request to prevent a double-spend race
+  on concurrent trades against the same broker.
+  `submit_trade_and_record()` no longer commits internally (flushes only)
+  so that lock survives until the route's single final commit. The old
+  in-process `PaperBrokerRegistry` (D009) is deleted entirely, closing
+  the D005/D009 gap for real — a restart no longer resets any account. 3
+  new tests, 86/86 total passing, ruff+mypy clean (39 source files).
+  Verified live in the way that actually matters here: submitted a trade,
+  killed the running server process, started a fresh one, submitted a
+  second trade on the same broker — the resulting cash balance
+  (99,000 − 250 = 98,750) and both positions (one from before the
+  restart, one from after) were only explainable if state genuinely
+  survived the restart.
 
 ## In Progress
 
@@ -144,10 +163,9 @@ data vendor to wire (D008) — code is ready to accept one, none is chosen.
 
 ## Planned
 
-Phase 11+ (order not finalized): a concrete `MarketDataProvider`
-implementation once a vendor is chosen, persisted `PaperBrokerAdapter`
-state (D005/D009 gap), user/role update+deactivate endpoints (D013's
-deliberately-cut scope), agent/LLM layer, frontend.
+Phase 12+ (order not finalized): a concrete `MarketDataProvider`
+implementation once a vendor is chosen, user/role update+deactivate
+endpoints (D013's deliberately-cut scope), agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -161,13 +179,13 @@ optimization.
 
 ## Tests
 
-83 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+86 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), trades HTTP endpoint
 (14, DB-backed, all require auth+permission+broker grant), auth security
 unit tests (8), authorization unit tests (3), login route (4, DB-backed),
-admin routes (9, DB-backed).
+admin routes (9, DB-backed), broker-state persistence (3, DB-backed).
 
 ## Known Issues
 

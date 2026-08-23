@@ -6,6 +6,16 @@ property (works even with everything downstream unreachable) honest by
 construction. This module is the only place that writes an Order row, and
 it always does so through submit_trade(), so persistence can never become a
 second, divergent path to the broker.
+
+Deliberately does NOT commit. The caller (apps/api/app/api/routes/trades.py)
+also saves the broker's post-trade cash/position state
+(apps/api/app/execution/persistence.py) in the same transaction and commits
+once at the end - see docs/DECISIONS.md D014. Committing here would release
+load_paper_broker()'s row lock before that save happens, reopening the
+double-spend race the lock exists to close. Direct-test callers
+(tests/db/test_order_persistence.py) don't need an explicit commit either:
+they query within the same still-open session/transaction, which sees its
+own flushed-but-uncommitted writes.
 """
 
 import uuid
@@ -69,6 +79,6 @@ async def submit_trade_and_record(
             )
         )
 
-    await session.commit()
+    await session.flush()
     result.order_id = order_row.id
     return result

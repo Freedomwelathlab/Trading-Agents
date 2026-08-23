@@ -13,7 +13,15 @@ from sqlalchemy import delete, select
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.auth.security import hash_password
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import Broker, BrokerGrant, BrokerKind, Role, User
+from apps.api.app.db.models import (
+    Broker,
+    BrokerAccount,
+    BrokerGrant,
+    BrokerKind,
+    BrokerPosition,
+    Role,
+    User,
+)
 from apps.api.app.db.models import Fill as FillRow
 from apps.api.app.db.models import Order as OrderRow
 from apps.api.app.main import app
@@ -94,6 +102,8 @@ async def paper_broker_row(session):
         )
         await session.execute(delete(OrderRow).where(OrderRow.broker_id == broker_id))
         await session.execute(delete(BrokerGrant).where(BrokerGrant.broker_id == broker_id))
+        await session.execute(delete(BrokerPosition).where(BrokerPosition.broker_id == broker_id))
+        await session.execute(delete(BrokerAccount).where(BrokerAccount.broker_id == broker_id))
         await session.execute(delete(Broker).where(Broker.id == broker_id))
         await session.commit()
 

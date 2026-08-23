@@ -46,25 +46,25 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-10 complete: repo skeleton, deterministic risk engine, paper
+Phases 1-11 complete: repo skeleton, deterministic risk engine, paper
 broker + OMS, order/fill persistence, market-data routing skeleton, HTTP
 trade submission, authentication, role-based authorization, per-broker
-access grants, a minimal admin API. See
+access grants, a minimal admin API, persisted paper-broker state. See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
-`broker_id` — all of which can now be set up via `/admin/*` routes after
-one bootstrap admin is created by direct SQL (D013). Verified live end to
-end: bootstrap via SQL, then role → user → broker grant → successful trade,
-entirely through the API. No real market-data vendor is wired (D008) —
-open decision for the user.
+`broker_id` — all of which can be set up via `/admin/*` routes after one
+bootstrap admin is created by direct SQL (D013). A trader's cash and
+positions now live in `broker_accounts`/`broker_positions` (D014) and
+survive a process restart — verified by killing and restarting a live
+server mid-test and confirming cumulative cash/positions carried over.
+No real market-data vendor is wired (D008) — open decision for the user.
 
 ## Planned Work
 
-Phase 11+: a concrete market-data vendor adapter (once chosen), persisted
-paper-broker state (D005/D009), user/role update+deactivate endpoints
-(D013's deliberately-cut scope), agent/LLM layer, frontend. Order not
-finalized.
+Phase 12+: a concrete market-data vendor adapter (once chosen), user/role
+update+deactivate endpoints (D013's deliberately-cut scope), agent/LLM
+layer, frontend. Order not finalized.
 
 ## Known Problems
 
@@ -87,7 +87,9 @@ what this repo's docs can verify.)
   Authentication: done (D010). Authorization: done (D011) — requires the
   `trade:submit:paper` permission. Per-broker access grants: done (D012).
   Minimal admin API: done (D013) — create users/roles, create+revoke
-  broker grants, all gated by `admin:manage`. Still open: no update or
+  broker grants, all gated by `admin:manage`. Persisted paper-broker
+  state: done (D014) — `PaperBrokerRegistry` is gone, cash/positions
+  live in Postgres and survive a restart. Still open: no update or
   deactivate for users/roles (D013's deliberate scope cut), and the very
   first admin user/role still requires one direct DB insert to bootstrap.
 - **Which market data vendor to wire is an open decision requiring user

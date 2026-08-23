@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,11 +15,6 @@ from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerGrant, User
-from apps.api.app.execution.registry import PaperBrokerRegistry
-
-
-def get_paper_broker_registry(request: Request) -> PaperBrokerRegistry:
-    return request.app.state.paper_broker_registry
 
 
 @dataclass

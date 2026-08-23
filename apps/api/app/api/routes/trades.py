@@ -10,17 +10,13 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.app.api.dependencies import (
-    AuthorizedBroker,
-    get_paper_broker_registry,
-    require_broker_access,
-)
+from apps.api.app.api.dependencies import AuthorizedBroker, require_broker_access
 from apps.api.app.api.schemas import TradeSubmissionRequest, TradeSubmissionResponse
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import BrokerKind, OrderStatus
-from apps.api.app.execution.registry import PaperBrokerRegistry
+from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
 from apps.api.app.oms.persistence import submit_trade_and_record
 from apps.api.app.risk.models import RiskLimits, TradeProposal
 
@@ -32,7 +28,6 @@ async def submit_trade_endpoint(
     broker_id: uuid.UUID,
     request: TradeSubmissionRequest,
     session: AsyncSession = Depends(get_session),
-    registry: PaperBrokerRegistry = Depends(get_paper_broker_registry),
     settings: Settings = Depends(get_settings),
     authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
 ) -> TradeSubmissionResponse:
@@ -54,7 +49,11 @@ async def submit_trade_endpoint(
         market_data_as_of=request.market_data_as_of or datetime.now(UTC),
     )
 
-    broker_adapter = registry.get_or_create(broker_id)
+    # Locks the broker's account row for the rest of this transaction -
+    # see apps/api/app/execution/persistence.py's module docstring for why.
+    broker_adapter = await load_paper_broker(
+        session, broker_id, default_starting_cash=settings.paper_broker_starting_cash
+    )
     marks = {**request.marks, request.symbol: request.estimated_price}
     try:
         account = broker_adapter.get_account_state(marks=marks)
@@ -79,6 +78,9 @@ async def submit_trade_endpoint(
         emergency_stop_active=settings.emergency_stop_active,
         submitted_by_user_id=authorized.user.id,
     )
+
+    await save_paper_broker(session, broker_id, broker_adapter)
+    await session.commit()
 
     assert result.order_id is not None  # always set by submit_trade_and_record
     return TradeSubmissionResponse(
