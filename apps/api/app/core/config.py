@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     risk_require_stop_price: bool = True
     risk_max_market_data_age_seconds: int = 300
 
+    longport_app_key: str | None = None
+    longport_app_secret: str | None = None
+    longport_access_token: str | None = None
+    """All three optional, no default value pretending to be a real one -
+    market data is genuinely optional to configure (spec Sec57: absence
+    must render as NOT_CONFIGURED, not a fabricated feed). All three must
+    be set together or the Longbridge provider isn't built at all - see
+    apps/api/app/marketdata/providers/longbridge.py and docs/DECISIONS.md D015."""
+
     jwt_secret_key: str
     """No default, deliberately - an app that can silently boot with a
     built-in JWT secret is a worse failure mode than one that refuses to

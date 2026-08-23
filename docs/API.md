@@ -117,5 +117,23 @@ broker by that user gets 403.
 No update or deactivate endpoints for users/roles, and no listing
 endpoints anywhere (D013 — deliberate scope cut, not an oversight).
 
+## `GET /market-data/{symbol}/quote`
+
+Requires `Authorization: Bearer <token>` — any active user, no special
+permission (read-only, not a trading action). Example: `symbol=AAPL.US`
+(Longbridge's symbol format — market suffix required, e.g. `.US`/`.HK`).
+
+Response (200, `QuoteResponse`): `{"symbol": "AAPL.US", "price": "...",
+"as_of": "...", "source": "longbridge"}`.
+
+503 with a `NOT_CONFIGURED:`-prefixed detail if no market data vendor is
+wired (`LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN`
+not all set — D015). 404 with a `NO_DATA_AVAILABLE:`-prefixed detail if
+the vendor has no quote for the symbol. **Not connected to trade
+submission** — `POST /brokers/{broker_id}/trades` still takes
+`estimated_price`/`market_data_as_of` from the caller regardless of what
+this endpoint would return; see `docs/DECISIONS.md` D015 for why that's
+an open decision, not an oversight.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

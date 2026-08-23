@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,13 @@ from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerGrant, User
+from apps.api.app.marketdata.router import MarketDataRouter
+
+
+def get_market_data_router(request: Request) -> MarketDataRouter | None:
+    """None means no vendor is configured (D008/D015) - callers must
+    render that as NOT_CONFIGURED, never silently skip the check."""
+    return request.app.state.market_data_router
 
 
 @dataclass

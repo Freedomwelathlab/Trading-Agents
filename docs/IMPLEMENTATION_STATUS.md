@@ -151,6 +151,25 @@ Update this after meaningful implementation work — not for every commit.
   (99,000 − 250 = 98,750) and both positions (one from before the
   restart, one from after) were only explainable if state genuinely
   survived the restart.
+- Phase 12: Longbridge market data provider (2026-08-23). Closes D008.
+  `apps/api/app/marketdata/providers/longbridge.py`'s
+  `LongbridgeMarketDataProvider` wraps the `longport` SDK (verified
+  against the real installed package via direct introspection, not
+  documentation, after two web sources gave conflicting method names).
+  `build_longbridge_provider()` returns `None` unless all three
+  `LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN`
+  settings are configured — the app boots fine either way. New
+  `GET /market-data/{symbol}/quote` (auth required) returns 503
+  `NOT_CONFIGURED:` with no vendor wired, 404 `NO_DATA_AVAILABLE:` if the
+  vendor has no data, 200 with a real quote otherwise. **Not** wired into
+  trade-proposal construction — `POST /brokers/{broker_id}/trades` still
+  takes price/timestamp from the caller, unchanged; whether/how to
+  connect the two is left as an explicit open decision (D015). 8 new
+  tests (all against a fake client — no real credentials exist in this
+  environment to test the "configured" path end to end), 94/94 total
+  passing, ruff+mypy clean (43 source files). Verified live: server boots
+  and logs `market_data_vendor=NOT_CONFIGURED`, and the endpoint returns
+  503 rather than any fabricated quote.
 
 ## In Progress
 
@@ -158,14 +177,14 @@ Nothing currently mid-implementation.
 
 ## Blocked
 
-Nothing currently blocked. One open decision needs the user: which market
-data vendor to wire (D008) — code is ready to accept one, none is chosen.
+Nothing currently blocked.
 
 ## Planned
 
-Phase 12+ (order not finalized): a concrete `MarketDataProvider`
-implementation once a vendor is chosen, user/role update+deactivate
-endpoints (D013's deliberately-cut scope), agent/LLM layer, frontend.
+Phase 13+ (order not finalized): connecting the market-data router to
+trade-proposal construction (D015's explicitly-left-open question), user/
+role update+deactivate endpoints (D013's deliberately-cut scope),
+agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -179,13 +198,14 @@ optimization.
 
 ## Tests
 
-86 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+94 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
-DB-backed), market data router + snapshot model (9), trades HTTP endpoint
-(14, DB-backed, all require auth+permission+broker grant), auth security
-unit tests (8), authorization unit tests (3), login route (4, DB-backed),
-admin routes (9, DB-backed), broker-state persistence (3, DB-backed).
+DB-backed), market data router + snapshot model (9), Longbridge provider
+(8, against a fake client), trades HTTP endpoint (14, DB-backed, all
+require auth+permission+broker grant), auth security unit tests (8),
+authorization unit tests (3), login route (4, DB-backed), admin routes
+(9, DB-backed), broker-state persistence (3, DB-backed).
 
 ## Known Issues
 

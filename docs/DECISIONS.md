@@ -427,3 +427,62 @@ process, started a fresh one, and submitted a second trade on the same
 broker - the resulting cash balance (99,000 − 250 = 98,750) and both
 positions (AAPL from before the restart, MSFT from after) were only
 explainable if state genuinely survived the restart, not coincidental.
+
+---
+
+**D015 — Longbridge wired as the first concrete MarketDataProvider (closes D008)**
+Date: 2026-08-23
+Decision: `apps/api/app/marketdata/providers/longbridge.py`'s
+`LongbridgeMarketDataProvider` wraps the `longport` SDK's
+`AsyncQuoteContext.quote()`. Credentials
+(`LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN`) are
+optional `Settings` fields with no default; `build_longbridge_provider()`
+returns `None` unless all three are set, and `main.py`'s lifespan only
+constructs a `MarketDataRouter` when a provider actually builds - the app
+boots fine either way, logging `market_data_vendor=NOT_CONFIGURED` when
+it doesn't. New `GET /market-data/{symbol}/quote` (auth required, no
+special permission) exposes it: 503 `NOT_CONFIGURED:` with no vendor
+wired, 404 `NO_DATA_AVAILABLE:` (from the router) if the vendor has no
+data, 200 with a real `MarketSnapshot` otherwise.
+Reason: the user chose Longbridge (already using it via other MCP
+tooling) over IBKR or a free public API. Before writing any integration
+code, I installed the real `longport` package into a throwaway venv and
+introspected its actual classes (`Config`, `AsyncQuoteContext`,
+`SecurityQuote`) directly with `dir()`/`inspect.signature()`/docstrings,
+because two different web sources gave conflicting method names
+(`quote` vs `realtime_quote`) and calling signatures - trusting either
+blindly would have meant writing code against an API that doesn't
+actually exist, the same anti-fabrication principle this project applies
+to data and phase reports, applied here to an external SDK's surface.
+`LongbridgeQuoteClient` is a narrow Protocol (not a direct dependency on
+`longport.openapi.AsyncQuoteContext`) so unit tests inject a fake client
+- the real SDK is only ever imported inside `build_longbridge_provider()`,
+never touched by the provider class or by any test, and no test
+constructs a real `AsyncQuoteContext` (even with fake credentials, since
+that call could still attempt a real connection).
+Alternatives: IBKR (rejected - user chose Longbridge); wiring the vendor
+directly into trade-proposal construction so `estimated_price` auto-fills
+from a live quote (deliberately not done - that changes trade submission
+semantics load-bearingly, e.g. whether the *caller's* submitted price or
+the *vendor's* quote is authoritative for a fill, and deserves its own
+decision rather than being a side effect of "wire the vendor").
+Consequences: the market-data router is reachable and real, but nothing
+in the trading path calls it yet - `POST /brokers/{broker_id}/trades`
+still takes `estimated_price`/`market_data_as_of` directly from the
+caller, unchanged since Phase 6. Whether/how to connect the two is an
+explicit open decision, not an oversight (see `docs/PROJECT_CONTEXT.md`).
+No real Longbridge credentials exist in this environment, so the
+"configured" path (an actual live quote) could not be verified end to
+end - only the routing/fallback logic (unit-tested against a fake
+client) and the "not configured" path (verified live: app boots, logs
+`NOT_CONFIGURED`, and the endpoint returns 503 rather than any invented
+price) were verified directly.
+Status: Implemented, tested (`tests/marketdata/providers/test_longbridge.py`,
+8 unit tests covering snapshot construction, both timestamp shapes the
+SDK could plausibly return, empty results, non-positive price, a typed
+`VendorError` wrapping an arbitrary SDK exception, and both
+"credentials missing/partial" branches of `build_longbridge_provider`).
+94/94 total tests passing, ruff+mypy clean (43 source files). Verified
+live: server boots and logs `market_data_vendor=NOT_CONFIGURED` with no
+credentials set; `GET /market-data/{symbol}/quote` returns 503 with the
+`NOT_CONFIGURED:` detail rather than any fabricated quote.

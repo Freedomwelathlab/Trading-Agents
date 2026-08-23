@@ -16,6 +16,7 @@ dependencies = [
     "bcrypt>=4.2",
     "pyjwt>=2.9",
     "python-multipart>=0.0.12",
+    "longport>=4.3",
 ]
 
 [project.optional-dependencies]

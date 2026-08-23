@@ -46,25 +46,28 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-11 complete: repo skeleton, deterministic risk engine, paper
-broker + OMS, order/fill persistence, market-data routing skeleton, HTTP
-trade submission, authentication, role-based authorization, per-broker
-access grants, a minimal admin API, persisted paper-broker state. See
+Phases 1-12 complete: repo skeleton, deterministic risk engine, paper
+broker + OMS, order/fill persistence, market-data routing, HTTP trade
+submission, authentication, role-based authorization, per-broker access
+grants, a minimal admin API, persisted paper-broker state, and a real
+Longbridge market-data provider. See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
 `broker_id` — all of which can be set up via `/admin/*` routes after one
 bootstrap admin is created by direct SQL (D013). A trader's cash and
-positions now live in `broker_accounts`/`broker_positions` (D014) and
-survive a process restart — verified by killing and restarting a live
-server mid-test and confirming cumulative cash/positions carried over.
-No real market-data vendor is wired (D008) — open decision for the user.
+positions live in `broker_accounts`/`broker_positions` (D014) and survive
+a process restart. `GET /market-data/{symbol}/quote` (D015) is wired to
+Longbridge but not yet connected to trade-proposal construction — an
+explicit open decision, not an oversight (no real Longbridge credentials
+exist in this environment, so only the "not configured" path and the
+routing logic against a fake client were verified directly).
 
 ## Planned Work
 
-Phase 12+: a concrete market-data vendor adapter (once chosen), user/role
-update+deactivate endpoints (D013's deliberately-cut scope), agent/LLM
-layer, frontend. Order not finalized.
+Phase 13+: connecting the market-data router to trade-proposal
+construction (D015), user/role update+deactivate endpoints (D013's
+deliberately-cut scope), agent/LLM layer, frontend. Order not finalized.
 
 ## Known Problems
 
@@ -92,13 +95,15 @@ what this repo's docs can verify.)
   live in Postgres and survive a restart. Still open: no update or
   deactivate for users/roles (D013's deliberate scope cut), and the very
   first admin user/role still requires one direct DB insert to bootstrap.
-- **Which market data vendor to wire is an open decision requiring user
-  input (D008).** The routing/normalization contract is built and tested;
-  no concrete provider exists. Options include a paid data vendor, a free
-  public API, or the Longbridge/IBKR connections already available
-  elsewhere in this user's tooling (those are MCP tools reachable in chat,
-  not currently something this FastAPI service calls — wiring one in would
-  need its own auth/rate-limit handling inside this app).
+- Market data vendor: done (D015) — Longbridge, chosen by the user over
+  IBKR/a free API. `GET /market-data/{symbol}/quote` works when
+  `LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN` are all
+  set; 503 `NOT_CONFIGURED` otherwise. Still open: whether/how a live
+  quote should feed `TradeSubmissionRequest.estimated_price`/
+  `market_data_as_of` when the caller omits them, versus always requiring
+  an explicit caller-supplied price as today — a load-bearing semantic
+  choice about what's authoritative for a fill, deliberately not decided
+  as a side effect of wiring the vendor.
 
 ## Important Constraints
 

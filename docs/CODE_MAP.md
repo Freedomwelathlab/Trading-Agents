@@ -211,6 +211,20 @@ DB engine the same way D007's bug did. See `tests/api/test_trades.py`'s
 `app.router.lifespan_context(app)` since `AsyncClient` doesn't do that
 automatically the way `TestClient` does).
 
+## Market data route
+
+Purpose: read-only `GET /market-data/{symbol}/quote`, the HTTP surface
+for the Longbridge provider (D015).
+Main files: `apps/api/app/api/schemas_marketdata.py` (`QuoteResponse`),
+`apps/api/app/api/routes/marketdata.py`
+Dependencies: `apps.api.app.api.dependencies.get_market_data_router`
+(returns `app.state.market_data_router`, which is `None` when no vendor
+built at startup), `apps.api.app.auth.dependencies.get_current_user`
+Important: requires *any* authenticated user (`get_current_user`) — no
+special permission, since it's read-only and not a trading action.
+Deliberately separate from the trades endpoint; see the Market data
+section above for why the two aren't connected yet.
+
 ## Admin routes
 
 Purpose: the minimal HTTP surface that replaces raw SQL for creating
@@ -242,16 +256,33 @@ no-fabrication floor.
 Main files: `apps/api/app/marketdata/models.py` (`MarketSnapshot`),
 `apps/api/app/marketdata/provider.py` (`MarketDataProvider` Protocol,
 `DataUnavailableError`, `VendorError`), `apps/api/app/marketdata/router.py`
-(`MarketDataRouter`, `NoDataAvailableError`)
-Dependencies: none beyond stdlib/pydantic — no HTTP client, no vendor SDK
-Tests: `tests/marketdata/` (9 tests, all against in-process fake providers)
-Important: **no concrete `MarketDataProvider` is implemented or wired** —
-see `docs/DECISIONS.md` D008. Only `DataUnavailableError` and `VendorError`
-trigger fallback to the next provider; any other exception propagates
-immediately rather than being silently treated as "try the next one." When
-every provider fails, `NoDataAvailableError`'s message is prefixed
+(`MarketDataRouter`, `NoDataAvailableError`),
+`apps/api/app/marketdata/providers/longbridge.py`
+(`LongbridgeMarketDataProvider`, `build_longbridge_provider`)
+Dependencies: `longport` (only imported inside `build_longbridge_provider()`,
+never by the provider class or by tests — see D015)
+Tests: `tests/marketdata/` (9 tests against in-process fake providers),
+`tests/marketdata/providers/test_longbridge.py` (8 tests against a fake
+`LongbridgeQuoteClient` — never the real SDK, real credentials, or a
+network call)
+Important: Longbridge is the first concrete `MarketDataProvider` (D015,
+closing D008). `build_longbridge_provider(settings)` returns `None`
+unless `LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN`
+are *all* set — a partial configuration is treated the same as none, not
+guessed at. `GET /market-data/{symbol}/quote` exposes it but **nothing in
+the trading path calls it** — `POST /brokers/{broker_id}/trades` still
+takes price/timestamp from the caller, unchanged since Phase 6; whether
+to connect the two is an explicit open decision (D015), not a gap to
+"complete." Only `DataUnavailableError` and `VendorError` trigger
+fallback to the next provider; any other exception propagates
+immediately rather than being silently treated as "try the next one."
+When every provider fails, `NoDataAvailableError`'s message is prefixed
 `NO_DATA_AVAILABLE:` by convention — grep for that prefix, don't invent a
-different sentinel elsewhere in the codebase.
+different sentinel elsewhere in the codebase. If you add a second
+provider (e.g. IBKR), verify its actual SDK surface by installing the
+real package and introspecting it directly (`dir()`/`inspect.signature()`)
+before writing code against it — two web sources gave conflicting
+answers for Longbridge's own SDK, so don't trust documentation alone.
 
 ## Packages (placeholders, not yet populated)
 
