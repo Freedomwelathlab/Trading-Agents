@@ -46,23 +46,23 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-8 complete: repo skeleton, deterministic risk engine, paper broker
+Phases 1-9 complete: repo skeleton, deterministic risk engine, paper broker
 + OMS, order/fill persistence, market-data routing skeleton, HTTP trade
-submission, authentication, role-based authorization. See
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
-`POST /brokers/{broker_id}/trades` requires a Bearer token AND a role
-granting `trade:submit:paper` — verified live against a real server +
-Postgres (403 without the permission, 200 with it). No real market-data
-vendor is wired (D008) — open decision for the user. No registration
-endpoint exists (D010) — every user and role is created by direct DB
-insert. No per-broker access control (D011) — any user with the trade
-permission can act on any `broker_id` they know.
+submission, authentication, role-based authorization, per-broker access
+grants. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+`POST /brokers/{broker_id}/trades` requires a Bearer token, a role
+granting `trade:submit:paper`, AND an explicit grant for that specific
+`broker_id` — verified live against a real server + Postgres with two
+broker rows: same trader, 200 on the granted one, 403 on the other. No
+real market-data vendor is wired (D008) — open decision for the user. No
+admin path exists (D010/D011/D012) — every user, role, and grant is
+created by direct DB insert.
 
 ## Planned Work
 
-Phase 9+: user registration/admin path, per-broker access grants, a
-concrete market-data vendor adapter (once chosen), persisted paper-broker
-state, agent/LLM layer, frontend. Order not finalized.
+Phase 10+: user/role/grant-management admin path, a concrete market-data
+vendor adapter (once chosen), persisted paper-broker state, agent/LLM
+layer, frontend. Order not finalized.
 
 ## Known Problems
 
@@ -83,11 +83,10 @@ what this repo's docs can verify.)
   where it reads from in production is undecided).
 - Order/fill persistence: done (D006). HTTP endpoint: done (D009).
   Authentication: done (D010). Authorization: done (D011) — requires the
-  `trade:submit:paper` permission. Still open: no registration/admin path
-  (D010) — every user/role is created by direct DB insert — and no
-  per-broker access control (D011) — any user holding the permission can
-  act on any `broker_id` they know. Both are real gaps before this goes
-  near a real deployment, not oversights.
+  `trade:submit:paper` permission. Per-broker access grants: done (D012).
+  Still open: no admin path for any of it — every user, role, and grant is
+  created by direct DB insert. That's the natural next piece if this ever
+  needs to support more than one operator manually running SQL.
 - **Which market data vendor to wire is an open decision requiring user
   input (D008).** The routing/normalization contract is built and tested;
   no concrete provider exists. Options include a paid data vendor, a free

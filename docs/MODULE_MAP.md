@@ -16,5 +16,5 @@ System-level view. "—" means not built yet; do not assume it exists.
 | Backtesting | — | — | — | Market Data, Risk Engine | Not started |
 | Reporting | — | — | — | Portfolio | Not started |
 | Redis | Caching (future) | — | — | — | Provisioned in docker-compose, unused by app code |
-| Auth | Password hashing, JWT tokens, `get_current_user`, `require_permission` | Email/password | Bearer token / authenticated+authorized `User` | Database (`users`, `roles` tables) | Phase 7-8 (done) — no registration endpoint, no per-broker grants |
+| Auth | Password hashing, JWT tokens, `get_current_user`, `require_permission`, `require_broker_access` | Email/password | Bearer token / authenticated+authorized `User` scoped to a `broker_id` | Database (`users`, `roles`, `broker_grants` tables) | Phase 7-9 (done) — no admin endpoint for any of it |
 | Observability | Structured logging with redaction | Log calls | JSON logs | — | Phase 1 (logging only; no metrics/tracing) |

@@ -1,6 +1,7 @@
 """Integration tests against a real Postgres instance - the endpoint wires
-together the DB, auth, the paper broker registry, and the risk engine, so
-this is the level that actually proves the whole path works.
+together the DB, auth, per-broker access grants, the paper broker
+registry, and the risk engine, so this is the level that actually proves
+the whole path works.
 
 Uses httpx.AsyncClient + ASGITransport rather than FastAPI's TestClient:
 TestClient runs the app in a separate thread with its own event loop, which
@@ -20,7 +21,7 @@ from sqlalchemy import delete, select
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.auth.security import hash_password
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import Broker, BrokerKind, Role, User
+from apps.api.app.db.models import Broker, BrokerGrant, BrokerKind, Role, User
 from apps.api.app.db.models import Fill as FillRow
 from apps.api.app.db.models import Order as OrderRow
 from apps.api.app.main import app
@@ -52,6 +53,7 @@ async def paper_broker_row(session, *, kind: BrokerKind = BrokerKind.PAPER):
             )
         )
         await session.execute(delete(OrderRow).where(OrderRow.broker_id == broker_id))
+        await session.execute(delete(BrokerGrant).where(BrokerGrant.broker_id == broker_id))
         await session.execute(delete(Broker).where(Broker.id == broker_id))
         await session.commit()
 
@@ -84,9 +86,28 @@ async def active_user(
     try:
         yield user_id, email
     finally:
+        await session.execute(delete(BrokerGrant).where(BrokerGrant.user_id == user_id))
         await session.execute(delete(User).where(User.id == user_id))
         if role_id is not None:
             await session.execute(delete(Role).where(Role.id == role_id))
+        await session.commit()
+
+
+@contextlib.asynccontextmanager
+async def broker_grant(session, *, user_id: uuid.UUID, broker_id: uuid.UUID):
+    """Entered last / exits first relative to active_user and
+    paper_broker_row, so the grant row is deleted before the user/broker
+    rows it references."""
+    session.add(BrokerGrant(user_id=user_id, broker_id=broker_id))
+    await session.commit()
+    try:
+        yield
+    finally:
+        await session.execute(
+            delete(BrokerGrant).where(
+                BrokerGrant.user_id == user_id, BrokerGrant.broker_id == broker_id
+            )
+        )
         await session.commit()
 
 
@@ -110,8 +131,9 @@ async def _get_token(client: AsyncClient, email: str) -> str:
 async def test_a_well_formed_trade_is_approved_and_filled():
     async with (
         db_session() as session,
-        active_user(session) as (_user_id, email),
+        active_user(session) as (user_id, email),
         paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -142,6 +164,7 @@ async def test_a_submitted_order_records_who_submitted_it():
         db_session() as session,
         active_user(session) as (user_id, email),
         paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -167,8 +190,9 @@ async def test_a_submitted_order_records_who_submitted_it():
 async def test_an_oversized_trade_is_rejected_with_a_reason_and_no_fill():
     async with (
         db_session() as session,
-        active_user(session) as (_user_id, email),
+        active_user(session) as (user_id, email),
         paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -231,8 +255,9 @@ async def test_a_request_with_an_invalid_token_is_rejected():
 async def test_a_user_with_no_role_gets_403_not_401():
     async with (
         db_session() as session,
-        active_user(session, permissions=None) as (_user_id, email),
+        active_user(session, permissions=None) as (user_id, email),
         paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -255,8 +280,9 @@ async def test_a_user_with_no_role_gets_403_not_401():
 async def test_a_role_without_the_trade_permission_gets_403():
     async with (
         db_session() as session,
-        active_user(session, permissions=()) as (_user_id, email),
+        active_user(session, permissions=()) as (user_id, email),
         paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -275,11 +301,62 @@ async def test_a_role_without_the_trade_permission_gets_403():
 
 
 @pytest.mark.asyncio
-async def test_an_inactive_user_cannot_trade_even_with_a_previously_valid_token():
+async def test_a_user_with_the_permission_but_no_grant_for_this_broker_gets_403():
     async with (
         db_session() as session,
         active_user(session) as (_user_id, email),
         paper_broker_row(session) as broker_id,
+        # deliberately no broker_grant() here
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            response = await client.post(
+                f"/brokers/{broker_id}/trades",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": "10",
+                    "estimated_price": "100",
+                    "stop_price": "95",
+                },
+            )
+    assert response.status_code == 403
+    assert "No access grant" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_grant_for_one_broker_does_not_authorize_a_different_broker():
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as granted_broker_id,
+        paper_broker_row(session) as other_broker_id,
+        broker_grant(session, user_id=user_id, broker_id=granted_broker_id),
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            response = await client.post(
+                f"/brokers/{other_broker_id}/trades",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": "10",
+                    "estimated_price": "100",
+                    "stop_price": "95",
+                },
+            )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_an_inactive_user_cannot_trade_even_with_a_previously_valid_token():
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -324,8 +401,9 @@ async def test_unknown_broker_returns_404():
 async def test_live_broker_is_rejected_since_no_live_execution_path_exists():
     async with (
         db_session() as session,
-        active_user(session) as (_user_id, email),
+        active_user(session) as (user_id, email),
         paper_broker_row(session, kind=BrokerKind.LIVE) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -350,8 +428,9 @@ async def test_emergency_stop_blocks_the_trade():
 
     async with (
         db_session() as session,
-        active_user(session) as (_user_id, email),
+        active_user(session) as (user_id, email),
         paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         settings = get_settings()
         original = settings.emergency_stop_active
@@ -383,8 +462,9 @@ async def test_emergency_stop_blocks_the_trade():
 async def test_missing_mark_for_an_existing_position_is_a_400_not_a_guess():
     async with (
         db_session() as session,
-        active_user(session) as (_user_id, email),
+        active_user(session) as (user_id, email),
         paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
             token = await _get_token(client, email)

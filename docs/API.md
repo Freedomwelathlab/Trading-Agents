@@ -29,11 +29,13 @@ are registered.
 Requires `Authorization: Bearer <token>` from `/auth/login` — 401 if
 missing, invalid, expired, or the user is inactive (D010). Additionally
 requires the user's role to grant the `trade:submit:paper` permission —
-403 (with a `Missing required permission: ...` detail) if the user has no
-role, or a role that doesn't list it (D011). Still no per-broker check —
-any user holding the permission can trade on any `broker_id` they know.
-Only works against a broker row with `kind=paper`; a `kind=live` broker
-returns 400 (no live execution path exists).
+403 (`Missing required permission: ...`) if not (D011). Additionally
+requires an explicit `BrokerGrant` for this specific `broker_id` — 403
+(`No access grant for broker ...`) if the user hasn't been granted access
+to it, even if they hold the permission (D012). Broker existence (404) is
+checked before the grant, so an unknown `broker_id` reliably 404s rather
+than 403ing. Only works against a broker row with `kind=paper`; a
+`kind=live` broker returns 400 (no live execution path exists).
 
 Request body (`TradeSubmissionRequest`):
 ```json

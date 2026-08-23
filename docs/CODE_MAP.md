@@ -26,7 +26,8 @@ unexpected key name, check the pattern still catches it.
 
 Purpose: async SQLAlchemy engine/session + ORM models.
 Main files: `apps/api/app/db/base.py` (engine, session, `Base`),
-`apps/api/app/db/models.py` (`User`, `Role`, `Asset`, `Broker`, `Order`, `Fill`)
+`apps/api/app/db/models.py` (`User`, `Role`, `Asset`, `Broker`, `BrokerGrant`,
+`Order`, `Fill`)
 Dependencies: `apps.api.app.core.config`, `apps.api.app.risk.models` (reuses `Side`)
 Tests: migration round-trip (manual, docker-compose) + `tests/db/test_order_persistence.py`
 (integration, real Postgres)
@@ -39,7 +40,8 @@ not its `.value`, and the DB's enum type only accepts the lowercase values
 the migration created (see D007). `Order`/`Fill` are append-only by
 convention (no code path updates or deletes a row) — enforced by discipline,
 not a DB trigger, so don't add one. `Role.permissions` is a flat
-`text[]` — see the Auth section below and D011.
+`text[]` — see the Auth section below and D011. `BrokerGrant` is a
+`(user_id, broker_id)` join table (unique constraint) — see D012.
 `apps/api/app/db/base.py`'s engine is created once at module import and its
 asyncpg connections are loop-bound — async tests must share one event loop
 (`pyproject.toml`'s `asyncio_default_test_loop_scope = "session"`), not the
@@ -56,9 +58,9 @@ Tests: `tests/test_health.py`
 
 Purpose: schema history.
 Location: `migrations/` (Alembic, async env)
-Current head: `0004_roles_permissions` (`0001` users/roles/assets/brokers,
+Current head: `0005_broker_grants` (`0001` users/roles/assets/brokers,
 `0002` orders/fills, `0003` adds `orders.submitted_by_user_id`, `0004` adds
-`roles.permissions`)
+`roles.permissions`, `0005` adds `broker_grants`)
 Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
 comment history in `0001_initial.py` if adding a new enum column.
@@ -168,19 +170,21 @@ request-scoped dependency wiring. Separate from the domain models
 (risk/oms/execution) so the HTTP contract can evolve independently.
 Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest`,
 `TradeSubmissionResponse`), `apps/api/app/api/dependencies.py`
-(`get_paper_broker_registry`), `apps/api/app/api/routes/trades.py`
-(`POST /brokers/{broker_id}/trades`)
+(`get_paper_broker_registry`, `require_broker_access`, `AuthorizedBroker`),
+`apps/api/app/api/routes/trades.py` (`POST /brokers/{broker_id}/trades`)
 Dependencies: `apps.api.app.oms.persistence`, `apps.api.app.execution.registry`,
 `apps.api.app.db.models`, `apps.api.app.core.config`, `apps.api.app.auth.dependencies`
-Tests: `tests/api/test_trades.py` (12 integration tests against a real
+Tests: `tests/api/test_trades.py` (14 integration tests against a real
 Postgres instance, using `httpx.AsyncClient` + `ASGITransport` — see the
 Important note below, and D009)
 Important: this route is the *only* sanctioned way to reach
-`submit_trade_and_record()` from outside the process. It requires a valid,
-active user holding the `trade:submit:paper` permission via
-`require_permission` (D010, D011) and records `submitted_by_user_id` on
-every persisted order — but there is still no per-broker access control,
-so any user with that permission can trade on any `broker_id` they know.
+`submit_trade_and_record()` from outside the process. `require_broker_access`
+(`apps/api/app/api/dependencies.py`, D012) is the single dependency that
+decides whether a request may touch a given `broker_id` at all — identity
+→ global `trade:submit:paper` permission (D010, D011) → broker existence
+(404) → a specific `BrokerGrant` row (403) — and hands the route back an
+`AuthorizedBroker(user, broker)` so the route no longer looks up the
+broker itself. Every persisted order still records `submitted_by_user_id`.
 **Testing an async endpoint that also touches the DB directly in the same
 test must use `httpx.AsyncClient(transport=ASGITransport(app=app), ...)`,
 never FastAPI's `TestClient`** — `TestClient` runs the app in a separate

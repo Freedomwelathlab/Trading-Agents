@@ -115,6 +115,25 @@ class Broker(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class BrokerGrant(Base):
+    """Explicit per-user, per-broker access grant. A user must hold both
+    the relevant Role permission (apps.api.app.auth.permissions) AND a
+    BrokerGrant row for a specific broker to act on it - the permission
+    says what kind of thing they may do in general, the grant says which
+    specific broker they may do it to. Neither alone is sufficient.
+
+    No self-service grant endpoint exists yet - rows are created directly,
+    same pattern as User/Role (see docs/DECISIONS.md D010/D011)."""
+
+    __tablename__ = "broker_grants"
+    __table_args__ = (UniqueConstraint("user_id", "broker_id", name="uq_broker_grant_user_broker"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    broker_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brokers.id"), nullable=False)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class OrderStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
     FILLED = "filled"
     REJECTED = "rejected"

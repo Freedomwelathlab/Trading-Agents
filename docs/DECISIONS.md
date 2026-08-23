@@ -251,6 +251,45 @@ user - confirmed directly via SQL, not just the HTTP response.
 
 ---
 
+**D012 — Per-broker access grants: a join table, checked after the global permission**
+Date: 2026-08-23
+Decision: `broker_grants` (migration `0005`) is a `(user_id, broker_id)`
+join table with a unique constraint. New `require_broker_access(Permission)`
+(`apps/api/app/api/dependencies.py`) composes on top of `require_permission`:
+identity (401) -> global permission (403) -> broker existence (404) ->
+specific grant (403). It returns an `AuthorizedBroker(user, broker)` so
+the route no longer does its own broker lookup - the dependency is now the
+single place that decides "can this request touch this broker at all."
+Reason: D011 explicitly scoped role-based authorization to a *global*
+permission and called out per-broker access as a separate, real gap - this
+closes it. A join table (not a column on `Broker` or `User`) is the only
+structure that supports many-to-many cleanly, e.g. two traders sharing one
+broker, or one trader with grants on several.
+Alternatives: (a) a single `owner_user_id` column on `Broker` - rejected,
+forces one owner per broker, can't express shared access without adding
+the join table anyway. (b) checking the grant before the global permission
+- rejected, permission is a property of the user regardless of resource
+and should fail first/cheaper; also keeps the 403 error messages
+distinguishable ("missing permission" vs "no access to this broker").
+(c) returning 404 instead of 403 for "no grant" (to avoid confirming a
+broker exists to an unauthorized caller) - rejected for this phase, since
+broker IDs are already unguessable UUIDs and a clear 403 is more useful
+for legitimate debugging than the marginal enumeration resistance would be
+worth; revisit if this app ever has attacker-guessable broker IDs.
+Consequences: creating a grant is still direct DB insert - no
+grant-management endpoint exists (same pattern as D010's users/D011's
+roles). Every existing "happy path" test needed a `broker_grant()` fixture
+added or it would now fail with 403 - a reminder that this is a real,
+enforced restriction, not documentation-only.
+Status: Implemented, tested (`tests/api/test_trades.py`, 2 new tests:
+permission-but-no-grant gets 403, a grant for one broker doesn't authorize
+a different one). Verified live against a running server: the same
+trader, holding the same permission, got 200 on a broker they were
+explicitly granted and 403 on one they weren't - confirmed by curl against
+two real broker rows, not simulated.
+
+---
+
 **D011 — Authorization: permission-list-on-Role, not a fixed enum or per-broker grants**
 Date: 2026-08-23
 Decision: `roles.permissions` (migration `0004`) is a flat Postgres

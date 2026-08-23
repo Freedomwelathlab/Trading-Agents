@@ -1,13 +1,14 @@
 # Architecture
 
-## Current (Phase 1-8)
+## Current (Phase 1-9)
 
 ```mermaid
 flowchart LR
     client[Client] --> login["POST /auth/login"]
     login --> token[JWT access token]
     token --> perm["require_permission\ntrade:submit:paper"]
-    perm -->|403 if missing| route["POST /brokers/{id}/trades"]
+    perm -->|403 if missing| grantcheck["require_broker_access\nbroker exists? grant exists?"]
+    grantcheck -->|404 / 403| route["POST /brokers/{id}/trades"]
     client --> health[GET /health]
     route --> settings[Settings\nfail-closed live gate\n+ risk limit defaults\n+ fail-closed JWT secret]
     route --> db[(Postgres/TimescaleDB)]
@@ -31,21 +32,21 @@ flowchart LR
 the trades router). `apps/api/app/core/config.py` is the single source of
 the execution-mode gate, default risk limits, emergency-stop flag, and now
 also `jwt_secret_key` — fail-closed the same way, no default.
-The trading path requires a Bearer token from `/auth/login` AND a role
-granting `trade:submit:paper` — verified live against a running server
-(401 with no token, 403 for a token with no/wrong permission, 200 with the
-right one; the resulting order's `submitted_by_user_id` confirmed via
-SQL). The market-data router (dotted lines, left) is built and tested but
-has no provider plugged in and nothing yet calls it to build a
-`TradeProposal`; the HTTP endpoint currently takes price/timestamp
-directly from the caller instead (future work once a vendor is chosen,
-D008). The `PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
+The trading path requires a Bearer token from `/auth/login`, a role
+granting `trade:submit:paper`, AND an explicit `BrokerGrant` for that
+specific `broker_id` — verified live against a running server with two
+real broker rows: the same trader got 200 on the one they were granted
+and 403 on the one they weren't (the resulting order's
+`submitted_by_user_id` also confirmed via SQL). The market-data router
+(dotted lines, left) is built and tested but has no provider plugged in
+and nothing yet calls it to build a `TradeProposal`; the HTTP endpoint
+currently takes price/timestamp directly from the caller instead (future
+work once a vendor is chosen, D008). The
+`PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
 cash/position state (D005/D009) even though the `Order`/`Fill` decision
-record now does — a restart resets accounts silently while the audit trail
-survives. No registration endpoint exists (D010) — every user and role is
-created by direct DB insert — and no per-broker access control exists
-(D011) — any user holding the permission can trade on any `broker_id` they
-know.
+record now does — a restart resets accounts silently while the audit
+trail survives. No admin endpoint exists for any of users/roles/grants
+(D010/D011/D012) — all created by direct DB insert.
 
 ## Target (per governing spec, not yet built)
 
@@ -73,9 +74,8 @@ still fail closed if the Risk Engine itself is unreachable.
 ## Database
 
 Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,
-`brokers` (migration `0001_initial`). Money fields will use `NUMERIC`, never
-float, once P&L/position tables exist (spec requirement, not yet
-applicable — no such tables yet).
+`brokers` (`0001`), `orders`, `fills` (`0002`), `broker_grants` (`0005`).
+Money columns (`orders`/`fills`) already use `NUMERIC`, never float.
 
 ## Deployment
 

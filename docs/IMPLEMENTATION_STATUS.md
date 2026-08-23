@@ -103,6 +103,19 @@ Update this after meaningful implementation work — not for every commit.
   Verified live: a no-role user got 403 with the missing-permission
   detail; a role-holding user got 200 filled — both users created by
   direct SQL insert, confirmed via curl.
+- Phase 9: per-broker access grants (2026-08-23). Migration `0005` adds
+  `broker_grants` (a `user_id`/`broker_id` join table with a unique
+  constraint). New `require_broker_access(Permission)`
+  (`apps/api/app/api/dependencies.py`) composes on top of
+  `require_permission`: identity → global permission → broker existence
+  (404) → specific grant (403). Returns an `AuthorizedBroker(user, broker)`
+  so `trades.py` no longer does its own broker lookup. Closes the gap
+  D011 explicitly called out — a user with `trade:submit:paper` can no
+  longer trade on every `broker_id` they know, only ones they've been
+  granted. 2 new tests, 74/74 total passing, ruff+mypy clean (37 source
+  files). Verified live against a running server with two real broker
+  rows: the same trader got 200 on a granted broker and 403 on an
+  ungranted one.
 
 ## In Progress
 
@@ -115,13 +128,10 @@ data vendor to wire (D008) — code is ready to accept one, none is chosen.
 
 ## Planned
 
-Phase 9+ (order not finalized): a concrete `MarketDataProvider`
-implementation once a vendor is chosen, a user-registration/admin path
-(none exists — D010, still needed to actually assign roles without a raw
-SQL insert), per-broker access grants (any user with the trade permission
-can trade on any `broker_id` they know — D011's deliberately out-of-scope
-gap), persisted `PaperBrokerAdapter` state (D005/D009 gap), agent/LLM
-layer, frontend.
+Phase 10+ (order not finalized): a concrete `MarketDataProvider`
+implementation once a vendor is chosen, a user/role/grant-management admin
+path (D010/D011/D012 — everything is still direct DB insert), persisted
+`PaperBrokerAdapter` state (D005/D009 gap), agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -135,12 +145,12 @@ optimization.
 
 ## Tests
 
-72 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+74 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), trades HTTP endpoint
-(12, DB-backed, all require auth+permission), auth security unit tests
-(8), authorization unit tests (3), login route (4, DB-backed).
+(14, DB-backed, all require auth+permission+broker grant), auth security
+unit tests (8), authorization unit tests (3), login route (4, DB-backed).
 
 ## Known Issues
 

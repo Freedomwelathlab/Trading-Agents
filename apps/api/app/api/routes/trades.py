@@ -8,16 +8,18 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.app.api.dependencies import get_paper_broker_registry
+from apps.api.app.api.dependencies import (
+    AuthorizedBroker,
+    get_paper_broker_registry,
+    require_broker_access,
+)
 from apps.api.app.api.schemas import TradeSubmissionRequest, TradeSubmissionResponse
-from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import Broker, BrokerKind, OrderStatus, User
+from apps.api.app.db.models import BrokerKind, OrderStatus
 from apps.api.app.execution.registry import PaperBrokerRegistry
 from apps.api.app.oms.persistence import submit_trade_and_record
 from apps.api.app.risk.models import RiskLimits, TradeProposal
@@ -32,14 +34,9 @@ async def submit_trade_endpoint(
     session: AsyncSession = Depends(get_session),
     registry: PaperBrokerRegistry = Depends(get_paper_broker_registry),
     settings: Settings = Depends(get_settings),
-    current_user: User = Depends(require_permission(Permission.SUBMIT_PAPER_TRADE)),
+    authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
 ) -> TradeSubmissionResponse:
-    broker_row = (
-        await session.execute(select(Broker).where(Broker.id == broker_id))
-    ).scalar_one_or_none()
-    if broker_row is None:
-        raise HTTPException(status_code=404, detail=f"No broker with id {broker_id}.")
-    if broker_row.kind is not BrokerKind.PAPER:
+    if authorized.broker.kind is not BrokerKind.PAPER:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -80,7 +77,7 @@ async def submit_trade_endpoint(
         limits,
         broker_adapter,
         emergency_stop_active=settings.emergency_stop_active,
-        submitted_by_user_id=current_user.id,
+        submitted_by_user_id=authorized.user.id,
     )
 
     assert result.order_id is not None  # always set by submit_trade_and_record
