@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from apps.api.app.db.base import Base
@@ -27,9 +27,16 @@ def _pg_enum(python_enum: type[enum.Enum], name: str) -> Enum:
 class Role(Base):
     """A named permission bundle (e.g. 'analyst', 'risk_admin', 'live_trader').
 
-    Kept separate from User so the not-yet-built authorization layer can
-    gate the LIVE execution path (spec §56) by role rather than by a single
-    boolean on the user.
+    Kept separate from User so the authorization layer (apps/api/app/auth/permissions.py)
+    can gate the LIVE execution path (spec §56) by role rather than by a
+    single boolean on the user - though no live path exists yet to gate.
+
+    `permissions` is a flat list of permission strings (see
+    apps.api.app.auth.permissions.Permission) rather than a fixed enum
+    column, so a new role can be granted an existing permission by
+    inserting/updating a row - no migration required, no code change
+    required. Adding a *new* permission still requires a code change (a new
+    Permission member and a check that enforces it somewhere).
     """
 
     __tablename__ = "roles"
@@ -37,6 +44,9 @@ class Role(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(255))
+    permissions: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

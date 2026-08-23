@@ -27,11 +27,13 @@ are registered.
 ## `POST /brokers/{broker_id}/trades`
 
 Requires `Authorization: Bearer <token>` from `/auth/login` — 401 if
-missing, invalid, expired, or the user is inactive (see D010). No
-authorization/role check beyond "is this a valid active user" — any
-authenticated user can trade on any `broker_id` they know. Only works
-against a broker row with `kind=paper`; a `kind=live` broker returns 400
-(no live execution path exists).
+missing, invalid, expired, or the user is inactive (D010). Additionally
+requires the user's role to grant the `trade:submit:paper` permission —
+403 (with a `Missing required permission: ...` detail) if the user has no
+role, or a role that doesn't list it (D011). Still no per-broker check —
+any user holding the permission can trade on any `broker_id` they know.
+Only works against a broker row with `kind=paper`; a `kind=live` broker
+returns 400 (no live execution path exists).
 
 Request body (`TradeSubmissionRequest`):
 ```json
@@ -68,10 +70,11 @@ A rejected trade returns the same 200 shape with `status: "rejected"`,
 `approved: false`, `block_reason` set to one of `risk/models.py`'s
 `BlockReason` values, and both fill fields `null`.
 
-Error responses: 401 if unauthenticated/token invalid; 404 if `broker_id`
-doesn't exist; 400 with a `NOT_CONFIGURED:`-prefixed detail if the broker
-isn't a paper broker; 400 with a `DATA_UNAVAILABLE:`-prefixed detail if a
-mark is missing for an existing position.
+Error responses: 401 if unauthenticated/token invalid; 403 if authenticated
+but missing the `trade:submit:paper` permission; 404 if `broker_id` doesn't
+exist; 400 with a `NOT_CONFIGURED:`-prefixed detail if the broker isn't a
+paper broker; 400 with a `DATA_UNAVAILABLE:`-prefixed detail if a mark is
+missing for an existing position.
 
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

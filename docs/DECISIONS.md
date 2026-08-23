@@ -248,3 +248,44 @@ Verified live: a real running server correctly returned 401 with no
 token, then 200 with one obtained from a real `/auth/login` call, with
 the resulting order's `submitted_by_user_id` matching the authenticated
 user - confirmed directly via SQL, not just the HTTP response.
+
+---
+
+**D011 — Authorization: permission-list-on-Role, not a fixed enum or per-broker grants**
+Date: 2026-08-23
+Decision: `roles.permissions` (migration `0004`) is a flat Postgres
+`text[]` of permission strings (`apps/api/app/auth/permissions.py`'s
+`Permission` enum defines the known values). A new
+`require_permission(Permission)` dependency
+(`apps/api/app/auth/dependencies.py`) checks the current user's role for a
+specific permission and returns 403 if absent; `POST /brokers/{broker_id}/trades`
+now depends on `require_permission(Permission.SUBMIT_PAPER_TRADE)` instead
+of the bare `get_current_user` from D010.
+Reason: the existing `Role`/`User.role_id` model (from Phase 1) was
+explicitly designed for this - its docstring already said "gate the LIVE
+execution path... by role." A permission list per role means granting an
+existing permission to a role is a data change (insert/update a `Role`
+row), not a code change; only adding a *new* permission requires code.
+Alternatives considered: (a) a fixed set of hardcoded role names checked
+by string comparison (`if role.name == "trader"`) - rejected, conflates a
+role's *label* with what it's *allowed to do*, and can't grant one
+permission to two differently-named roles without duplicating logic.
+(b) Per-broker access grants (a `user_id`/`broker_id` join table) -
+rejected for this phase: the user asked for *role-based* authorization,
+which naturally maps to the existing `Role` table's global permissions,
+not a new per-resource ACL; per-broker grants remain a real, separate gap
+(anyone with `trade:submit:paper` can trade on any `broker_id` they know)
+and should be its own decision if wanted.
+Consequences: `SUBMIT_LIVE_TRADE` is defined but deliberately enforced
+nowhere - there's no live execution path for it to gate yet (see the
+permission's own docstring warning against wiring it prematurely).
+`get_current_user` now eager-loads `User.role` via `selectinload` -
+lazy-loading it later in an async context without that would raise, not
+silently work.
+Status: Implemented, tested (`tests/auth/test_authorization.py` 3 unit
+tests against the checker logic directly, `tests/api/test_trades.py` +2
+integration tests for the 403 cases). Verified live against a running
+server: a user with no role got 403 with the missing-permission detail
+message; a user with a role granting `trade:submit:paper` got 200 filled
+- both created via direct SQL insert (no registration endpoint, per D010),
+confirmed via curl, not just the test suite.

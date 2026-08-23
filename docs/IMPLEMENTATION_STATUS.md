@@ -88,6 +88,21 @@ Update this after meaningful implementation work — not for every commit.
   `submitted_by_user_id` confirmed via SQL to match the authenticated
   user. 12 new tests, 67/67 total passing, ruff+mypy clean (36 source
   files).
+- Phase 8: role-based authorization (2026-08-23). Migration `0004` adds
+  `roles.permissions` (a flat list of permission strings — data-only to
+  extend, no migration needed to grant an existing permission to a role).
+  `apps/api/app/auth/permissions.py`'s `Permission` enum defines the known
+  values (`SUBMIT_PAPER_TRADE`; `SUBMIT_LIVE_TRADE` defined but enforced
+  nowhere — no live path exists to gate). New
+  `require_permission(Permission)` dependency returns 403 (distinct from
+  401) for an authenticated user whose role doesn't grant the permission;
+  `POST /brokers/{broker_id}/trades` now requires
+  `Permission.SUBMIT_PAPER_TRADE`. `get_current_user` now eager-loads
+  `User.role`. 5 new tests (3 pure unit tests against the checker logic,
+  2 integration), 72/72 total passing, ruff+mypy clean (37 source files).
+  Verified live: a no-role user got 403 with the missing-permission
+  detail; a role-holding user got 200 filled — both users created by
+  direct SQL insert, confirmed via curl.
 
 ## In Progress
 
@@ -100,11 +115,13 @@ data vendor to wire (D008) — code is ready to accept one, none is chosen.
 
 ## Planned
 
-Phase 8+ (order not finalized): a concrete `MarketDataProvider`
+Phase 9+ (order not finalized): a concrete `MarketDataProvider`
 implementation once a vendor is chosen, a user-registration/admin path
-(none exists — D010), role-based authorization (the `Role`/`role_id`
-columns exist but nothing checks them), persisted `PaperBrokerAdapter`
-state (D005/D009 gap), agent/LLM layer, frontend.
+(none exists — D010, still needed to actually assign roles without a raw
+SQL insert), per-broker access grants (any user with the trade permission
+can trade on any `broker_id` they know — D011's deliberately out-of-scope
+gap), persisted `PaperBrokerAdapter` state (D005/D009 gap), agent/LLM
+layer, frontend.
 
 ## Technical Debt
 
@@ -118,12 +135,12 @@ optimization.
 
 ## Tests
 
-67 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+72 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), trades HTTP endpoint
-(10, DB-backed, all require auth), auth security unit tests (8), login
-route (4, DB-backed).
+(12, DB-backed, all require auth+permission), auth security unit tests
+(8), authorization unit tests (3), login route (4, DB-backed).
 
 ## Known Issues
 

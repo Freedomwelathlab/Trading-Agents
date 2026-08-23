@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.api.dependencies import get_paper_broker_registry
 from apps.api.app.api.schemas import TradeSubmissionRequest, TradeSubmissionResponse
-from apps.api.app.auth.dependencies import get_current_user
+from apps.api.app.auth.dependencies import require_permission
+from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerKind, OrderStatus, User
@@ -31,7 +32,7 @@ async def submit_trade_endpoint(
     session: AsyncSession = Depends(get_session),
     registry: PaperBrokerRegistry = Depends(get_paper_broker_registry),
     settings: Settings = Depends(get_settings),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission(Permission.SUBMIT_PAPER_TRADE)),
 ) -> TradeSubmissionResponse:
     broker_row = (
         await session.execute(select(Broker).where(Broker.id == broker_id))

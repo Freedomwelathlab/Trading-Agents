@@ -1,12 +1,13 @@
 # Architecture
 
-## Current (Phase 1-7)
+## Current (Phase 1-8)
 
 ```mermaid
 flowchart LR
     client[Client] --> login["POST /auth/login"]
     login --> token[JWT access token]
-    token --> route["POST /brokers/{id}/trades\nrequires Bearer token"]
+    token --> perm["require_permission\ntrade:submit:paper"]
+    perm -->|403 if missing| route["POST /brokers/{id}/trades"]
     client --> health[GET /health]
     route --> settings[Settings\nfail-closed live gate\n+ risk limit defaults\n+ fail-closed JWT secret]
     route --> db[(Postgres/TimescaleDB)]
@@ -30,18 +31,21 @@ flowchart LR
 the trades router). `apps/api/app/core/config.py` is the single source of
 the execution-mode gate, default risk limits, emergency-stop flag, and now
 also `jwt_secret_key` — fail-closed the same way, no default.
-The trading path requires a Bearer token from `/auth/login` — verified
-live against a running server (401 with no token, 200 with a real one, the
-resulting order's `submitted_by_user_id` confirmed via SQL). The
-market-data router (dotted lines, left) is built and tested but has no
-provider plugged in and nothing yet calls it to build a `TradeProposal`;
-the HTTP endpoint currently takes price/timestamp directly from the caller
-instead (future work once a vendor is chosen, D008). The
-`PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
+The trading path requires a Bearer token from `/auth/login` AND a role
+granting `trade:submit:paper` — verified live against a running server
+(401 with no token, 403 for a token with no/wrong permission, 200 with the
+right one; the resulting order's `submitted_by_user_id` confirmed via
+SQL). The market-data router (dotted lines, left) is built and tested but
+has no provider plugged in and nothing yet calls it to build a
+`TradeProposal`; the HTTP endpoint currently takes price/timestamp
+directly from the caller instead (future work once a vendor is chosen,
+D008). The `PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
 cash/position state (D005/D009) even though the `Order`/`Fill` decision
 record now does — a restart resets accounts silently while the audit trail
-survives. No registration endpoint or role-based authorization exists yet
-(D010) — any authenticated user can trade on any broker_id they know.
+survives. No registration endpoint exists (D010) — every user and role is
+created by direct DB insert — and no per-broker access control exists
+(D011) — any user holding the permission can trade on any `broker_id` they
+know.
 
 ## Target (per governing spec, not yet built)
 

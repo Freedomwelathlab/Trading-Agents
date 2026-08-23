@@ -46,19 +46,21 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-7 complete: repo skeleton, deterministic risk engine, paper broker
+Phases 1-8 complete: repo skeleton, deterministic risk engine, paper broker
 + OMS, order/fill persistence, market-data routing skeleton, HTTP trade
-submission, authentication. See
+submission, authentication, role-based authorization. See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
-`POST /brokers/{broker_id}/trades` requires a Bearer token from
-`POST /auth/login` and records who submitted each order — verified live
-against a real server + Postgres. No real market-data vendor is wired
-(D008) — open decision for the user. No registration endpoint or
-role-based authorization exists yet (D010) — authentication only.
+`POST /brokers/{broker_id}/trades` requires a Bearer token AND a role
+granting `trade:submit:paper` — verified live against a real server +
+Postgres (403 without the permission, 200 with it). No real market-data
+vendor is wired (D008) — open decision for the user. No registration
+endpoint exists (D010) — every user and role is created by direct DB
+insert. No per-broker access control (D011) — any user with the trade
+permission can act on any `broker_id` they know.
 
 ## Planned Work
 
-Phase 8+: user registration/admin path, role-based authorization, a
+Phase 9+: user registration/admin path, per-broker access grants, a
 concrete market-data vendor adapter (once chosen), persisted paper-broker
 state, agent/LLM layer, frontend. Order not finalized.
 
@@ -80,11 +82,12 @@ what this repo's docs can verify.)
   (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —
   where it reads from in production is undecided).
 - Order/fill persistence: done (D006). HTTP endpoint: done (D009).
-  Authentication: done (D010) — but no registration/admin path exists, so
-  every user is created by direct DB insert, and no role-based
-  authorization exists (any authenticated user can trade on any broker_id
-  they know the UUID of). Both are real gaps before this goes near a real
-  deployment, not oversights — flagged deliberately in D010.
+  Authentication: done (D010). Authorization: done (D011) — requires the
+  `trade:submit:paper` permission. Still open: no registration/admin path
+  (D010) — every user/role is created by direct DB insert — and no
+  per-broker access control (D011) — any user holding the permission can
+  act on any `broker_id` they know. Both are real gaps before this goes
+  near a real deployment, not oversights.
 - **Which market data vendor to wire is an open decision requiring user
   input (D008).** The routing/normalization contract is built and tested;
   no concrete provider exists. Options include a paid data vendor, a free

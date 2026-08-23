@@ -17,9 +17,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from apps.api.app.auth.permissions import Permission
 from apps.api.app.auth.security import hash_password
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import Broker, BrokerKind, User
+from apps.api.app.db.models import Broker, BrokerKind, Role, User
 from apps.api.app.db.models import Fill as FillRow
 from apps.api.app.db.models import Order as OrderRow
 from apps.api.app.main import app
@@ -56,15 +57,27 @@ async def paper_broker_row(session, *, kind: BrokerKind = BrokerKind.PAPER):
 
 
 @contextlib.asynccontextmanager
-async def active_user(session, *, is_active: bool = True):
+async def active_user(
+    session,
+    *,
+    is_active: bool = True,
+    permissions: tuple[str, ...] | None = (Permission.SUBMIT_PAPER_TRADE.value,),
+):
+    """`permissions=None` yields a user with no role at all (the 403 case).
+    `permissions=()` yields a user with a role that grants nothing."""
     user_id = uuid.uuid4()
     email = f"{uuid.uuid4()}@example.com"
+    role_id = None
+    if permissions is not None:
+        role_id = uuid.uuid4()
+        session.add(Role(id=role_id, name=f"test-role-{role_id}", permissions=list(permissions)))
     session.add(
         User(
             id=user_id,
             email=email,
             hashed_password=hash_password(TEST_PASSWORD),
             is_active=is_active,
+            role_id=role_id,
         )
     )
     await session.commit()
@@ -72,6 +85,8 @@ async def active_user(session, *, is_active: bool = True):
         yield user_id, email
     finally:
         await session.execute(delete(User).where(User.id == user_id))
+        if role_id is not None:
+            await session.execute(delete(Role).where(Role.id == role_id))
         await session.commit()
 
 
@@ -210,6 +225,53 @@ async def test_a_request_with_an_invalid_token_is_rejected():
                 },
             )
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_user_with_no_role_gets_403_not_401():
+    async with (
+        db_session() as session,
+        active_user(session, permissions=None) as (_user_id, email),
+        paper_broker_row(session) as broker_id,
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            response = await client.post(
+                f"/brokers/{broker_id}/trades",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": "10",
+                    "estimated_price": "100",
+                    "stop_price": "95",
+                },
+            )
+    assert response.status_code == 403
+    assert "trade:submit:paper" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_role_without_the_trade_permission_gets_403():
+    async with (
+        db_session() as session,
+        active_user(session, permissions=()) as (_user_id, email),
+        paper_broker_row(session) as broker_id,
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            response = await client.post(
+                f"/brokers/{broker_id}/trades",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": "10",
+                    "estimated_price": "100",
+                    "stop_price": "95",
+                },
+            )
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
