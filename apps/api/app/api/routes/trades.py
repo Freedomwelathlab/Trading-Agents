@@ -13,9 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.api.dependencies import get_paper_broker_registry
 from apps.api.app.api.schemas import TradeSubmissionRequest, TradeSubmissionResponse
+from apps.api.app.auth.dependencies import get_current_user
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import Broker, BrokerKind, OrderStatus
+from apps.api.app.db.models import Broker, BrokerKind, OrderStatus, User
 from apps.api.app.execution.registry import PaperBrokerRegistry
 from apps.api.app.oms.persistence import submit_trade_and_record
 from apps.api.app.risk.models import RiskLimits, TradeProposal
@@ -30,6 +31,7 @@ async def submit_trade_endpoint(
     session: AsyncSession = Depends(get_session),
     registry: PaperBrokerRegistry = Depends(get_paper_broker_registry),
     settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
 ) -> TradeSubmissionResponse:
     broker_row = (
         await session.execute(select(Broker).where(Broker.id == broker_id))
@@ -77,6 +79,7 @@ async def submit_trade_endpoint(
         limits,
         broker_adapter,
         emergency_stop_active=settings.emergency_stop_active,
+        submitted_by_user_id=current_user.id,
     )
 
     assert result.order_id is not None  # always set by submit_trade_and_record

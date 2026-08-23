@@ -55,11 +55,11 @@ Tests: `tests/test_health.py`
 
 Purpose: schema history.
 Location: `migrations/` (Alembic, async env)
-Current head: `0001_initial` (users, roles, assets, brokers)
+Current head: `0003_orders_submitted_by` (`0001` users/roles/assets/brokers,
+`0002` orders/fills, `0003` adds `orders.submitted_by_user_id`)
 Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
-comment history in `0001_initial.py` if adding a new enum column. Current
-head: `0002_orders_fills` (adds `orders`, `fills`).
+comment history in `0001_initial.py` if adding a new enum column.
 
 ## Risk Engine
 
@@ -124,6 +124,31 @@ Important: `LiveContext` construction re-checks `live_trading_enabled` even
 though `Settings` already enforces it — deliberate defense in depth
 (spec §46), not redundant code to simplify away.
 
+## Auth
+
+Purpose: identity - bcrypt password hashing, JWT access tokens, and the
+`get_current_user` dependency every non-public route should use.
+Main files: `apps/api/app/auth/security.py` (`hash_password`,
+`verify_password`, `create_access_token`, `decode_access_token`),
+`apps/api/app/auth/dependencies.py` (`get_current_user`),
+`apps/api/app/auth/routes/login.py` (`POST /auth/login`),
+`apps/api/app/auth/schemas.py` (`TokenResponse`)
+Dependencies: `apps.api.app.core.config` (`jwt_secret_key` etc.),
+`apps.api.app.db.models.User`
+Tests: `tests/auth/test_security.py` (8 unit tests), `tests/api/test_auth.py`
+(4 integration tests against real Postgres)
+Important: **no registration/admin endpoint exists** — users are created by
+inserting a `User` row directly (see how the tests do it). **No
+authorization exists either** — `get_current_user` only confirms *who*,
+never *what they're allowed to do*; `Role`/`User.role_id` are unused
+columns waiting for that layer (see D010). `Settings.jwt_secret_key` has no
+default, matching `live_trading_enabled`'s fail-closed posture — the app
+will not boot without one configured. The login route deliberately hashes
+against a dummy bcrypt hash when the email doesn't exist
+(`login.py`'s `_DUMMY_HASH`, generated at import time, not hand-written) to
+avoid a timing side-channel that would let an attacker enumerate emails —
+don't "simplify" that early-return away.
+
 ## HTTP API layer
 
 Purpose: the FastAPI-facing surface — DTOs, route handlers,
@@ -134,13 +159,15 @@ Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest`,
 (`get_paper_broker_registry`), `apps/api/app/api/routes/trades.py`
 (`POST /brokers/{broker_id}/trades`)
 Dependencies: `apps.api.app.oms.persistence`, `apps.api.app.execution.registry`,
-`apps.api.app.db.models`, `apps.api.app.core.config`
-Tests: `tests/api/test_trades.py` (6 integration tests against a real
+`apps.api.app.db.models`, `apps.api.app.core.config`, `apps.api.app.auth.dependencies`
+Tests: `tests/api/test_trades.py` (10 integration tests against a real
 Postgres instance, using `httpx.AsyncClient` + `ASGITransport` — see the
 Important note below, and D009)
 Important: this route is the *only* sanctioned way to reach
-`submit_trade_and_record()` from outside the process. It is unauthenticated
-(D009) — do not treat that as fine for anything beyond local development.
+`submit_trade_and_record()` from outside the process. It requires a valid,
+active user via `get_current_user` (D010) and records `submitted_by_user_id`
+on every persisted order — but there is no authorization layer yet, so any
+authenticated user can trade on any `broker_id` they know.
 **Testing an async endpoint that also touches the DB directly in the same
 test must use `httpx.AsyncClient(transport=ASGITransport(app=app), ...)`,
 never FastAPI's `TestClient`** — `TestClient` runs the app in a separate

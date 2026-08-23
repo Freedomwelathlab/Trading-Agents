@@ -4,7 +4,7 @@ System-level view. "—" means not built yet; do not assume it exists.
 
 | Module | Responsibility | Inputs | Outputs | Depends on | Status |
 |---|---|---|---|---|---|
-| API (`apps/api`) | HTTP entrypoint, settings, logging, trade submission | HTTP requests | JSON | DB, OMS, Risk Engine, Broker Registry | Phase 1, 6 — unauthenticated |
+| API (`apps/api`) | HTTP entrypoint, settings, logging, trade submission | HTTP requests | JSON | DB, OMS, Risk Engine, Broker Registry, Auth | Phase 1, 6, 7 |
 | Database | Persist users/roles/assets/brokers/orders/fills | ORM calls | Rows | Postgres | Phase 1, 4 |
 | Frontend | — | — | — | API | Not started |
 | Agents | — | — | — | LLM providers, market data | Not started |
@@ -16,5 +16,5 @@ System-level view. "—" means not built yet; do not assume it exists.
 | Backtesting | — | — | — | Market Data, Risk Engine | Not started |
 | Reporting | — | — | — | Portfolio | Not started |
 | Redis | Caching (future) | — | — | — | Provisioned in docker-compose, unused by app code |
-| Auth | — | — | — | Database (`users`, `roles` tables exist) | Tables exist, no auth logic |
+| Auth | Password hashing, JWT tokens, `get_current_user` | Email/password | Bearer token / authenticated `User` | Database (`users` table) | Phase 7 (done) — authentication only, no registration, no authorization/roles |
 | Observability | Structured logging with redaction | Log calls | JSON logs | — | Phase 1 (logging only; no metrics/tracing) |

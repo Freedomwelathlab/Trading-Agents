@@ -74,6 +74,20 @@ Update this after meaningful implementation work — not for every commit.
   `httpx.AsyncClient` + `ASGITransport` instead, which was the correct
   test client for an async app all along. 6 new integration tests, 50/50
   total passing, ruff+mypy clean (30 source files).
+- Phase 7: authentication (2026-08-23). `apps/api/app/auth/` — bcrypt
+  password hashing, JWT access tokens (`PyJWT`), `POST /auth/login`
+  (OAuth2 password flow), and `get_current_user` — now required by
+  `POST /brokers/{broker_id}/trades`. `Settings.jwt_secret_key` has no
+  default; the app refuses to start without one configured (see D010).
+  Migration `0003` adds `orders.submitted_by_user_id`, set on every
+  submission. No registration endpoint exists (users are created by
+  direct DB insert — deliberate, see D010) and no authorization/role
+  checks exist yet (only *authenticate*, not *authorize*). Verified live
+  against a running server: unauthenticated request → 401, authenticated
+  request with a real token from `/auth/login` → 200 filled, with
+  `submitted_by_user_id` confirmed via SQL to match the authenticated
+  user. 12 new tests, 67/67 total passing, ruff+mypy clean (36 source
+  files).
 
 ## In Progress
 
@@ -86,10 +100,11 @@ data vendor to wire (D008) — code is ready to accept one, none is chosen.
 
 ## Planned
 
-Phase 7+ (order not finalized): a concrete `MarketDataProvider`
-implementation once a vendor is chosen, authentication (no auth exists —
-the trades endpoint has none), persisted `PaperBrokerAdapter` state
-(D005/D009 gap), agent/LLM layer, frontend.
+Phase 8+ (order not finalized): a concrete `MarketDataProvider`
+implementation once a vendor is chosen, a user-registration/admin path
+(none exists — D010), role-based authorization (the `Role`/`role_id`
+columns exist but nothing checks them), persisted `PaperBrokerAdapter`
+state (D005/D009 gap), agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -103,10 +118,12 @@ optimization.
 
 ## Tests
 
-50 tests, all passing: fail-closed live-mode gate (3), log redaction (1),
-health endpoint (1), risk engine (14), paper broker (5), OMS (3), execution
-context (5), order/fill persistence (3, DB-backed), market data router +
-snapshot model (9), trades HTTP endpoint (6, DB-backed).
+67 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+secret), log redaction (1), health endpoint (1), risk engine (14), paper
+broker (5), OMS (3), execution context (5), order/fill persistence (3,
+DB-backed), market data router + snapshot model (9), trades HTTP endpoint
+(10, DB-backed, all require auth), auth security unit tests (8), login
+route (4, DB-backed).
 
 ## Known Issues
 

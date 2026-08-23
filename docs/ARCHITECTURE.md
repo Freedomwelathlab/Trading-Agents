@@ -1,12 +1,14 @@
 # Architecture
 
-## Current (Phase 1-6)
+## Current (Phase 1-7)
 
 ```mermaid
 flowchart LR
-    client[Client] --> route["POST /brokers/{id}/trades\nunauthenticated"]
+    client[Client] --> login["POST /auth/login"]
+    login --> token[JWT access token]
+    token --> route["POST /brokers/{id}/trades\nrequires Bearer token"]
     client --> health[GET /health]
-    route --> settings[Settings\nfail-closed live gate\n+ risk limit defaults]
+    route --> settings[Settings\nfail-closed live gate\n+ risk limit defaults\n+ fail-closed JWT secret]
     route --> db[(Postgres/TimescaleDB)]
 
     vendors[No vendor wired yet\nD008] -.-> router[MarketDataRouter\nno-fabrication fallback]
@@ -24,19 +26,22 @@ flowchart LR
 ```
 
 `apps/api/app/main.py` boots the app, logs startup mode, creates the
-`PaperBrokerRegistry`, exposes `/health` and the trades router.
-`apps/api/app/core/config.py` is the single source of the execution-mode
-gate and now also the default risk limits / emergency-stop flag.
-The trading path is now reachable from outside the process via
-`POST /brokers/{broker_id}/trades` — verified live against a running
-server. The market-data router (dotted lines, left) is built and tested
-but has no provider plugged in and nothing yet calls it to build a
-`TradeProposal`; the HTTP endpoint currently takes price/timestamp
-directly from the caller instead (future work once a vendor is chosen,
-D008). The `PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
+`PaperBrokerRegistry`, exposes `/health` and both routers (`/auth/login`,
+the trades router). `apps/api/app/core/config.py` is the single source of
+the execution-mode gate, default risk limits, emergency-stop flag, and now
+also `jwt_secret_key` — fail-closed the same way, no default.
+The trading path requires a Bearer token from `/auth/login` — verified
+live against a running server (401 with no token, 200 with a real one, the
+resulting order's `submitted_by_user_id` confirmed via SQL). The
+market-data router (dotted lines, left) is built and tested but has no
+provider plugged in and nothing yet calls it to build a `TradeProposal`;
+the HTTP endpoint currently takes price/timestamp directly from the caller
+instead (future work once a vendor is chosen, D008). The
+`PaperBrokerAdapter`/`PaperBrokerRegistry` still don't persist
 cash/position state (D005/D009) even though the `Order`/`Fill` decision
 record now does — a restart resets accounts silently while the audit trail
-survives. No auth exists on the trades endpoint (D009).
+survives. No registration endpoint or role-based authorization exists yet
+(D010) — any authenticated user can trade on any broker_id they know.
 
 ## Target (per governing spec, not yet built)
 

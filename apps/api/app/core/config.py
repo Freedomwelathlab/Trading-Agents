@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     risk_require_stop_price: bool = True
     risk_max_market_data_age_seconds: int = 300
 
+    jwt_secret_key: str
+    """No default, deliberately - an app that can silently boot with a
+    built-in JWT secret is a worse failure mode than one that refuses to
+    start without configuration, same posture as the live-trading gate
+    below. Set via .env; see .env.example for how to generate one."""
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 30
+
     @model_validator(mode="after")
     def _enforce_fail_closed_live_gate(self) -> "Settings":
         """Fail closed: LIVE mode requires the explicit enable flag (spec §46/§56).
@@ -64,4 +72,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    # jwt_secret_key has no default on purpose (see the field docstring) -
+    # pydantic-settings fills it from the environment/.env at runtime, but
+    # mypy can't see that, hence the ignore rather than a fake default.
+    return Settings()  # type: ignore[call-arg]

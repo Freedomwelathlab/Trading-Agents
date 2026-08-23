@@ -137,6 +137,11 @@ class Order(Base):
     """The RiskDecision.reason.value that caused a rejection, if any. Null
     when status is FILLED."""
     risk_detail: Mapped[str | None] = mapped_column(String(500))
+    submitted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    """Nullable because not every future order-creation path may have an
+    authenticated human behind it (e.g. an automated agent) - but the
+    current HTTP endpoint always sets it (spec Sec17 wants the decision
+    chain to say who, not just what)."""
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

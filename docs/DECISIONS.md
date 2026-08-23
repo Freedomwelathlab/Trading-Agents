@@ -208,3 +208,43 @@ in Postgres survives. Any future async endpoint test must use
 crash.
 Status: Implemented, tested (`tests/api/test_trades.py`, 6 integration
 tests against a real Postgres instance).
+
+---
+
+**D010 — JWT auth, no registration endpoint, fail-closed secret**
+Date: 2026-08-23
+Decision: Bearer-token auth (`apps/api/app/auth/`) using bcrypt password
+hashes and a JWT access token (`PyJWT`, HS256). `Settings.jwt_secret_key`
+has no default - the app refuses to start without one configured, same
+posture as `live_trading_enabled`. No public registration endpoint exists;
+users are created by inserting a row directly (tests do this; production
+would need an admin path, not built yet). `POST /brokers/{broker_id}/trades`
+now requires a valid, active user via `get_current_user`, and every
+persisted `Order` records `submitted_by_user_id` (migration `0003`).
+Reason: a financial-transaction endpoint with no auth (D009's state) was
+explicitly called out as unacceptable beyond local development. JWT
+over sessions/cookies matches a stateless API with no browser session
+concept yet. No default secret follows the same fail-closed reasoning as
+the live-trading gate: an app that silently boots with a built-in secret
+is worse than one that refuses to start. No registration endpoint is
+scope discipline, not an oversight - open account creation on a trading
+platform is a decision that deserves its own review, not a side effect of
+wiring auth.
+Alternatives: session cookies (rejected - no browser/CSRF surface exists
+to justify it yet); OAuth2/SSO via a third party (rejected - premature
+for a single-tenant dev-stage app); a hardcoded/default JWT secret for
+convenience (rejected - directly the kind of insecure default this
+project has avoided everywhere else, e.g. D002).
+Consequences: nobody can self-register - every user must be created
+directly in the database until an admin/registration flow exists. No
+role-based authorization yet either (`Role`/`role_id` exist on `User` but
+nothing checks them) - authentication (who you are) is done,
+authorization (what you're allowed to do) is not, and the two shouldn't be
+conflated when reading `docs/IMPLEMENTATION_STATUS.md`.
+Status: Implemented, tested (`tests/auth/test_security.py` 8 unit tests,
+`tests/api/test_auth.py` 4 integration tests, `tests/api/test_trades.py`
+updated to require auth on every request, +3 new auth-specific cases).
+Verified live: a real running server correctly returned 401 with no
+token, then 200 with one obtained from a real `/auth/login` call, with
+the resulting order's `submitted_by_user_id` matching the authenticated
+user - confirmed directly via SQL, not just the HTTP response.

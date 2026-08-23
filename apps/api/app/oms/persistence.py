@@ -31,6 +31,7 @@ async def submit_trade_and_record(
     *,
     emergency_stop_active: bool = False,
     now: datetime | None = None,
+    submitted_by_user_id: uuid.UUID | None = None,
 ) -> OMSResult:
     result = submit_trade(
         proposal,
@@ -53,6 +54,7 @@ async def submit_trade_and_record(
         status=status,
         risk_block_reason=block_reason,
         risk_detail=result.risk_decision.detail,
+        submitted_by_user_id=submitted_by_user_id,
     )
     session.add(order_row)
     await session.flush()  # assigns order_row.id without ending the transaction
