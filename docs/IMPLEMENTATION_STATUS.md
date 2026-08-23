@@ -33,6 +33,20 @@ Update this after meaningful implementation work — not for every commit.
   `ResearchContext | PaperContext | LiveContext` so a research code path
   can't structurally hold a live credential. 13 new tests, 32/32 total
   passing, ruff+mypy clean (19 source files).
+- Phase 4: order/fill persistence (2026-08-23). Migration `0002` adds
+  append-only `orders`/`fills` tables (NUMERIC money columns, denormalized
+  `symbol` — see D006). `apps/api/app/oms/persistence.py` —
+  `submit_trade_and_record()` wraps (doesn't modify) `submit_trade()` and
+  writes exactly one new `Order` row per call, never an update. Verified
+  end-to-end against a real Postgres/TimescaleDB container: migration
+  upgrade/downgrade/upgrade round-trip, then 3 integration tests exercising
+  the actual insert/query path. Found and fixed two real, previously-latent
+  bugs during this verification — see D007: (1) `Enum()` columns were
+  sending the Python enum member name instead of its value, silently broken
+  since Phase 1 but never triggered until a row was actually inserted; (2)
+  the async test suite had a cross-event-loop connection bug on Windows,
+  fixed by pinning pytest-asyncio to a session-scoped loop. 8 new tests,
+  35/35 total passing, ruff+mypy clean (20 source files).
 
 ## In Progress
 
@@ -44,9 +58,10 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 4+ (order not finalized): order/fill persistence (see D005 — paper
-broker is in-memory only today), market-data service with vendor routing,
-agent/LLM layer, frontend.
+Phase 5+ (order not finalized): HTTP endpoint that actually calls
+`submit_trade_and_record()` (nothing external can submit a trade yet —
+everything is exercised only by tests), market-data service with vendor
+routing, agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -60,10 +75,9 @@ optimization.
 
 ## Tests
 
-32 tests, all passing: fail-closed live-mode gate (3), log redaction (1),
+35 tests, all passing: fail-closed live-mode gate (3), log redaction (1),
 health endpoint (1), risk engine (14), paper broker (5), OMS (3), execution
-context (5). No DB-backed integration tests yet — order/fill persistence
-doesn't exist (D005).
+context (5), order/fill persistence (3, DB-backed against real Postgres).
 
 ## Known Issues
 

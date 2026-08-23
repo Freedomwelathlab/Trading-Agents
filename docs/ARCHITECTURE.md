@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-3)
+## Current (Phase 1-4)
 
 ```mermaid
 flowchart LR
@@ -9,18 +9,23 @@ flowchart LR
     api --> db[(Postgres/TimescaleDB)]
     api -.future.-> redis[(Redis)]
 
-    proposal[TradeProposal] --> oms[OMS submit_trade]
+    proposal[TradeProposal] --> persist[OMS submit_trade_and_record]
+    persist --> oms[submit_trade]
     oms --> risk[Risk Engine\nevaluate_trade]
-    risk -->|approved| broker[PaperBrokerAdapter\nin-memory, not persisted]
+    risk -->|approved| broker[PaperBrokerAdapter\nin-memory fills]
     risk -->|blocked| rejected[RiskDecision: rejected]
     broker --> fill[Fill]
+    persist --> orders[(orders / fills\nappend-only)]
 ```
 
 `apps/api/app/main.py` boots the app, logs startup mode, exposes `/health`.
 `apps/api/app/core/config.py` is the single source of the execution-mode gate.
 `apps/api/app/db/` holds SQLAlchemy models and the async session factory.
-The trading path (bottom half of the diagram) is wired end-to-end but has no
-HTTP entrypoint yet and no persistence — it's exercised only by tests today.
+The trading path (bottom half of the diagram) is wired end-to-end, including
+persistence — but has no HTTP entrypoint yet, so it's exercised only by
+tests today. The `PaperBrokerAdapter` itself still doesn't persist its own
+cash/position ledger (D005) even though the `Order`/`Fill` decision record
+now does — those are two different things, and only the latter is done.
 
 ## Target (per governing spec, not yet built)
 

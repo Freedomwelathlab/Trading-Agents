@@ -93,3 +93,55 @@ boundary, not acceptable to keep once real (even paper) trading matters
 across sessions. Must be revisited before Phase 4 broker work goes further.
 Status: Implemented (deliberately partial), tested
 (`tests/execution/test_paper_broker.py`, `tests/oms/test_service.py`).
+
+---
+
+**D006 — Order/Fill persistence: append-only, denormalized symbol, wraps not modifies submit_trade**
+Date: 2026-08-23
+Decision: Added `orders`/`fills` tables (migration `0002`) and
+`submit_trade_and_record()` (`apps/api/app/oms/persistence.py`), which calls
+the existing pure `submit_trade()` and then writes exactly one `Order` row
+per call (plus a `Fill` row if filled) — never an update to a prior row.
+Reason: closes D005's gap without touching `submit_trade()` itself, so the
+DB-free unit tests and the "risk engine works with everything else down"
+property both stay intact; persistence is additive, not load-bearing for
+correctness.
+Alternatives: build persistence into `submit_trade()` directly. Rejected —
+would force every unit test to spin up a DB, and would make the OMS's core
+logic depend on a session it doesn't need to decide anything.
+Consequences: two call sites now exist (`submit_trade` for tests/pure logic,
+`submit_trade_and_record` for anything that needs an audit trail) — any
+future HTTP endpoint must use the `_and_record` variant, not the pure one,
+or trades won't be recorded.
+Status: Implemented, tested (`tests/db/test_order_persistence.py`, 3 tests
+against a real Postgres/TimescaleDB instance).
+
+---
+
+**D007 — Two real bugs found and fixed during Phase 4 verification**
+Date: 2026-08-23
+Decision: (a) All SQLAlchemy `Enum()` columns now go through a
+`_pg_enum()` helper (`apps/api/app/db/models.py`) that passes
+`values_callable` so the Python enum's `.value` is sent to Postgres, not
+its member `.name`. (b) `pyproject.toml`'s pytest config pins
+`asyncio_default_fixture_loop_scope`/`asyncio_default_test_loop_scope` to
+`"session"`.
+Reason: (a) `Enum(BrokerKind)` without `values_callable` sent the literal
+string `"PAPER"` instead of `"paper"`, which the DB's lowercase enum type
+rejected — this existed since Phase 1's `Broker` model but was invisible
+until Phase 4 actually inserted a row via the ORM for the first time. (b)
+`apps/api/app/db/base.py`'s engine is created once at import time; asyncpg
+connections are bound to the event loop that created them, and
+pytest-asyncio's default per-test loop handed a second test a connection
+tied to an already-closed loop from the first, producing a nondeterministic
+teardown crash.
+Alternatives: (a) construct every `Broker`/`Order` row with the enum's
+name in uppercase to match — rejected, that's fixing the symptom at every
+call site instead of the one place the mismatch originates. (b) restructure
+`db/base.py` to create the engine lazily per-request — bigger change than
+this phase needed; revisit if the app ever runs multiple event loops for a
+real reason (it doesn't today).
+Consequences: both fixes are structural, not per-call-site patches — a new
+enum column or a new async test automatically avoids both bugs.
+Status: Implemented, verified (`tests/db/test_order_persistence.py` failed
+before both fixes, passes after).

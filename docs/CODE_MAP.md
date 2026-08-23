@@ -26,13 +26,23 @@ unexpected key name, check the pattern still catches it.
 
 Purpose: async SQLAlchemy engine/session + ORM models.
 Main files: `apps/api/app/db/base.py` (engine, session, `Base`),
-`apps/api/app/db/models.py` (`User`, `Role`, `Asset`, `Broker`)
-Dependencies: `apps.api.app.core.config`
-Tests: none yet at the DB layer (models are exercised via migration
-round-trip, not unit tests — see `migrations/versions/0001_initial.py`)
+`apps/api/app/db/models.py` (`User`, `Role`, `Asset`, `Broker`, `Order`, `Fill`)
+Dependencies: `apps.api.app.core.config`, `apps.api.app.risk.models` (reuses `Side`)
+Tests: migration round-trip (manual, docker-compose) + `tests/db/test_order_persistence.py`
+(integration, real Postgres)
 Important: `Broker.kind` (paper/live) is the structural mechanism meant to
 keep live and paper credentials from ever occupying the same row. Any future
-broker-credential table must preserve this separation, not merge it.
+broker-credential table must preserve this separation, not merge it. Every
+enum column MUST go through the `_pg_enum()` helper at the top of
+`models.py` — plain `Enum(SomeEnum)` sends the member *name* to Postgres,
+not its `.value`, and the DB's enum type only accepts the lowercase values
+the migration created (see D007). `Order`/`Fill` are append-only by
+convention (no code path updates or deletes a row) — enforced by discipline,
+not a DB trigger, so don't add one.
+`apps/api/app/db/base.py`'s engine is created once at module import and its
+asyncpg connections are loop-bound — async tests must share one event loop
+(`pyproject.toml`'s `asyncio_default_test_loop_scope = "session"`), not the
+pytest-asyncio default of one loop per test (see D007).
 
 ## FastAPI app
 
@@ -48,7 +58,8 @@ Location: `migrations/` (Alembic, async env)
 Current head: `0001_initial` (users, roles, assets, brokers)
 Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
-comment history in `0001_initial.py` if adding a new enum column.
+comment history in `0001_initial.py` if adding a new enum column. Current
+head: `0002_orders_fills` (adds `orders`, `fills`).
 
 ## Risk Engine
 
@@ -94,6 +105,13 @@ Interface: `submit_trade(proposal, account, limits, broker, *, emergency_stop_ac
 Dependencies: `apps.api.app.risk.engine`, `apps.api.app.execution.broker`
 Tests: `tests/oms/test_service.py` — includes a spy broker adapter proving a
 rejected proposal never reaches `submit_order()`.
+
+`apps/api/app/oms/persistence.py`'s `submit_trade_and_record()` wraps
+`submit_trade()` with append-only Order/Fill persistence — see the Database
+layer section and D006. Use `submit_trade` for pure/unit-tested logic,
+`submit_trade_and_record` anywhere an audit trail is needed (which, once an
+HTTP endpoint exists, should be everywhere reachable from outside the
+process).
 
 ## Execution context
 

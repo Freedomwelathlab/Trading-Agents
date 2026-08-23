@@ -46,14 +46,16 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phase 1 (repo skeleton), Phase 2 (deterministic risk engine), and Phase 3
-(paper broker adapter + OMS) complete. See
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+Phases 1-4 complete: repo skeleton, deterministic risk engine, paper broker
++ OMS, order/fill persistence. See
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Nothing external can
+submit a trade yet — no HTTP endpoint calls the OMS; it's exercised only by
+tests.
 
 ## Planned Work
 
-Phase 4+: order/fill persistence, market-data service, agent/LLM layer,
-frontend. Order not finalized.
+Phase 5+: HTTP endpoint for trade submission, market-data service, agent/LLM
+layer, frontend. Order not finalized.
 
 ## Known Problems
 
@@ -72,9 +74,9 @@ what this repo's docs can verify.)
   duplicate-order detection and an explicit emergency-stop *source*
   (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —
   where it reads from in production is undecided).
-- Order/fill persistence deliberately deferred (D005) — the paper broker is
-  in-memory only. Needs a real schema before Phase 4 broker work builds on
-  top of it.
+- Order/fill persistence: done (D006). Still open: nothing external can
+  reach `submit_trade_and_record()` — no auth, no HTTP endpoint. That's the
+  natural next piece.
 
 ## Important Constraints
 
