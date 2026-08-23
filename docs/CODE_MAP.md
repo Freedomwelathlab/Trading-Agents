@@ -227,27 +227,36 @@ section above for why the two aren't connected yet.
 
 ## Admin routes
 
-Purpose: the minimal HTTP surface that replaces raw SQL for creating
-users, roles, and broker grants (D013). Not a general admin panel.
+Purpose: the minimal HTTP surface that replaces raw SQL for creating,
+updating, and deactivating users and roles, and for granting/revoking
+broker access (D013, D016). Not a general admin panel.
 Main files: `apps/api/app/api/schemas_admin.py` (request/response DTOs —
-`CreateUserResponse` deliberately never includes a password or hash),
-`apps/api/app/api/routes/admin.py` (`POST /admin/users`, `POST /admin/roles`,
-`POST /admin/broker-grants`, `DELETE /admin/broker-grants/{id}`)
+`CreateUserResponse` deliberately never includes a password or hash;
+`UpdateUserRequest`/`UpdateRoleRequest` use Pydantic's `model_fields_set`
+convention so an omitted key means "leave untouched" and an explicit
+`null` means "clear"), `apps/api/app/api/routes/admin.py`
+(`POST /admin/users`, `PATCH /admin/users/{id}`, `POST /admin/roles`,
+`PATCH /admin/roles/{id}`, `POST /admin/broker-grants`,
+`DELETE /admin/broker-grants/{id}`)
 Dependencies: `apps.api.app.auth.dependencies` (`require_permission`),
 `apps.api.app.auth.security` (`hash_password`), `apps.api.app.db.models`
-Tests: `tests/api/test_admin.py` (9 integration tests against real
-Postgres, including one that grants then revokes broker access via the
-API and confirms trade authorization actually flips both ways)
+Tests: `tests/api/test_admin.py` (16 integration tests against real
+Postgres — 9 covering create/grant/revoke, including one that grants then
+revokes broker access via the API and confirms trade authorization
+actually flips both ways; 7 covering the D016 PATCH endpoints, including
+deactivating a user and confirming their already-issued token stops
+working immediately, and PATCHing a role's permissions and confirming
+every holder's already-issued token reflects it immediately)
 Important: the whole router is gated by a single
 `Depends(require_permission(Permission.ADMIN))` passed to `APIRouter(...,
 dependencies=[...])` — every route inherits it without each function
-needing its own parameter for it. **No update or deactivate for
-users/roles, no listing endpoints** — deliberate scope cut (D013), not an
-oversight; grants got both create *and* revoke because access control is
-the realistic day-to-day lever, users/roles are comparatively
-rarely-changing setup. **The very first admin user and role still require
-one direct DB insert** — there's no user holding `admin:manage` to call
-these routes with the first time.
+needing its own parameter for it. **No delete for users/roles, no
+listing endpoints** — deliberate scope cut (D013/D016), not an oversight;
+deleting a `User`/`Role` row would orphan `orders.submitted_by_user_id`/
+`users.role_id`, so `is_active=false` (user) or clearing `permissions`
+(role) is the supported way to neutralize one instead. **The very first
+admin user and role still require one direct DB insert** — there's no
+user holding `admin:manage` to call these routes with the first time.
 
 ## Market data
 

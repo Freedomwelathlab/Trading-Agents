@@ -170,6 +170,26 @@ Update this after meaningful implementation work — not for every commit.
   passing, ruff+mypy clean (43 source files). Verified live: server boots
   and logs `market_data_vendor=NOT_CONFIGURED`, and the endpoint returns
   503 rather than any fabricated quote.
+- Phase 13: user/role update and deactivate endpoints (2026-08-23).
+  Closes D013's deliberately-cut scope. `PATCH /admin/users/{id}`
+  (`is_active`, `role_id`) and `PATCH /admin/roles/{id}` (`description`,
+  `permissions`) added to `apps/api/app/api/routes/admin.py`, both gated
+  by the same `Permission.ADMIN`. Both use Pydantic's `model_fields_set`
+  to tell "key omitted" (leave untouched) apart from "key explicitly
+  null" (unassign `role_id`) — a plain `is not None` check can't make
+  that distinction. Still no delete endpoints for either resource
+  (deleting a row would orphan `orders.submitted_by_user_id`/
+  `users.role_id`); `is_active=false` remains the only way to deactivate
+  a user, and clearing `permissions` is how a role gets neutralized. 7
+  new tests, 101/101 total passing, ruff+mypy clean (43 source files).
+  Verified live against a running server, real Postgres: deactivated an
+  already-logged-in user via PATCH and confirmed their existing token got
+  401 on its very next request (not just after re-login), then separately
+  PATCHed a role to grant `trade:submit:paper` and confirmed a different
+  already-issued token for that role immediately cleared the permission
+  check — both prove `get_current_user`'s live re-check (never a cached
+  JWT claim) is what makes authorization changes take effect
+  immediately.
 
 ## In Progress
 
@@ -181,9 +201,8 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 13+ (order not finalized): connecting the market-data router to
-trade-proposal construction (D015's explicitly-left-open question), user/
-role update+deactivate endpoints (D013's deliberately-cut scope),
+Phase 14+ (order not finalized): connecting the market-data router to
+trade-proposal construction (D015's explicitly-left-open question),
 agent/LLM layer, frontend.
 
 ## Technical Debt
@@ -198,14 +217,15 @@ optimization.
 
 ## Tests
 
-94 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+101 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), Longbridge provider
 (8, against a fake client), trades HTTP endpoint (14, DB-backed, all
 require auth+permission+broker grant), auth security unit tests (8),
 authorization unit tests (3), login route (4, DB-backed), admin routes
-(9, DB-backed), broker-state persistence (3, DB-backed).
+(16, DB-backed — 9 create/grant + 7 update/deactivate), broker-state
+persistence (3, DB-backed).
 
 ## Known Issues
 

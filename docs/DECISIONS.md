@@ -486,3 +486,65 @@ SDK could plausibly return, empty results, non-positive price, a typed
 live: server boots and logs `market_data_vendor=NOT_CONFIGURED` with no
 credentials set; `GET /market-data/{symbol}/quote` returns 503 with the
 `NOT_CONFIGURED:` detail rather than any fabricated quote.
+
+---
+
+**D016 — User/role update and deactivate endpoints close the D013 gap**
+Date: 2026-08-23
+Decision: `PATCH /admin/users/{id}` (`is_active`, `role_id`) and
+`PATCH /admin/roles/{id}` (`description`, `permissions`) added to
+`apps/api/app/api/routes/admin.py`, gated by the same `Permission.ADMIN`
+as every other admin route. Both use Pydantic's `model_fields_set` to
+distinguish "key omitted from the JSON body" (leave untouched) from "key
+explicitly set to `null`" (unassign `role_id`) - a plain `is not None`
+check on the parsed model can't tell these apart. `is_active` cannot be
+set to `null` (422) since the field is a `bool`, not nullable in
+practice - it can only be omitted or given a real boolean. `name` is
+deliberately not updatable on roles (roles are looked up/referenced by
+name elsewhere; renaming is out of scope here). Still no delete endpoint
+for either resource - deleting a `User` or `Role` row outright would
+orphan `orders.submitted_by_user_id` / `users.role_id` foreign keys;
+`is_active=false` is the only supported way to deactivate a user, and a
+role is neutralized by clearing its `permissions` rather than removed.
+Reason: D013 shipped create-only for users/roles and flagged "if a role
+or user needs to change after creation, that still requires SQL" as an
+acknowledged gap. This closes exactly that gap - deactivating a
+compromised user or revoking a role's permissions no longer needs raw
+SQL - without adding delete endpoints that would need FK-orphan handling
+this phase didn't ask for.
+Alternatives: (a) a separate `DELETE`/`POST .../deactivate` endpoint
+instead of `is_active` via PATCH - rejected, `is_active` is already the
+field that gates login (D010) and trading (via `get_current_user`'s live
+check), so folding deactivation into the same PATCH avoids a second
+code path for the same state. (b) allowing `role_id: null` to mean "no
+change" - rejected, that would make it impossible to ever unassign a
+role via the API; `model_fields_set` gives an unambiguous way to express
+both "leave alone" and "clear" instead.
+Consequences: authorization changes take effect immediately, not on next
+login or token refresh - `get_current_user` re-loads `is_active` and the
+user's role/permissions fresh from the database on every request rather
+than trusting anything cached in the JWT, so a revoked user or a
+stripped-down role is enforced starting with that user's very next
+request. No listing endpoints still exist for either resource (unchanged
+from D013) - an operator applying these PATCHes needs the id from
+elsewhere (e.g. the `POST` response when the row was created, or direct
+SQL to look one up).
+Status: Implemented, tested (`tests/api/test_admin.py`, 7 new integration
+tests added to the D013 suite: deactivation blocks a live token
+immediately, role reassignment via PATCH, reassigning to an unknown role
+is 404, patching an unknown user is 404, omitting `role_id` leaves it
+untouched, a role's `permissions` update changes authorization for every
+holder of that role, patching an unknown role is 404). 101/101 total
+tests passing, ruff+mypy clean (43 source files). Verified live against
+a running server, real Postgres: issued a JWT for an active user,
+confirmed it worked against `GET /market-data/{symbol}/quote` (503
+`NOT_CONFIGURED`, not 401), had a separate admin PATCH that same user to
+`is_active=false`, then reused the *same already-issued* token against
+the same endpoint and got 401 - proving deactivation is enforced without
+waiting for token expiry. Separately verified a role's `permissions`
+PATCH the same way: a user's already-issued token got 403 (missing
+`trade:submit:paper`) against `POST /brokers/{id}/trades`, an admin then
+PATCHed that user's role to add the permission, and the same token
+immediately got past the permission check (404 for the nonexistent
+broker id used in the test, rather than another 403) - confirming role
+permission changes also propagate without re-login.

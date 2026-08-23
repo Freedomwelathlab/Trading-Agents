@@ -353,3 +353,208 @@ async def test_revoking_an_unknown_grant_is_404():
                 headers={"Authorization": f"Bearer {admin_token}"},
             )
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_admin_can_deactivate_a_user_and_it_takes_effect_immediately():
+    async with db_session() as session, admin_user(session) as (_aid, admin_email):
+        async with non_admin_user(session) as (target_id, target_email):
+            async with api_client() as client:
+                admin_token = await _get_token(client, admin_email)
+                target_token = await _get_token(client, target_email)
+
+                pre_check = await client.post(
+                    "/admin/users",
+                    headers={"Authorization": f"Bearer {target_token}"},
+                    json={"email": "irrelevant@example.com", "password": "irrelevant123"},
+                )
+                assert pre_check.status_code == 403  # not admin, but authenticated (not 401)
+
+                response = await client.patch(
+                    f"/admin/users/{target_id}",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={"is_active": False},
+                )
+                assert response.status_code == 200
+                assert response.json()["is_active"] is False
+
+                post_check = await client.post(
+                    "/admin/users",
+                    headers={"Authorization": f"Bearer {target_token}"},
+                    json={"email": "irrelevant@example.com", "password": "irrelevant123"},
+                )
+                assert post_check.status_code == 401
+
+                login_attempt = await client.post(
+                    "/auth/login",
+                    data={"username": target_email, "password": TEST_PASSWORD},
+                )
+                assert login_attempt.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_admin_can_assign_a_role_to_a_user_via_patch():
+    role_name = f"assign-role-{uuid.uuid4()}"
+    async with db_session() as session, admin_user(session) as (_aid, admin_email):
+        async with non_admin_user(session) as (target_id, _target_email):
+            try:
+                async with api_client() as client:
+                    admin_token = await _get_token(client, admin_email)
+                    headers = {"Authorization": f"Bearer {admin_token}"}
+                    create_role = await client.post(
+                        "/admin/roles",
+                        headers=headers,
+                        json={
+                            "name": role_name,
+                            "permissions": [Permission.SUBMIT_PAPER_TRADE.value],
+                        },
+                    )
+                    assert create_role.status_code == 201
+                    new_role_id = create_role.json()["id"]
+
+                    response = await client.patch(
+                        f"/admin/users/{target_id}",
+                        headers=headers,
+                        json={"role_id": new_role_id},
+                    )
+                    assert response.status_code == 200
+                    assert response.json()["role_id"] == new_role_id
+            finally:
+                # The PATCH above set target_id's role_id to new_role_id -
+                # clear it before deleting the Role or the FK blocks it.
+                target = (
+                    await session.execute(select(User).where(User.id == target_id))
+                ).scalar_one()
+                target.role_id = None
+                await session.commit()
+                await session.execute(delete(Role).where(Role.name == role_name))
+                await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_assigning_an_unknown_role_via_patch_is_404():
+    async with db_session() as session, admin_user(session) as (_aid, admin_email):
+        async with non_admin_user(session) as (target_id, _target_email):
+            async with api_client() as client:
+                admin_token = await _get_token(client, admin_email)
+                response = await client.patch(
+                    f"/admin/users/{target_id}",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={"role_id": str(uuid.uuid4())},
+                )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_updating_an_unknown_user_is_404():
+    async with db_session() as session, admin_user(session) as (_aid, admin_email):
+        async with api_client() as client:
+            admin_token = await _get_token(client, admin_email)
+            response = await client.patch(
+                f"/admin/users/{uuid.uuid4()}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"is_active": False},
+            )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_omitting_role_id_in_a_patch_leaves_it_untouched():
+    role_name = f"untouched-role-{uuid.uuid4()}"
+    async with db_session() as session, admin_user(session) as (_aid, admin_email):
+        role_id = uuid.uuid4()
+        session.add(Role(id=role_id, name=role_name, permissions=[]))
+        await session.commit()
+        async with non_admin_user(session) as (target_id, _target_email):
+            target = (
+                await session.execute(select(User).where(User.id == target_id))
+            ).scalar_one()
+            target.role_id = role_id
+            await session.commit()
+            try:
+                async with api_client() as client:
+                    admin_token = await _get_token(client, admin_email)
+                    response = await client.patch(
+                        f"/admin/users/{target_id}",
+                        headers={"Authorization": f"Bearer {admin_token}"},
+                        json={"is_active": True},
+                    )
+                assert response.status_code == 200
+                assert response.json()["role_id"] == str(role_id)
+            finally:
+                target.role_id = None
+                await session.commit()
+                await session.execute(delete(Role).where(Role.id == role_id))
+                await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_updating_a_roles_permissions_changes_authorization_for_every_holder():
+    role_name = f"mutable-role-{uuid.uuid4()}"
+    async with (
+        db_session() as session,
+        admin_user(session) as (_aid, admin_email),
+        non_admin_user(session) as (trader_id, trader_email),
+        paper_broker_row(session) as broker_id,
+    ):
+        role_id = uuid.uuid4()
+        session.add(Role(id=role_id, name=role_name, permissions=[]))
+        trader = (await session.execute(select(User).where(User.id == trader_id))).scalar_one()
+        trader.role_id = role_id
+        await session.commit()
+        try:
+            session.add(BrokerGrant(user_id=trader_id, broker_id=broker_id))
+            await session.commit()
+
+            async with api_client() as client:
+                admin_token = await _get_token(client, admin_email)
+                trader_token = await _get_token(client, trader_email)
+                trade_body = {
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": "1",
+                    "estimated_price": "100",
+                    "stop_price": "95",
+                }
+
+                before = await client.post(
+                    f"/brokers/{broker_id}/trades",
+                    headers={"Authorization": f"Bearer {trader_token}"},
+                    json=trade_body,
+                )
+                assert before.status_code == 403
+
+                patch_response = await client.patch(
+                    f"/admin/roles/{role_id}",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={"permissions": [Permission.SUBMIT_PAPER_TRADE.value]},
+                )
+                assert patch_response.status_code == 200
+                assert patch_response.json()["permissions"] == [Permission.SUBMIT_PAPER_TRADE.value]
+
+                after = await client.post(
+                    f"/brokers/{broker_id}/trades",
+                    headers={"Authorization": f"Bearer {trader_token}"},
+                    json=trade_body,
+                )
+                assert after.status_code == 200
+                assert after.json()["status"] == "filled"
+        finally:
+            await session.execute(delete(BrokerGrant).where(BrokerGrant.user_id == trader_id))
+            trader.role_id = None
+            await session.commit()
+            await session.execute(delete(Role).where(Role.id == role_id))
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_updating_an_unknown_role_is_404():
+    async with db_session() as session, admin_user(session) as (_aid, admin_email):
+        async with api_client() as client:
+            admin_token = await _get_token(client, admin_email)
+            response = await client.patch(
+                f"/admin/roles/{uuid.uuid4()}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"description": "does not matter"},
+            )
+    assert response.status_code == 404

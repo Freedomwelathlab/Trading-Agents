@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-12)
+## Current (Phase 1-13)
 
 ```mermaid
 flowchart LR
@@ -11,7 +11,7 @@ flowchart LR
     grantcheck -->|404 / 403| route["POST /brokers/{id}/trades"]
     client --> health[GET /health]
     client --> quote["GET /market-data/{symbol}/quote\nany authenticated user"]
-    client --> admin["/admin/users, /admin/roles,\n/admin/broker-grants\nrequires admin:manage"]
+    client --> admin["/admin/users, /admin/roles,\n/admin/broker-grants\n+ PATCH update/deactivate\nrequires admin:manage"]
     admin --> db
     route --> settings[Settings\nfail-closed live gate\n+ risk limit defaults\n+ fail-closed JWT secret]
     route --> db[(Postgres/TimescaleDB)]
@@ -46,7 +46,11 @@ requires a Bearer token from `/auth/login`, a role granting
 `trade:submit:paper`, AND an explicit `BrokerGrant` for that specific
 `broker_id` — all settable through `/admin/users`, `/admin/roles`,
 `/admin/broker-grants` after one bootstrap admin is created by direct SQL
-(D013). A broker's cash/positions are loaded from and saved back to
+(D013). `PATCH /admin/users/{id}` and `PATCH /admin/roles/{id}` (D016)
+close the remaining "SQL-only" gap for deactivating a user or changing a
+role's permissions after creation — both take effect on a user's very
+next request, since `get_current_user` re-checks `is_active` and reloads
+the role fresh every time rather than trusting the JWT. A broker's cash/positions are loaded from and saved back to
 Postgres around every trade (D014) — the in-process `PaperBrokerRegistry`
 is gone entirely; verified by killing and restarting a live server
 mid-test and confirming cumulative cash/positions carried over.

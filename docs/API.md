@@ -93,12 +93,40 @@ Response (201, `CreateUserResponse`): `{"id": "...", "email": "...",
 "is_active": true, "role_id": null}` — never includes the password or its
 hash. 409 for a duplicate email.
 
+## `PATCH /admin/users/{user_id}`
+
+Requires `admin:manage` (D016). Request (`UpdateUserRequest`), all fields
+optional: `{"is_active": false, "role_id": null}`. Only keys actually
+present in the JSON body are applied — omit a key to leave it untouched;
+send `"role_id": null` to unassign the role. `"is_active": null` is 422
+(the field can be omitted or a real boolean, never null). An unknown
+`role_id` is 404. Unknown `user_id` is 404.
+
+This is how a user is deactivated — there is no separate delete/deactivate
+endpoint (deleting the row would orphan `orders.submitted_by_user_id`).
+Takes effect immediately: `get_current_user` re-checks `is_active` on
+every request rather than trusting the JWT, so an already-issued token
+for a just-deactivated user gets 401 on its very next request, with no
+wait for token expiry. Response (200, `CreateUserResponse`).
+
 ## `POST /admin/roles`
 
 Requires `admin:manage`. Request (`CreateRoleRequest`): `{"name": "...",
 "description": null, "permissions": ["trade:submit:paper"]}`. Response
 (201, `CreateRoleResponse`) echoes back the created row. 409 for a
 duplicate name.
+
+## `PATCH /admin/roles/{role_id}`
+
+Requires `admin:manage` (D016). Request (`UpdateRoleRequest`), all fields
+optional: `{"description": "...", "permissions": ["trade:submit:paper"]}`.
+Same `model_fields_set` convention as the user PATCH. `name` is
+deliberately not updatable here. Unknown `role_id` is 404. Response (200,
+`CreateRoleResponse`).
+
+Replacing `permissions` takes effect for every holder of the role on
+their very next request — nothing caches a permission set, so an
+already-issued token immediately reflects the new grant (or its absence).
 
 ## `POST /admin/broker-grants`
 
@@ -114,8 +142,9 @@ Requires `admin:manage`. 204 on success, 404 if the grant doesn't exist.
 Revoking takes effect immediately — a subsequent trade attempt on that
 broker by that user gets 403.
 
-No update or deactivate endpoints for users/roles, and no listing
-endpoints anywhere (D013 — deliberate scope cut, not an oversight).
+No delete endpoints for users/roles (D016 — would orphan FKs, deactivate/
+clear-permissions instead), and no listing endpoints anywhere (D013 —
+deliberate scope cut, not an oversight).
 
 ## `GET /market-data/{symbol}/quote`
 
