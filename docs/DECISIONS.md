@@ -145,3 +145,33 @@ Consequences: both fixes are structural, not per-call-site patches — a new
 enum column or a new async test automatically avoids both bugs.
 Status: Implemented, verified (`tests/db/test_order_persistence.py` failed
 before both fixes, passes after).
+
+---
+
+**D008 — Market data service ships as a routing skeleton, no vendor wired**
+Date: 2026-08-23
+Decision: `apps/api/app/marketdata/` provides `MarketDataProvider` (a
+Protocol), `MarketDataRouter` (ordered fallback across providers, typed
+`DataUnavailableError`/`VendorError` distinguished from any other
+exception), and `MarketSnapshot` (the normalized quote type). No concrete
+vendor adapter (Longbridge, IBKR, a public REST API, anything) is
+implemented or wired to a default router this phase.
+Reason: no vendor credentials are configured in this project, and inventing
+a "default" free-data integration without the user choosing one would mean
+either (a) silently depending on an unauthenticated public endpoint the
+user never agreed to, or (b) building against fixture data that risks being
+mistaken for real market data later — both cut against spec Sec57's
+no-fabrication rule in spirit. The router's no-fabrication guarantee (raise
+`NoDataAvailableError` with a `NO_DATA_AVAILABLE:`-prefixed message rather
+than ever inventing a price) is real and tested regardless of which vendor
+eventually plugs in.
+Alternatives: wire a specific free vendor now (e.g. a public quote API) as
+a default. Rejected pending the user's choice - this is an open decision,
+not a technical blocker.
+Consequences: the risk engine's `market_data_as_of` freshness check still
+has no real data source feeding it in production - every test that builds
+a `TradeProposal` still supplies its own timestamp by hand. That's the
+concrete gap this decision leaves open.
+Status: Implemented (routing/normalization contract only), tested
+(`tests/marketdata/`, 9 tests, all against in-process fakes - never a real
+network call).

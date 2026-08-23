@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-4)
+## Current (Phase 1-5)
 
 ```mermaid
 flowchart LR
@@ -8,6 +8,10 @@ flowchart LR
     api --> settings[Settings\nfail-closed live gate]
     api --> db[(Postgres/TimescaleDB)]
     api -.future.-> redis[(Redis)]
+
+    vendors[No vendor wired yet\nD008] -.-> router[MarketDataRouter\nno-fabrication fallback]
+    router -.-> snapshot[MarketSnapshot]
+    snapshot -.would feed.-> proposal
 
     proposal[TradeProposal] --> persist[OMS submit_trade_and_record]
     persist --> oms[submit_trade]
@@ -21,9 +25,12 @@ flowchart LR
 `apps/api/app/main.py` boots the app, logs startup mode, exposes `/health`.
 `apps/api/app/core/config.py` is the single source of the execution-mode gate.
 `apps/api/app/db/` holds SQLAlchemy models and the async session factory.
-The trading path (bottom half of the diagram) is wired end-to-end, including
+The trading path (right half of the diagram) is wired end-to-end, including
 persistence — but has no HTTP entrypoint yet, so it's exercised only by
-tests today. The `PaperBrokerAdapter` itself still doesn't persist its own
+tests today. The market-data router (dotted lines, left) is built and
+tested but has no provider plugged in and nothing yet calls it to build a
+`TradeProposal` — that wiring is future work once a vendor is chosen
+(D008). The `PaperBrokerAdapter` itself still doesn't persist its own
 cash/position ledger (D005) even though the `Order`/`Fill` decision record
 now does — those are two different things, and only the latter is done.
 

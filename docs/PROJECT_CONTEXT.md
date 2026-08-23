@@ -46,16 +46,18 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-4 complete: repo skeleton, deterministic risk engine, paper broker
-+ OMS, order/fill persistence. See
+Phases 1-5 complete: repo skeleton, deterministic risk engine, paper broker
++ OMS, order/fill persistence, market-data routing skeleton. See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Nothing external can
 submit a trade yet — no HTTP endpoint calls the OMS; it's exercised only by
-tests.
+tests. No real market-data vendor is wired (D008) — that's an open decision
+for the user, not a technical gap.
 
 ## Planned Work
 
-Phase 5+: HTTP endpoint for trade submission, market-data service, agent/LLM
-layer, frontend. Order not finalized.
+Phase 6+: a concrete market-data vendor adapter (once chosen), an HTTP
+endpoint for trade submission, agent/LLM layer, frontend. Order not
+finalized.
 
 ## Known Problems
 
@@ -77,6 +79,13 @@ what this repo's docs can verify.)
 - Order/fill persistence: done (D006). Still open: nothing external can
   reach `submit_trade_and_record()` — no auth, no HTTP endpoint. That's the
   natural next piece.
+- **Which market data vendor to wire is an open decision requiring user
+  input (D008).** The routing/normalization contract is built and tested;
+  no concrete provider exists. Options include a paid data vendor, a free
+  public API, or the Longbridge/IBKR connections already available
+  elsewhere in this user's tooling (those are MCP tools reachable in chat,
+  not currently something this FastAPI service calls — wiring one in would
+  need its own auth/rate-limit handling inside this app).
 
 ## Important Constraints
 

@@ -124,6 +124,24 @@ Important: `LiveContext` construction re-checks `live_trading_enabled` even
 though `Settings` already enforces it — deliberate defense in depth
 (spec §46), not redundant code to simplify away.
 
+## Market data
+
+Purpose: vendor routing with an explicit fallback chain and a hard
+no-fabrication floor.
+Main files: `apps/api/app/marketdata/models.py` (`MarketSnapshot`),
+`apps/api/app/marketdata/provider.py` (`MarketDataProvider` Protocol,
+`DataUnavailableError`, `VendorError`), `apps/api/app/marketdata/router.py`
+(`MarketDataRouter`, `NoDataAvailableError`)
+Dependencies: none beyond stdlib/pydantic — no HTTP client, no vendor SDK
+Tests: `tests/marketdata/` (9 tests, all against in-process fake providers)
+Important: **no concrete `MarketDataProvider` is implemented or wired** —
+see `docs/DECISIONS.md` D008. Only `DataUnavailableError` and `VendorError`
+trigger fallback to the next provider; any other exception propagates
+immediately rather than being silently treated as "try the next one." When
+every provider fails, `NoDataAvailableError`'s message is prefixed
+`NO_DATA_AVAILABLE:` by convention — grep for that prefix, don't invent a
+different sentinel elsewhere in the codebase.
+
 ## Packages (placeholders, not yet populated)
 
 `packages/llm_providers/`, `packages/data_providers/` — destinations for
