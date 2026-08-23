@@ -1,0 +1,1 @@
+Determine which tests are relevant to the files changed in the current working tree (git diff --name-only). Run those targeted pytest files first. Only run the full suite (pytest, then ruff check ., then mypy apps) if the targeted run passes and the change is non-trivial or nearing completion.

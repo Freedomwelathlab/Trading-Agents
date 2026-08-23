@@ -1,0 +1,1 @@
+Read docs/IMPLEMENTATION_STATUS.md and report its Completed/In Progress/Blocked/Planned sections compactly. Do not re-derive status by scanning the repo — the doc is the source of truth; update it first if it's stale.

@@ -1,0 +1,54 @@
+# Decision Log
+
+Only architecturally significant decisions. Trivial choices don't belong
+here.
+
+---
+
+**D001 — Build fresh rather than fork TradingAgents**
+Date: 2026-08-22
+Decision: New modular-monolith repo (`trading-os/`), vendoring select
+reusable TradingAgents packages later (Apache-2.0, see root `NOTICE`)
+rather than forking and extending.
+Reason: TradingAgents is a research-only pipeline (no OMS/risk/broker code);
+its `risk_mgmt/` package is LLM debate personas with zero deterministic
+math — the opposite of what this project's risk engine must be. Extending
+it would mean fighting its shape more than reusing it.
+Alternatives: fork-and-extend TradingAgents directly.
+Consequences: more upfront scaffolding (this Phase 1), but a data model and
+risk boundary that match the spec from the start.
+Status: Approved by user 2026-08-22 ("The architecture is approved.").
+
+---
+
+**D002 — Typed, fail-closed execution-mode gate**
+Date: 2026-08-22
+Decision: `TradingMode` enum (`research`/`paper`/`live`) in `Settings`,
+which raises at construction if `live` is set without
+`LIVE_TRADING_ENABLED=true`.
+Reason: Spec §46 requires fail-closed behavior; encoding the check in the
+settings object itself means it's impossible to boot the app into an
+inconsistent live-but-disabled state, rather than relying on every call site
+to remember to check.
+Alternatives: runtime check scattered at each order-submission call site.
+Consequences: any future LIVE-mode confirmation flow (spec §56) must build
+on top of this flag, not bypass it.
+Status: Implemented, tested (`tests/test_config.py`).
+
+---
+
+**D003 — Documentation-as-memory bootstrap**
+Date: 2026-08-23
+Decision: Adopted the `docs/` hierarchy + root `CLAUDE.md` structure so
+future sessions read documentation instead of reconstructing context from
+chat history.
+Reason: User-requested project optimization; matches the project's own
+scale better than inventing token-router/agent-policy infrastructure before
+any agent exists.
+Alternatives: full token-routing/caching infra now, ahead of any LLM call
+existing in the codebase — rejected as premature (nothing to route yet).
+Consequences: `docs/AI_OPTIMIZATION.md`, `TOKEN_POLICY.md`,
+`MODEL_ROUTING.md`, `AGENT_POLICY.md` are written as policy-to-build-against,
+not descriptions of running systems — revisit their content once the first
+agent ships.
+Status: Implemented.

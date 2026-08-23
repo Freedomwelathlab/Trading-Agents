@@ -1,0 +1,1 @@
+Read docs/IMPLEMENTATION_STATUS.md (Planned section) and docs/PROJECT_CONTEXT.md (Planned Work). Identify the single highest-priority next task, taking docs/DECISIONS.md's Open Decisions into account. State it in one or two sentences with the reason it's next, not a list of options.
