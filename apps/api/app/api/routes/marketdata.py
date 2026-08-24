@@ -1,7 +1,6 @@
-"""Read-only market data. Deliberately not wired into trade submission
-yet - whether a proposal's price should come from a live quote or stay
-caller-supplied is a separate, not-yet-made decision (see
-docs/DECISIONS.md D015's Consequences)."""
+"""Read-only market data. Also the same router trade submission uses
+when a caller omits estimated_price (D017) - this endpoint lets a client
+preview the price that submitting without one would use."""
 
 from fastapi import APIRouter, Depends, HTTPException
 

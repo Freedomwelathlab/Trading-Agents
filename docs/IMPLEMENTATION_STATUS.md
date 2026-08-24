@@ -190,6 +190,25 @@ Update this after meaningful implementation work — not for every commit.
   check — both prove `get_current_user`'s live re-check (never a cached
   JWT claim) is what makes authorization changes take effect
   immediately.
+- Phase 14: market data wired into trade submission (2026-08-24). Closes
+  D015's explicitly-left-open question. `TradeSubmissionRequest.estimated_price`
+  is now optional — supplied, it's authoritative exactly as every prior
+  phase behaved and the vendor is never consulted; omitted,
+  `POST /brokers/{broker_id}/trades` fetches one live `MarketSnapshot`
+  from the same `MarketDataRouter` the read-only quote endpoint uses, and
+  takes both price and `market_data_as_of` from it together (never a
+  vendor price paired with a caller-chosen timestamp). No vendor wired is
+  400 `NOT_CONFIGURED:`; no data for the symbol is 400
+  `NO_DATA_AVAILABLE:` — the same no-fabrication sentinels used
+  everywhere else in the codebase. 4 new integration tests (one proves
+  the vendor is never called at all when a price is supplied, using a
+  provider that raises if invoked), 105/105 total tests passing (104 in
+  one run plus the fail-closed JWT-secret test re-verified in true
+  isolation, since it needs the env var genuinely unset), ruff+mypy clean
+  (43 source files). Verified live against a running server, real
+  Postgres, no Longbridge credentials configured: omitting
+  `estimated_price` returned 400 `NOT_CONFIGURED`; supplying one still
+  returned 200 filled exactly as before this phase.
 
 ## In Progress
 
@@ -201,9 +220,7 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 14+ (order not finalized): connecting the market-data router to
-trade-proposal construction (D015's explicitly-left-open question),
-agent/LLM layer, frontend.
+Phase 15+ (order not finalized): agent/LLM layer, frontend.
 
 ## Technical Debt
 
@@ -217,12 +234,13 @@ optimization.
 
 ## Tests
 
-101 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+105 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), Longbridge provider
-(8, against a fake client), trades HTTP endpoint (14, DB-backed, all
-require auth+permission+broker grant), auth security unit tests (8),
+(8, against a fake client), trades HTTP endpoint (18, DB-backed, all
+require auth+permission+broker grant — 14 pre-D017 + 4 covering the
+omitted-price/live-quote path), auth security unit tests (8),
 authorization unit tests (3), login route (4, DB-backed), admin routes
 (16, DB-backed — 9 create/grant + 7 update/deactivate), broker-state
 persistence (3, DB-backed).

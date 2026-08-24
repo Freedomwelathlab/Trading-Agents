@@ -50,7 +50,14 @@ Request body (`TradeSubmissionRequest`):
   "marks": {}
 }
 ```
-`market_data_as_of` defaults to the server's current time if omitted.
+`estimated_price` is optional (D017). Supplied: it's authoritative and no
+vendor is consulted; `market_data_as_of` defaults to the server's current
+time if also omitted. Omitted: the server fetches a live quote from the
+configured market data vendor and uses its price AND timestamp together
+(never a caller-supplied `market_data_as_of` mixed with a vendor price) —
+400 `NOT_CONFIGURED:` if no vendor is wired, 400 `NO_DATA_AVAILABLE:` if
+the vendor has no data for the symbol, matching `GET /market-data/{symbol}/quote`'s
+own error semantics.
 `marks` must supply the current price for every OTHER open position on
 this broker (not the traded symbol, which uses `estimated_price`) — a
 missing mark for a held position is a 400 `DATA_UNAVAILABLE:`, never a
@@ -158,11 +165,10 @@ Response (200, `QuoteResponse`): `{"symbol": "AAPL.US", "price": "...",
 503 with a `NOT_CONFIGURED:`-prefixed detail if no market data vendor is
 wired (`LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN`
 not all set — D015). 404 with a `NO_DATA_AVAILABLE:`-prefixed detail if
-the vendor has no quote for the symbol. **Not connected to trade
-submission** — `POST /brokers/{broker_id}/trades` still takes
-`estimated_price`/`market_data_as_of` from the caller regardless of what
-this endpoint would return; see `docs/DECISIONS.md` D015 for why that's
-an open decision, not an oversight.
+the vendor has no quote for the symbol. Connected to trade submission as
+of D017 — `POST /brokers/{broker_id}/trades` uses this same router when
+`estimated_price` is omitted from the trade request; this endpoint lets a
+caller preview the price such a submission would use.
 
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

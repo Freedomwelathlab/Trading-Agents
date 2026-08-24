@@ -18,12 +18,21 @@ class TradeSubmissionRequest(BaseModel):
     symbol: str = Field(min_length=1)
     side: Side
     quantity: Decimal = Field(gt=0)
-    estimated_price: Decimal = Field(gt=0)
+    estimated_price: Decimal | None = Field(default=None, gt=0)
+    """Omit to have the server fetch a live quote from the configured
+    market data vendor (D017) and use its price. If supplied, the
+    caller's price is authoritative and no vendor is consulted - this is
+    what every trade submission did before D017 and remains fully
+    supported. 400 NOT_CONFIGURED / DATA_UNAVAILABLE if omitted and no
+    vendor is wired or no data exists; the server never guesses a price
+    itself."""
     stop_price: Decimal | None = Field(default=None, gt=0)
     market_data_as_of: datetime | None = None
-    """Omit to use the server's current time. This is a timestamp
-    convenience default, not a fabricated data value - the price and
-    symbol always come from the caller, never invented server-side."""
+    """Only meaningful alongside a caller-supplied estimated_price - omit
+    to use the server's current time. Ignored (and overwritten by the
+    vendor's own quote timestamp) when estimated_price is omitted, since
+    mixing a live price with a caller-chosen timestamp would misrepresent
+    when that price was actually observed."""
     marks: dict[str, Decimal] = Field(default_factory=dict)
     """Current price for every OTHER open position on this broker (not the
     symbol being traded, which uses estimated_price). Required to value

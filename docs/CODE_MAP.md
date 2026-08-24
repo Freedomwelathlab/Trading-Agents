@@ -185,15 +185,18 @@ don't "simplify" that early-return away.
 Purpose: the FastAPI-facing surface — DTOs, route handlers,
 request-scoped dependency wiring. Separate from the domain models
 (risk/oms/execution) so the HTTP contract can evolve independently.
-Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest`,
-`TradeSubmissionResponse`), `apps/api/app/api/dependencies.py`
-(`require_broker_access`, `AuthorizedBroker`),
+Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest` —
+`estimated_price` optional as of D017, `TradeSubmissionResponse`),
+`apps/api/app/api/dependencies.py`
+(`require_broker_access`, `AuthorizedBroker`, `get_market_data_router`),
 `apps/api/app/api/routes/trades.py` (`POST /brokers/{broker_id}/trades`)
 Dependencies: `apps.api.app.oms.persistence`, `apps.api.app.execution.persistence`,
-`apps.api.app.db.models`, `apps.api.app.core.config`, `apps.api.app.auth.dependencies`
-Tests: `tests/api/test_trades.py` (14 integration tests against a real
+`apps.api.app.marketdata.router` (D017), `apps.api.app.db.models`,
+`apps.api.app.core.config`, `apps.api.app.auth.dependencies`
+Tests: `tests/api/test_trades.py` (18 integration tests against a real
 Postgres instance, using `httpx.AsyncClient` + `ASGITransport` — see the
-Important note below, and D009)
+Important note below, and D009; 4 of the 18 cover D017's omitted-price
+path via `app.dependency_overrides[get_market_data_router]`)
 Important: this route is the *only* sanctioned way to reach
 `submit_trade_and_record()` from outside the process. `require_broker_access`
 (`apps/api/app/api/dependencies.py`, D012) is the single dependency that
@@ -202,6 +205,10 @@ decides whether a request may touch a given `broker_id` at all — identity
 (404) → a specific `BrokerGrant` row (403) — and hands the route back an
 `AuthorizedBroker(user, broker)` so the route no longer looks up the
 broker itself. Every persisted order still records `submitted_by_user_id`.
+`estimated_price` is optional (D017): supplied, it's authoritative and
+`get_market_data_router` is never called; omitted, the route fetches one
+`MarketSnapshot` and takes both price and `market_data_as_of` from it
+together, never mixing a live price with a caller-supplied timestamp.
 **Testing an async endpoint that also touches the DB directly in the same
 test must use `httpx.AsyncClient(transport=ASGITransport(app=app), ...)`,
 never FastAPI's `TestClient`** — `TestClient` runs the app in a separate
@@ -221,9 +228,11 @@ Dependencies: `apps.api.app.api.dependencies.get_market_data_router`
 (returns `app.state.market_data_router`, which is `None` when no vendor
 built at startup), `apps.api.app.auth.dependencies.get_current_user`
 Important: requires *any* authenticated user (`get_current_user`) — no
-special permission, since it's read-only and not a trading action.
-Deliberately separate from the trades endpoint; see the Market data
-section above for why the two aren't connected yet.
+special permission, since it's read-only and not a trading action. As of
+D017, `POST /brokers/{broker_id}/trades` uses this same
+`get_market_data_router`/`MarketDataRouter` when a trade omits
+`estimated_price` — this endpoint lets a caller preview that price
+without submitting a trade.
 
 ## Admin routes
 

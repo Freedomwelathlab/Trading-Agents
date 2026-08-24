@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-13)
+## Current (Phase 1-14)
 
 ```mermaid
 flowchart LR
@@ -18,7 +18,7 @@ flowchart LR
 
     quote --> router[MarketDataRouter]
     router --> longbridge["LongbridgeMarketDataProvider\nlongport SDK"]
-    longbridge -.not wired in.-> proposal
+    longbridge -.if estimated_price omitted (D017).-> proposal
     router -.-> snapshot[MarketSnapshot]
 
     proposal[TradeProposal] --> loadbroker["load_paper_broker\nSELECT ... FOR UPDATE"]
@@ -55,11 +55,12 @@ Postgres around every trade (D014) — the in-process `PaperBrokerRegistry`
 is gone entirely; verified by killing and restarting a live server
 mid-test and confirming cumulative cash/positions carried over.
 `GET /market-data/{symbol}/quote` (D015) is wired to a real Longbridge
-provider but **not connected to `proposal`** (dotted line) — trade
-submission still takes price/timestamp from the caller unchanged; no real
-Longbridge credentials exist in this environment, so only the
-"not-configured" path and the fake-client-backed routing logic were
-verified directly, not a live quote.
+provider and now feeds trade submission too (D017, dotted line) — but
+only when the caller omits `estimated_price`; a caller-supplied price is
+always authoritative and the vendor is never consulted in that case. No
+real Longbridge credentials exist in this environment, so only the
+"not-configured" path and the fake-provider-backed routing/trade logic
+were verified directly, not a live quote.
 
 ## Target (per governing spec, not yet built)
 

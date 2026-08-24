@@ -548,3 +548,62 @@ PATCHed that user's role to add the permission, and the same token
 immediately got past the permission check (404 for the nonexistent
 broker id used in the test, rather than another 403) - confirming role
 permission changes also propagate without re-login.
+
+---
+
+**D017 — Market data connected to trade submission: caller-supplied price stays authoritative, omission fetches a live quote**
+Date: 2026-08-24
+Decision: `TradeSubmissionRequest.estimated_price` (`apps/api/app/api/schemas.py`)
+becomes optional. If the caller supplies it, behavior is unchanged from
+every phase before this one - the vendor is never consulted, and
+`market_data_as_of` defaults to the server's current time exactly as
+before. If the caller omits it, `POST /brokers/{broker_id}/trades`
+(`apps/api/app/api/routes/trades.py`) fetches a live quote via the same
+`MarketDataRouter` `GET /market-data/{symbol}/quote` uses, and takes both
+`estimated_price` and `market_data_as_of` from that one `MarketSnapshot` -
+never mixing a live price with a caller-chosen timestamp, and never
+partially filling in only one of the two from a quote. No router
+configured is 400 `NOT_CONFIGURED:`; a router configured but with no data
+for the symbol is 400 `NO_DATA_AVAILABLE:` (the router's own message,
+already prefixed). Neither case invents a price.
+Reason: D015 explicitly left "whether/how to connect the two" open rather
+than deciding it as a side effect of wiring the vendor. Now that both
+sides exist and are independently tested, the two credible answers were
+(a) caller-supplied price always required, quote endpoint stays read-only
+forever, or (b) an omitted price falls back to a live quote. (b) was
+chosen because `docs/API.md`'s original description of the quote endpoint
+already said "not connected to trade submission... see D015 for why
+that's an open decision, not an oversight" - i.e. the omission was always
+provisional, not a settled design. Keeping the caller-supplied path fully
+authoritative (never overridden even when a vendor is wired) preserves
+every existing test and every prior phase's behavior unchanged - this is
+purely additive.
+Alternatives: (a) always require a caller-supplied price - rejected,
+leaves the vendor wired but genuinely useless for anything but manual
+`GET` inspection. (c) let a caller-supplied `market_data_as_of` survive
+even when the price comes from a live quote - rejected as a lie: pairing
+a fresh price with a stale/arbitrary caller timestamp would misrepresent
+when that price was actually observed, undermining the freshness check
+the risk engine runs on `market_data_as_of`.
+Consequences: submitting without a price now depends on the market data
+vendor being configured and having data for the symbol - a new way for a
+trade submission to legitimately 400 that didn't exist before, but it's
+the same "fail closed, never fabricate" posture as every other gap in
+this codebase, not a weakening of it. No real Longbridge credentials
+exist in this environment, so the "vendor returns a real quote" path is
+verified only against a fake provider in tests, not Longbridge itself -
+same limitation D015 already had for the read endpoint.
+Status: Implemented, tested (`tests/api/test_trades.py`, 4 new
+integration tests against real Postgres: omitting the price with no
+vendor wired is 400 `NOT_CONFIGURED`; omitting it with a fake vendor
+wired via `dependency_overrides` fills using that vendor's price;
+omitting it when the vendor has no data is 400 `NO_DATA_AVAILABLE`; and
+supplying a price with a vendor wired proves the vendor is never called
+at all, using a provider that raises `AssertionError` if invoked).
+105/105 total tests passing (104 via the disposable venv's DB-backed run
+plus one fail-closed JWT-secret test re-verified in isolation, since it
+requires the env var truly unset), ruff+mypy clean (43 source files).
+Verified live against a running server, real Postgres, no Longbridge
+credentials configured: omitting `estimated_price` returned 400
+`NOT_CONFIGURED` as expected; supplying one still returned 200 filled
+exactly as every prior phase's trades did.

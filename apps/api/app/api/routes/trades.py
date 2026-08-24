@@ -2,6 +2,12 @@
 always goes through submit_trade_and_record() (apps/api/app/oms/persistence.py),
 which itself always goes through the risk engine first - there is no
 shortcut from this route to a broker call.
+
+estimated_price is optional (D017): if the caller omits it, a live quote
+is fetched from the configured market data vendor and used for both the
+price and market_data_as_of - never fabricated, never fetched-then-ignored.
+If the caller supplies a price, it is authoritative and no vendor is
+consulted, exactly as before D017.
 """
 
 import uuid
@@ -10,13 +16,18 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.app.api.dependencies import AuthorizedBroker, require_broker_access
+from apps.api.app.api.dependencies import (
+    AuthorizedBroker,
+    get_market_data_router,
+    require_broker_access,
+)
 from apps.api.app.api.schemas import TradeSubmissionRequest, TradeSubmissionResponse
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import BrokerKind, OrderStatus
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
+from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
 from apps.api.app.oms.persistence import submit_trade_and_record
 from apps.api.app.risk.models import RiskLimits, TradeProposal
 
@@ -30,6 +41,7 @@ async def submit_trade_endpoint(
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
     authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
+    market_data_router: MarketDataRouter | None = Depends(get_market_data_router),
 ) -> TradeSubmissionResponse:
     if authorized.broker.kind is not BrokerKind.PAPER:
         raise HTTPException(
@@ -40,13 +52,33 @@ async def submit_trade_endpoint(
             ),
         )
 
+    if request.estimated_price is not None:
+        estimated_price = request.estimated_price
+        market_data_as_of = request.market_data_as_of or datetime.now(UTC)
+    else:
+        if market_data_router is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "NOT_CONFIGURED: estimated_price was omitted and no market "
+                    "data vendor is wired (see docs/DECISIONS.md D008/D017)."
+                ),
+            )
+        try:
+            snapshot = await market_data_router.get_snapshot(request.symbol)
+        except NoDataAvailableError as exc:
+            # Message is already NO_DATA_AVAILABLE:-prefixed by the router.
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        estimated_price = snapshot.price
+        market_data_as_of = snapshot.as_of
+
     proposal = TradeProposal(
         symbol=request.symbol,
         side=request.side,
         quantity=request.quantity,
-        estimated_price=request.estimated_price,
+        estimated_price=estimated_price,
         stop_price=request.stop_price,
-        market_data_as_of=request.market_data_as_of or datetime.now(UTC),
+        market_data_as_of=market_data_as_of,
     )
 
     # Locks the broker's account row for the rest of this transaction -
@@ -54,7 +86,7 @@ async def submit_trade_endpoint(
     broker_adapter = await load_paper_broker(
         session, broker_id, default_starting_cash=settings.paper_broker_starting_cash
     )
-    marks = {**request.marks, request.symbol: request.estimated_price}
+    marks = {**request.marks, request.symbol: estimated_price}
     try:
         account = broker_adapter.get_account_state(marks=marks)
     except ValueError as exc:

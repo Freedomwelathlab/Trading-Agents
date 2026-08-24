@@ -46,11 +46,12 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-13 complete: repo skeleton, deterministic risk engine, paper
+Phases 1-14 complete: repo skeleton, deterministic risk engine, paper
 broker + OMS, order/fill persistence, market-data routing, HTTP trade
 submission, authentication, role-based authorization, per-broker access
 grants, a minimal admin API (now including update/deactivate), persisted
-paper-broker state, and a real Longbridge market-data provider. See
+paper-broker state, a real Longbridge market-data provider, and market
+data connected to trade submission. See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
@@ -61,16 +62,18 @@ and `PATCH /admin/roles/{id}` (D016), taking effect on the affected
 user's very next request — no re-login needed, since `get_current_user`
 never trusts a cached JWT claim. A trader's cash and positions live in
 `broker_accounts`/`broker_positions` (D014) and survive a process
-restart. `GET /market-data/{symbol}/quote` (D015) is wired to Longbridge
-but not yet connected to trade-proposal construction — an explicit open
-decision, not an oversight (no real Longbridge credentials exist in this
-environment, so only the "not configured" path and the routing logic
-against a fake client were verified directly).
+restart. `GET /market-data/{symbol}/quote` (D015) is wired to Longbridge,
+and `estimated_price` on a trade submission is now optional (D017) — if
+the caller omits it, the same router supplies a live price and timestamp
+together; if supplied, the caller's price remains fully authoritative,
+unchanged from every phase before D017. No real Longbridge credentials
+exist in this environment, so only the "not configured" path and
+fake-provider-backed routing/trade logic were verified directly, not a
+live quote.
 
 ## Planned Work
 
-Phase 14+: connecting the market-data router to trade-proposal
-construction (D015), agent/LLM layer, frontend. Order not finalized.
+Phase 15+: agent/LLM layer, frontend. Order not finalized.
 
 ## Known Problems
 
@@ -104,12 +107,11 @@ what this repo's docs can verify.)
 - Market data vendor: done (D015) — Longbridge, chosen by the user over
   IBKR/a free API. `GET /market-data/{symbol}/quote` works when
   `LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN` are all
-  set; 503 `NOT_CONFIGURED` otherwise. Still open: whether/how a live
-  quote should feed `TradeSubmissionRequest.estimated_price`/
-  `market_data_as_of` when the caller omits them, versus always requiring
-  an explicit caller-supplied price as today — a load-bearing semantic
-  choice about what's authoritative for a fill, deliberately not decided
-  as a side effect of wiring the vendor.
+  set; 503 `NOT_CONFIGURED` otherwise. Connected to trade submission: done
+  (D017) — `estimated_price` is optional on `POST /brokers/{id}/trades`;
+  omitted, a live quote supplies both price and `market_data_as_of`
+  together; supplied, the caller's price stays fully authoritative and
+  the vendor is never consulted, unchanged from every phase before D017.
 
 ## Important Constraints
 

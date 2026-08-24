@@ -13,6 +13,8 @@ event loop as the rest of the test, avoiding the mismatch entirely.
 
 import contextlib
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -506,3 +508,151 @@ async def test_missing_mark_for_an_existing_position_is_a_400_not_a_guess():
 
         assert response.status_code == 400
         assert "DATA_UNAVAILABLE" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_omitting_estimated_price_with_no_vendor_wired_is_400_not_configured():
+    """No vendor is wired in the test environment (no Longbridge
+    credentials configured), so app.state.market_data_router is already
+    None - the realistic 'no override needed' case."""
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            response = await client.post(
+                f"/brokers/{broker_id}/trades",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"symbol": "AAPL", "side": "buy", "quantity": "10", "stop_price": "95"},
+            )
+
+        assert response.status_code == 400
+        assert "NOT_CONFIGURED" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_omitting_estimated_price_uses_a_live_quote_from_the_vendor():
+    from apps.api.app.api.dependencies import get_market_data_router
+    from apps.api.app.marketdata.models import MarketSnapshot
+    from apps.api.app.marketdata.router import MarketDataRouter
+
+    class FakeProvider:
+        name = "fake-vendor"
+
+        async def get_snapshot(self, symbol: str) -> MarketSnapshot:
+            return MarketSnapshot(
+                symbol=symbol,
+                price=Decimal("123.45"),
+                as_of=datetime.now(UTC),
+                source=self.name,
+            )
+
+    fake_router = MarketDataRouter([FakeProvider()])
+
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            app.dependency_overrides[get_market_data_router] = lambda: fake_router
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    f"/brokers/{broker_id}/trades",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"symbol": "AAPL", "side": "buy", "quantity": "10", "stop_price": "95"},
+                )
+            finally:
+                del app.dependency_overrides[get_market_data_router]
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "filled"
+        assert body["fill_price"] == "123.45"
+
+
+@pytest.mark.asyncio
+async def test_omitting_estimated_price_with_no_data_for_symbol_is_400_no_data_available():
+    from apps.api.app.api.dependencies import get_market_data_router
+    from apps.api.app.marketdata.models import MarketSnapshot
+    from apps.api.app.marketdata.provider import DataUnavailableError
+    from apps.api.app.marketdata.router import MarketDataRouter
+
+    class FailingProvider:
+        name = "fake-vendor"
+
+        async def get_snapshot(self, symbol: str) -> MarketSnapshot:
+            raise DataUnavailableError(f"no data for {symbol!r}")
+
+    fake_router = MarketDataRouter([FailingProvider()])
+
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            app.dependency_overrides[get_market_data_router] = lambda: fake_router
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    f"/brokers/{broker_id}/trades",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"symbol": "AAPL", "side": "buy", "quantity": "10", "stop_price": "95"},
+                )
+            finally:
+                del app.dependency_overrides[get_market_data_router]
+
+        assert response.status_code == 400
+        assert "NO_DATA_AVAILABLE" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_supplied_estimated_price_is_authoritative_even_with_a_vendor_wired():
+    """If the caller supplies estimated_price, the vendor must not be
+    consulted at all - proven here with a vendor that would raise if
+    called."""
+    from apps.api.app.api.dependencies import get_market_data_router
+    from apps.api.app.marketdata.models import MarketSnapshot
+    from apps.api.app.marketdata.router import MarketDataRouter
+
+    class ExplodingProvider:
+        name = "fake-vendor"
+
+        async def get_snapshot(self, symbol: str) -> MarketSnapshot:
+            raise AssertionError("vendor should not be consulted when a price is supplied")
+
+    fake_router = MarketDataRouter([ExplodingProvider()])
+
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            app.dependency_overrides[get_market_data_router] = lambda: fake_router
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    f"/brokers/{broker_id}/trades",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "quantity": "10",
+                        "estimated_price": "100",
+                        "stop_price": "95",
+                    },
+                )
+            finally:
+                del app.dependency_overrides[get_market_data_router]
+
+        assert response.status_code == 200
+        assert response.json()["fill_price"] == "100"
