@@ -1,8 +1,9 @@
 # AI Optimization Policy
 
-Applies once the agent/LLM layer exists (not yet built — no LLM call exists
-in this codebase today). Written now so Phase 2+ agent code is built against
-a decided policy instead of retrofitting one later.
+Applies now that the agent/LLM layer exists (`TraderAgent`, D018 —
+one narrow agent so far, not the full parallel-analyst stack). Written
+before the first agent shipped so it was built against a decided policy
+instead of retrofitting one later.
 
 ## Objectives
 

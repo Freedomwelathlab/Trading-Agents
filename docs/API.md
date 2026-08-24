@@ -86,6 +86,42 @@ exist; 400 with a `NOT_CONFIGURED:`-prefixed detail if the broker isn't a
 paper broker; 400 with a `DATA_UNAVAILABLE:`-prefixed detail if a mark is
 missing for an existing position.
 
+## `POST /brokers/{broker_id}/agent-trades`
+
+Same auth/permission/broker-grant requirements as
+`POST /brokers/{broker_id}/trades` (D018). Request (`AgentTradeRequest`):
+```json
+{"symbol": "AAPL.US", "directive": "moderate momentum long, tight stop", "marks": {}}
+```
+No price field — the `TraderAgent` proposes `side`/`quantity`/a stop
+distance (percent of price); the price itself always comes from the same
+live-quote path `POST /brokers/{broker_id}/trades` uses when
+`estimated_price` is omitted (D017), never from the agent. The resulting
+proposal goes through the identical Risk Engine path a human-submitted
+trade uses — an oversized or otherwise invalid agent-proposed trade is
+rejected the same way a human-submitted one would be, not silently
+allowed through.
+
+Response (200, `AgentTradeResponse` — `TradeSubmissionResponse` plus
+`side`, `quantity`, `rationale`):
+```json
+{
+  "order_id": "...", "status": "filled", "approved": true,
+  "block_reason": null, "detail": null,
+  "fill_quantity": "1", "fill_price": "123.45",
+  "side": "buy", "quantity": "1", "rationale": "clean breakout above resistance"
+}
+```
+`rationale` is the agent's one-sentence explanation — informational only,
+never itself validated or acted on.
+
+Error responses: same 401/403/404 as the human-submitted route, plus 400
+`NOT_CONFIGURED:` if no LLM provider is wired
+(`LLM_PROVIDER_BASE_URL`/`_API_KEY`/`_MODEL` not all set) or if no market
+data vendor is wired; 502 `AGENT_OUTPUT_INVALID:` if the provider's
+response isn't parseable/valid JSON matching the expected schema — never
+a fabricated trade in either failure case.
+
 ## `POST /admin/users`
 
 Requires `Authorization: Bearer <token>` from a user whose role grants

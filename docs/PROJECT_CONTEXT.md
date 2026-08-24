@@ -46,13 +46,13 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-14 complete: repo skeleton, deterministic risk engine, paper
+Phases 1-15 complete: repo skeleton, deterministic risk engine, paper
 broker + OMS, order/fill persistence, market-data routing, HTTP trade
 submission, authentication, role-based authorization, per-broker access
 grants, a minimal admin API (now including update/deactivate), persisted
-paper-broker state, a real Longbridge market-data provider, and market
-data connected to trade submission. See
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+paper-broker state, a real Longbridge market-data provider, market data
+connected to trade submission, and the first agent (a single
+`TraderAgent`). See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
 `broker_id` — all of which can be set up via `/admin/*` routes after one
@@ -71,11 +71,23 @@ credentials were supplied and verified live 2026-08-24 (local, gitignored
 `.env`, never committed) — both the read-only quote endpoint and an
 omitted-price trade returned genuine live Longbridge prices, not just the
 "not configured" path and fake-provider tests this was previously limited
-to.
+to. `POST /brokers/{broker_id}/agent-trades` (D018) is the first
+LLM-backed code in the codebase — a single `TraderAgent` proposes
+side/quantity/a stop distance from a symbol + free-text directive, price
+still always comes from the same live-quote path (never the agent), and
+the result goes through the identical Risk Engine path a human-submitted
+trade uses. OmniRoute was unreachable in this environment at
+implementation time, so this route's "provider actually configured" path
+is verified only against a fake provider in tests, not a real completion
+yet.
 
 ## Planned Work
 
-Phase 15+: agent/LLM layer, frontend. Order not finalized.
+Phase 16+: the parallel analyst layer (technical/fundamental/news/
+sentiment) and research debate per the governing spec's "Target"
+architecture, frontend. Order not finalized. Also pending: re-verify
+D018's live-provider path once OmniRoute (or another compatible endpoint)
+is reachable.
 
 ## Known Problems
 
@@ -88,8 +100,17 @@ what this repo's docs can verify.)
 ## Open Decisions
 
 - Whether `packages/llm_providers` / `packages/data_providers` get vendored
-  from TradingAgents now or deferred until the agent layer phase (currently
-  leaning deferred — no consumer exists yet).
+  from TradingAgents now or deferred until the full parallel-analyst layer
+  is built (currently leaning deferred — the single `TraderAgent` shipped
+  in D018 has no need for either package yet).
+- First agent: done (D018) — a single `TraderAgent` (side/quantity/stop
+  distance only, never price), reachable via
+  `POST /brokers/{broker_id}/agent-trades`, going through the same Risk
+  Engine path as a human-submitted trade. Still open: the parallel
+  analyst layer, research debate, and Portfolio Manager from the
+  governing spec's target architecture are not started; re-verifying
+  D018 against a real OmniRoute completion (only fake-provider-verified
+  so far, OmniRoute unreachable at implementation time).
 - Risk-engine rule set is decided and implemented (D004). Still open:
   duplicate-order detection and an explicit emergency-stop *source*
   (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —

@@ -1,27 +1,40 @@
-"""The only HTTP entrypoint that can move a trade toward the broker. It
-always goes through submit_trade_and_record() (apps/api/app/oms/persistence.py),
+"""The only HTTP entrypoints that can move a trade toward the broker. Both
+always go through submit_trade_and_record() (apps/api/app/oms/persistence.py),
 which itself always goes through the risk engine first - there is no
-shortcut from this route to a broker call.
+shortcut from either route to a broker call.
 
-estimated_price is optional (D017): if the caller omits it, a live quote
-is fetched from the configured market data vendor and used for both the
-price and market_data_as_of - never fabricated, never fetched-then-ignored.
-If the caller supplies a price, it is authoritative and no vendor is
-consulted, exactly as before D017.
+estimated_price is optional on the human-submitted route (D017): if the
+caller omits it, a live quote is fetched from the configured market data
+vendor and used for both the price and market_data_as_of - never
+fabricated, never fetched-then-ignored. If the caller supplies a price,
+it is authoritative and no vendor is consulted, exactly as before D017.
+
+The agent-trades route (D018) never accepts a price at all - side,
+quantity, and stop distance come from the TraderAgent, and price always
+comes from the same live-quote path, never the agent (docs/AGENT_POLICY.md:
+no agent output is authoritative for price).
 """
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.agents.trader import AgentOutputError, TraderAgent, stop_price_from_distance
 from apps.api.app.api.dependencies import (
     AuthorizedBroker,
     get_market_data_router,
+    get_trader_agent,
     require_broker_access,
 )
-from apps.api.app.api.schemas import TradeSubmissionRequest, TradeSubmissionResponse
+from apps.api.app.api.schemas import (
+    AgentTradeRequest,
+    AgentTradeResponse,
+    TradeSubmissionRequest,
+    TradeSubmissionResponse,
+)
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
@@ -32,17 +45,23 @@ from apps.api.app.oms.persistence import submit_trade_and_record
 from apps.api.app.risk.models import RiskLimits, TradeProposal
 
 router = APIRouter(prefix="/brokers/{broker_id}/trades", tags=["trades"])
+agent_router = APIRouter(prefix="/brokers/{broker_id}/agent-trades", tags=["trades", "agents"])
 
 
-@router.post("", response_model=TradeSubmissionResponse)
-async def submit_trade_endpoint(
-    broker_id: uuid.UUID,
-    request: TradeSubmissionRequest,
-    session: AsyncSession = Depends(get_session),
-    settings: Settings = Depends(get_settings),
-    authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
-    market_data_router: MarketDataRouter | None = Depends(get_market_data_router),
-) -> TradeSubmissionResponse:
+async def _resolve_live_quote(
+    symbol: str, market_data_router: MarketDataRouter | None, *, not_configured_hint: str
+) -> tuple[Decimal, datetime]:
+    if market_data_router is None:
+        raise HTTPException(status_code=400, detail=not_configured_hint)
+    try:
+        snapshot = await market_data_router.get_snapshot(symbol)
+    except NoDataAvailableError as exc:
+        # Message is already NO_DATA_AVAILABLE:-prefixed by the router.
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return snapshot.price, snapshot.as_of
+
+
+def _require_paper_broker(authorized: AuthorizedBroker) -> None:
     if authorized.broker.kind is not BrokerKind.PAPER:
         raise HTTPException(
             status_code=400,
@@ -52,41 +71,21 @@ async def submit_trade_endpoint(
             ),
         )
 
-    if request.estimated_price is not None:
-        estimated_price = request.estimated_price
-        market_data_as_of = request.market_data_as_of or datetime.now(UTC)
-    else:
-        if market_data_router is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "NOT_CONFIGURED: estimated_price was omitted and no market "
-                    "data vendor is wired (see docs/DECISIONS.md D008/D017)."
-                ),
-            )
-        try:
-            snapshot = await market_data_router.get_snapshot(request.symbol)
-        except NoDataAvailableError as exc:
-            # Message is already NO_DATA_AVAILABLE:-prefixed by the router.
-            raise HTTPException(status_code=400, detail=str(exc)) from None
-        estimated_price = snapshot.price
-        market_data_as_of = snapshot.as_of
 
-    proposal = TradeProposal(
-        symbol=request.symbol,
-        side=request.side,
-        quantity=request.quantity,
-        estimated_price=estimated_price,
-        stop_price=request.stop_price,
-        market_data_as_of=market_data_as_of,
-    )
-
+async def _execute_trade(
+    *,
+    session: AsyncSession,
+    settings: Settings,
+    broker_id: uuid.UUID,
+    proposal: TradeProposal,
+    marks: dict[str, Decimal],
+    submitted_by_user_id: uuid.UUID,
+) -> TradeSubmissionResponse:
     # Locks the broker's account row for the rest of this transaction -
     # see apps/api/app/execution/persistence.py's module docstring for why.
     broker_adapter = await load_paper_broker(
         session, broker_id, default_starting_cash=settings.paper_broker_starting_cash
     )
-    marks = {**request.marks, request.symbol: estimated_price}
     try:
         account = broker_adapter.get_account_state(marks=marks)
     except ValueError as exc:
@@ -108,7 +107,7 @@ async def submit_trade_endpoint(
         limits,
         broker_adapter,
         emergency_stop_active=settings.emergency_stop_active,
-        submitted_by_user_id=authorized.user.id,
+        submitted_by_user_id=submitted_by_user_id,
     )
 
     await save_paper_broker(session, broker_id, broker_adapter)
@@ -123,4 +122,110 @@ async def submit_trade_endpoint(
         detail=result.risk_decision.detail,
         fill_quantity=result.fill.quantity if result.fill else None,
         fill_price=result.fill.fill_price if result.fill else None,
+    )
+
+
+@router.post("", response_model=TradeSubmissionResponse)
+async def submit_trade_endpoint(
+    broker_id: uuid.UUID,
+    request: TradeSubmissionRequest,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
+    market_data_router: MarketDataRouter | None = Depends(get_market_data_router),
+) -> TradeSubmissionResponse:
+    _require_paper_broker(authorized)
+
+    if request.estimated_price is not None:
+        estimated_price = request.estimated_price
+        market_data_as_of = request.market_data_as_of or datetime.now(UTC)
+    else:
+        estimated_price, market_data_as_of = await _resolve_live_quote(
+            request.symbol,
+            market_data_router,
+            not_configured_hint=(
+                "NOT_CONFIGURED: estimated_price was omitted and no market "
+                "data vendor is wired (see docs/DECISIONS.md D008/D017)."
+            ),
+        )
+
+    proposal = TradeProposal(
+        symbol=request.symbol,
+        side=request.side,
+        quantity=request.quantity,
+        estimated_price=estimated_price,
+        stop_price=request.stop_price,
+        market_data_as_of=market_data_as_of,
+    )
+
+    return await _execute_trade(
+        session=session,
+        settings=settings,
+        broker_id=broker_id,
+        proposal=proposal,
+        marks={**request.marks, request.symbol: estimated_price},
+        submitted_by_user_id=authorized.user.id,
+    )
+
+
+@agent_router.post("", response_model=AgentTradeResponse)
+async def submit_agent_trade_endpoint(
+    broker_id: uuid.UUID,
+    request: AgentTradeRequest,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
+    market_data_router: MarketDataRouter | None = Depends(get_market_data_router),
+    trader_agent: TraderAgent | None = Depends(get_trader_agent),
+) -> AgentTradeResponse:
+    _require_paper_broker(authorized)
+
+    if trader_agent is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "NOT_CONFIGURED: no LLM provider is wired "
+                "(see docs/DECISIONS.md D018)."
+            ),
+        )
+
+    try:
+        idea = await trader_agent.propose(symbol=request.symbol, directive=request.directive)
+    except AgentOutputError as exc:
+        raise HTTPException(status_code=502, detail=f"AGENT_OUTPUT_INVALID: {exc}") from None
+
+    # Price is always deterministic (D017), never the agent's - the idea
+    # only supplies side/quantity/stop distance.
+    estimated_price, market_data_as_of = await _resolve_live_quote(
+        request.symbol,
+        market_data_router,
+        not_configured_hint=(
+            "NOT_CONFIGURED: no market data vendor is wired "
+            "(see docs/DECISIONS.md D008/D017)."
+        ),
+    )
+    stop_price = stop_price_from_distance(
+        price=estimated_price, side=idea.side, stop_distance_pct=idea.stop_distance_pct
+    )
+
+    proposal = TradeProposal(
+        symbol=request.symbol,
+        side=idea.side,
+        quantity=idea.quantity,
+        estimated_price=estimated_price,
+        stop_price=stop_price,
+        market_data_as_of=market_data_as_of,
+    )
+
+    result = await _execute_trade(
+        session=session,
+        settings=settings,
+        broker_id=broker_id,
+        proposal=proposal,
+        marks={**request.marks, request.symbol: estimated_price},
+        submitted_by_user_id=authorized.user.id,
+    )
+
+    return AgentTradeResponse(
+        **result.model_dump(), side=idea.side, quantity=idea.quantity, rationale=idea.rationale
     )

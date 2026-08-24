@@ -1,7 +1,8 @@
 # Agent Policy
 
-No agents exist in this codebase yet. This is the policy to design the first
-one against.
+One agent exists (`TraderAgent`, D018) — a single-responsibility trade-idea
+drafter, not the full parallel-analyst/research-debate stack below. This
+remains the policy every future agent is designed against.
 
 ## Rules
 

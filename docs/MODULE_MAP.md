@@ -4,10 +4,10 @@ System-level view. "—" means not built yet; do not assume it exists.
 
 | Module | Responsibility | Inputs | Outputs | Depends on | Status |
 |---|---|---|---|---|---|
-| API (`apps/api`) | HTTP entrypoint, settings, logging, trade submission, admin | HTTP requests | JSON | DB, OMS, Risk Engine, Broker Registry, Auth | Phase 1, 6, 7, 10, 13 |
+| API (`apps/api`) | HTTP entrypoint, settings, logging, trade submission, admin | HTTP requests | JSON | DB, OMS, Risk Engine, Broker Registry, Auth, Agents | Phase 1, 6, 7, 10, 13, 15 |
 | Database | Persist users/roles/assets/brokers/orders/fills | ORM calls | Rows | Postgres | Phase 1, 4 |
 | Frontend | — | — | — | API | Not started |
-| Agents | — | — | — | LLM providers, market data | Not started |
+| Agents | Draft a trade idea (side/quantity/stop distance) from a symbol + directive; never authoritative for price/risk | Symbol, directive text | `TradeIdea` (structured, validated) | LLM provider (Anthropic Messages API-compatible), Risk Engine (validates the idea downstream) | Phase 15 (done) — single `TraderAgent` only (D018), reachable via `POST /brokers/{broker_id}/agent-trades`; not the parallel analyst/debate layer below |
 | Research (debate) | — | — | — | Agents | Not started |
 | Risk Engine | Deterministic trade validation, fail-closed | Trade proposal, account state | Approve/block | Portfolio, market data | Phase 2 (done) |
 | Portfolio | Track positions/P&L | Fills, prices | Position/P&L state | Risk Engine, Broker | Not started — paper broker tracks cash/positions itself for now, no separate portfolio module |

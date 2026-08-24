@@ -619,3 +619,93 @@ returned 200 `filled` with a real market price (`311.680`) sourced from
 `GET /market-data/{symbol}/quote`'s live response, closing the one
 remaining gap this entry originally flagged. Credentials in a local,
 gitignored `.env`, never committed.
+
+---
+
+**D018 — First agent: a single-responsibility TraderAgent, provider-agnostic Anthropic-Messages-API client, never authoritative for price or risk**
+Date: 2026-08-24
+Decision: `apps/api/app/agents/` adds the first LLM-backed code in this
+codebase. `LLMProvider` (`provider.py`) is a narrow Protocol
+(`complete(system, user, max_tokens) -> str`) mirroring
+`marketdata/provider.py`'s shape exactly — same optional-vendor,
+NOT_CONFIGURED-if-unset, typed-error posture, just for text completions.
+`AnthropicCompatibleProvider` (`anthropic_compatible.py`) is the one
+concrete implementation: any endpoint speaking the Anthropic Messages API
+(`POST {base_url}/v1/messages`, bearer auth) works, OmniRoute included —
+deliberately not named or hard-coded to OmniRoute specifically
+(`LLM_PROVIDER_BASE_URL`/`_API_KEY`/`_MODEL`, not `OMNIROUTE_*`), per
+`docs/MODEL_ROUTING.md`'s "model names must be configurable, never
+hard-coded" rule. `TraderAgent` (`trader.py`) is the first (and, this
+phase, only) agent: given a symbol and a free-text directive, it asks the
+provider for a JSON `{side, quantity, stop_distance_pct, rationale}` and
+validates it into a `TradeIdea` — single responsibility per
+`docs/AGENT_POLICY.md` (drafts a proposal shape only; does not analyze,
+research, or size against portfolio risk). New
+`POST /brokers/{broker_id}/agent-trades` (`apps/api/app/api/routes/trades.py`)
+wires it up: the agent proposes side/quantity/stop distance, the same
+deterministic live-quote path from D017 supplies the price, a new
+deterministic `stop_price_from_distance()` converts the agent's percentage
+into an actual stop price against that real price, and the resulting
+`TradeProposal` goes through the exact same `submit_trade_and_record()`
+→ Risk Engine path a human-submitted trade uses — no separate, weaker
+validation path for agent-originated trades. Extracted `_resolve_live_quote`/
+`_execute_trade`/`_require_paper_broker` helpers in `trades.py` so both
+routes share one implementation of "fetch a live quote" and "run the risk
+path," rather than the agent route re-implementing D017's logic.
+Reason: `docs/AGENT_POLICY.md` and `docs/TRADING_SAFETY.md` (spec §62)
+both require that no agent output is ever authoritative for price,
+balance, position, P&L, or risk, and that the deterministic Risk Engine
+validates everything an LLM proposes. The design here makes that
+structurally true rather than a convention to remember: the agent's
+`TradeIdea` type has no price field at all, so there's no field to
+accidentally trust; the endpoint fetches price the same way D017 already
+does, unconditionally, regardless of what the agent said. A single narrow
+agent (not a full analyst/debate/portfolio-manager stack) is a deliberate
+scope cut — `docs/AGENT_POLICY.md`: "each agent is a specialist with one
+responsibility... don't build a do-everything agent," and there is no
+existing consumer yet for the parallel-analyst/research-debate layers the
+governing spec eventually wants.
+Alternatives: (a) let the agent propose a price too, cross-checked against
+a live quote — rejected as unnecessary complexity; the live quote is
+already authoritative, so an agent-proposed price would only ever be
+overridden or used as a sanity-check nobody asked for. (b) a generic
+"LLM client" without a typed `TradeIdea` schema, parsed ad hoc at each
+call site — rejected, `docs/AGENT_POLICY.md` requires structured output,
+not free text a downstream consumer parses; the whole point of `TradeIdea`
+is that `trades.py` never touches raw LLM text. (c) hard-code the client
+against OmniRoute's specific base URL/auth scheme — rejected per
+`docs/MODEL_ROUTING.md`; the settings are provider-name-agnostic on
+purpose, matching the Longbridge precedent's request-a-vendor-not-assume-
+a-vendor posture.
+Consequences: a malformed or unparseable LLM response is a 502
+`AGENT_OUTPUT_INVALID:` — a new external failure mode this route can hit
+that the human-submitted route can't, but consistent with "fail closed,
+never fabricate" rather than a weakening; the caller gets a clear signal
+to retry the directive or fall back to the human-submitted endpoint,
+never a guessed trade. No LLM provider configured is 400
+`NOT_CONFIGURED:`, identical convention to D008/D015/D017. OmniRoute was
+unreachable in this environment at implementation time (connection
+refused on `127.0.0.1:20128`), so only the NOT_CONFIGURED path and the
+fake-provider-backed agent/routing logic were verified directly — the
+"provider actually configured and returns a usable completion" path is
+untested against a real vendor, the same limitation D015 had for
+Longbridge before real credentials existed (see D015/D017's 2026-08-24
+updates for how that gap was later closed — the analogous step here is
+pointing `LLM_PROVIDER_*` at a reachable OmniRoute instance and re-running
+this verification).
+Status: Implemented, tested: `tests/agents/test_trader.py` (8 unit tests
+against a fake `LLMProvider` — valid JSON, JSON wrapped in prose, non-JSON
+response, a response missing a required field, a zero quantity failing
+validation, a provider error wrapped as `AgentOutputError`, and both stop-
+price-from-distance directions); `tests/api/test_agent_trades.py` (5
+integration tests against real Postgres — no provider configured is 400
+NOT_CONFIGURED; a valid agent idea is submitted through the normal risk
+path and fills; an oversized agent-proposed quantity is rejected by the
+Risk Engine, not the agent, proving no bypass; malformed agent output is
+502 not a fabricated trade; a missing broker grant is 403 before the
+agent is ever called, proven with a provider that raises if invoked).
+118/118 total tests passing, ruff+mypy clean (47 source files). Verified
+live against a running server, real Postgres: with no `LLM_PROVIDER_*`
+configured, the app booted logging `llm_provider=NOT_CONFIGURED`, and
+`POST /brokers/{id}/agent-trades` returned 400 `NOT_CONFIGURED` rather
+than any fabricated trade idea.

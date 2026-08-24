@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     be set together or the Longbridge provider isn't built at all - see
     apps/api/app/marketdata/providers/longbridge.py and docs/DECISIONS.md D015."""
 
+    llm_provider_base_url: str | None = None
+    llm_provider_api_key: str | None = None
+    llm_provider_model: str | None = None
+    """All three optional, same all-or-nothing posture as the Longbridge
+    trio above - the agent layer is genuinely optional to configure
+    (docs/AGENT_POLICY.md, D018). Deliberately provider-name-agnostic
+    (not e.g. OMNIROUTE_*): docs/MODEL_ROUTING.md requires model/provider
+    config to never be hard-coded, so any Anthropic-Messages-API-compatible
+    endpoint works here, OmniRoute included. See
+    apps/api/app/agents/anthropic_compatible.py and docs/DECISIONS.md D018."""
+
     jwt_secret_key: str
     """No default, deliberately - an app that can silently boot with a
     built-in JWT secret is a worse failure mode than one that refuses to

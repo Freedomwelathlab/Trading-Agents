@@ -186,17 +186,26 @@ Purpose: the FastAPI-facing surface — DTOs, route handlers,
 request-scoped dependency wiring. Separate from the domain models
 (risk/oms/execution) so the HTTP contract can evolve independently.
 Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest` —
-`estimated_price` optional as of D017, `TradeSubmissionResponse`),
+`estimated_price` optional as of D017, `TradeSubmissionResponse`,
+`AgentTradeRequest`/`AgentTradeResponse` as of D018),
 `apps/api/app/api/dependencies.py`
-(`require_broker_access`, `AuthorizedBroker`, `get_market_data_router`),
-`apps/api/app/api/routes/trades.py` (`POST /brokers/{broker_id}/trades`)
+(`require_broker_access`, `AuthorizedBroker`, `get_market_data_router`,
+`get_trader_agent`),
+`apps/api/app/api/routes/trades.py` (`router`:
+`POST /brokers/{broker_id}/trades`; `agent_router`:
+`POST /brokers/{broker_id}/agent-trades` — both registered separately in
+`main.py`; shares `_resolve_live_quote`/`_execute_trade`/
+`_require_paper_broker` helpers between the two routes)
 Dependencies: `apps.api.app.oms.persistence`, `apps.api.app.execution.persistence`,
-`apps.api.app.marketdata.router` (D017), `apps.api.app.db.models`,
-`apps.api.app.core.config`, `apps.api.app.auth.dependencies`
+`apps.api.app.marketdata.router` (D017), `apps.api.app.agents.trader` (D018),
+`apps.api.app.db.models`, `apps.api.app.core.config`, `apps.api.app.auth.dependencies`
 Tests: `tests/api/test_trades.py` (18 integration tests against a real
 Postgres instance, using `httpx.AsyncClient` + `ASGITransport` — see the
 Important note below, and D009; 4 of the 18 cover D017's omitted-price
-path via `app.dependency_overrides[get_market_data_router]`)
+path via `app.dependency_overrides[get_market_data_router]`),
+`tests/api/test_agent_trades.py` (5 integration tests for the
+agent-trades route, reusing `test_trades.py`'s fixtures/helpers via
+direct import rather than duplicating them)
 Important: this route is the *only* sanctioned way to reach
 `submit_trade_and_record()` from outside the process. `require_broker_access`
 (`apps/api/app/api/dependencies.py`, D012) is the single dependency that
@@ -302,13 +311,50 @@ real package and introspecting it directly (`dir()`/`inspect.signature()`)
 before writing code against it — two web sources gave conflicting
 answers for Longbridge's own SDK, so don't trust documentation alone.
 
+## Agents
+
+Purpose: the first LLM-backed code in this codebase — a single
+`TraderAgent`, not the full analyst/research-debate/portfolio-manager
+stack the governing spec eventually wants (D018).
+Main files: `apps/api/app/agents/provider.py` (`LLMProvider` Protocol,
+`LLMProviderError` — mirrors `marketdata/provider.py`'s shape),
+`apps/api/app/agents/anthropic_compatible.py`
+(`AnthropicCompatibleProvider`, `build_llm_provider`),
+`apps/api/app/agents/trader.py` (`TradeIdea`, `AgentOutputError`,
+`TraderAgent`, `build_trader_agent`, `stop_price_from_distance`)
+Dependencies: `httpx` (the only network client `AnthropicCompatibleProvider`
+uses — not imported by `TraderAgent` or by tests)
+Tests: `tests/agents/test_trader.py` (8 unit tests against a fake
+`LLMProvider` — never a real network call), `tests/api/test_agent_trades.py`
+(5 integration tests against real Postgres for `POST /brokers/{id}/agent-trades`)
+Important: `build_llm_provider(settings)` returns `None` unless
+`LLM_PROVIDER_BASE_URL`/`_API_KEY`/`_MODEL` are *all* set — same
+all-or-nothing posture as Longbridge (D015). The client is deliberately
+provider-name-agnostic (not `OMNIROUTE_*`) per `docs/MODEL_ROUTING.md`;
+any endpoint speaking the Anthropic Messages API works. `TradeIdea` has
+**no price field at all** — the agent proposes `side`/`quantity`/a stop
+distance only, price always comes from the same live-quote path D017
+uses (`apps/api/app/api/routes/trades.py`'s `_resolve_live_quote`), and
+`stop_price_from_distance()` (deterministic, not agent output) converts
+the proposed distance into a real stop price against that live price.
+The resulting `TradeProposal` goes through the identical
+`submit_trade_and_record()` → Risk Engine path a human-submitted trade
+uses — no separate or weaker validation for agent-originated trades.
+Malformed/unparseable LLM output raises `AgentOutputError`, surfaced as
+502 `AGENT_OUTPUT_INVALID:`, never a fabricated trade. OmniRoute was
+unreachable in this environment at implementation time, so only the
+NOT_CONFIGURED path and fake-provider-backed logic are verified directly
+here — not a real vendor completion.
+
 ## Packages (placeholders, not yet populated)
 
 `packages/llm_providers/`, `packages/data_providers/` — destinations for
-Apache-2.0-licensed code vendored from TradingAgents once the agent/data
-layer phase starts. Currently just READMEs. See root `NOTICE`.
+Apache-2.0-licensed code vendored from TradingAgents once the full
+analyst/research-debate layer (beyond the single `TraderAgent` above)
+starts. Currently just READMEs. See root `NOTICE`.
 
 ## Not yet present
 
-Order/fill persistence, market-data service, agent/LLM layer, frontend,
-auth. Do not import from paths that don't exist yet.
+The parallel analyst layer, research debate, Portfolio Manager, and
+frontend (see the "Target" diagram in `docs/ARCHITECTURE.md`). Do not
+import from paths that don't exist yet.

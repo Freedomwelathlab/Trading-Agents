@@ -48,3 +48,22 @@ class TradeSubmissionResponse(BaseModel):
     detail: str | None
     fill_quantity: Decimal | None
     fill_price: Decimal | None
+
+
+class AgentTradeRequest(BaseModel):
+    """D018: the human supplies the symbol and a free-text directive; the
+    TraderAgent proposes side/quantity/stop distance; the deterministic
+    market-data path (D017) supplies the price. marks behaves identically
+    to TradeSubmissionRequest.marks."""
+
+    symbol: str = Field(min_length=1)
+    directive: str = Field(min_length=1, max_length=500)
+    marks: dict[str, Decimal] = Field(default_factory=dict)
+
+
+class AgentTradeResponse(TradeSubmissionResponse):
+    side: Side
+    quantity: Decimal
+    rationale: str
+    """The agent's one-sentence explanation - informational only, never
+    itself validated or acted on (docs/AGENT_POLICY.md)."""

@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-14)
+## Current (Phase 1-15)
 
 ```mermaid
 flowchart LR
@@ -21,6 +21,12 @@ flowchart LR
     longbridge -.if estimated_price omitted (D017).-> proposal
     router -.-> snapshot[MarketSnapshot]
 
+    client --> agentroute["POST /brokers/{id}/agent-trades\nsame auth+grant checks"]
+    agentroute --> traderagent["TraderAgent.propose()\nside/quantity/stop_distance_pct"]
+    traderagent --> llmprovider["LLMProvider\nAnthropic Messages API\nOmniRoute or compatible"]
+    agentroute -->|price always from router,\nnever the agent (D018)| router
+    agentroute --> proposal
+
     proposal[TradeProposal] --> loadbroker["load_paper_broker\nSELECT ... FOR UPDATE"]
     loadbroker --> persist[OMS submit_trade_and_record]
     persist --> oms[submit_trade]
@@ -36,12 +42,13 @@ flowchart LR
 ```
 
 `apps/api/app/main.py` boots the app, logs startup mode, exposes `/health`
-and four routers (`/auth/login`, the trades router, the admin router,
-the market-data router). `apps/api/app/core/config.py` is the single
-source of the execution-mode gate, default risk limits, emergency-stop
-flag, `jwt_secret_key`, and the optional Longbridge credentials — the
-first three fail-closed with no defaults, Longbridge is genuinely
-optional (`None` unless all three vars are set). The trading path
+and five routers (`/auth/login`, the trades router, the agent-trades
+router, the admin router, the market-data router). `apps/api/app/core/config.py`
+is the single source of the execution-mode gate, default risk limits,
+emergency-stop flag, `jwt_secret_key`, and the optional Longbridge/LLM
+provider credentials — the first three fail-closed with no defaults,
+Longbridge and the LLM provider are each genuinely optional (`None`
+unless all three of their respective vars are set). The trading path
 requires a Bearer token from `/auth/login`, a role granting
 `trade:submit:paper`, AND an explicit `BrokerGrant` for that specific
 `broker_id` — all settable through `/admin/users`, `/admin/roles`,
@@ -57,10 +64,23 @@ mid-test and confirming cumulative cash/positions carried over.
 `GET /market-data/{symbol}/quote` (D015) is wired to a real Longbridge
 provider and now feeds trade submission too (D017, dotted line) — but
 only when the caller omits `estimated_price`; a caller-supplied price is
-always authoritative and the vendor is never consulted in that case. No
-real Longbridge credentials exist in this environment, so only the
-"not-configured" path and the fake-provider-backed routing/trade logic
-were verified directly, not a live quote.
+always authoritative and the vendor is never consulted in that case. Real
+paper-trading Longbridge credentials were supplied and verified live
+2026-08-24 (local, gitignored `.env`, not present by default) — both the
+read-only quote endpoint and an omitted-price trade returned genuine live
+prices.
+
+`POST /brokers/{id}/agent-trades` (D018) is the first LLM-backed code in
+this codebase — a single `TraderAgent` proposes `side`/`quantity`/a stop
+distance from a symbol and a free-text directive, routed through any
+Anthropic-Messages-API-compatible `LLMProvider` (OmniRoute is the
+intended one, not yet reachable in this environment — connection refused
+on `127.0.0.1:20128` at implementation time). This is a first, narrow
+slice of the "Target" diagram below — just the Trader-agent-to-Risk-Engine
+segment, not the parallel analyst layer or research debate. Price is
+never the agent's — it always comes from the same live-quote path D017
+uses, and the resulting proposal goes through the identical Risk Engine
+path a human-submitted trade does, no separate or weaker validation.
 
 ## Target (per governing spec, not yet built)
 

@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.agents.trader import TraderAgent
 from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
@@ -22,6 +23,12 @@ def get_market_data_router(request: Request) -> MarketDataRouter | None:
     """None means no vendor is configured (D008/D015) - callers must
     render that as NOT_CONFIGURED, never silently skip the check."""
     return request.app.state.market_data_router
+
+
+def get_trader_agent(request: Request) -> TraderAgent | None:
+    """None means no LLM provider is configured (D018) - callers must
+    render that as NOT_CONFIGURED, never silently skip the check."""
+    return request.app.state.trader_agent
 
 
 @dataclass

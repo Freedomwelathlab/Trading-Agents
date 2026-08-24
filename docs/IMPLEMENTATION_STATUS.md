@@ -208,7 +208,42 @@ Update this after meaningful implementation work — not for every commit.
   (43 source files). Verified live against a running server, real
   Postgres, no Longbridge credentials configured: omitting
   `estimated_price` returned 400 `NOT_CONFIGURED`; supplying one still
-  returned 200 filled exactly as before this phase.
+  returned 200 filled exactly as before this phase. (Update 2026-08-24:
+  real paper-trading Longbridge credentials were supplied and both this
+  phase's and D015's live-quote paths were re-verified against genuine
+  live data — see D015/D017's updates in `docs/DECISIONS.md`.)
+- Phase 15: first agent, TraderAgent (2026-08-24). `apps/api/app/agents/`
+  adds the first LLM-backed code in the codebase — a single
+  single-responsibility agent (`docs/AGENT_POLICY.md`), not the full
+  parallel-analyst/research-debate/portfolio-manager stack the governing
+  spec eventually wants. `LLMProvider` is a narrow Protocol mirroring
+  `MarketDataProvider`'s shape; `AnthropicCompatibleProvider` talks to any
+  endpoint speaking the Anthropic Messages API (OmniRoute is the intended
+  one) and is deliberately provider-name-agnostic
+  (`LLM_PROVIDER_BASE_URL`/`_API_KEY`/`_MODEL`, not `OMNIROUTE_*` —
+  `docs/MODEL_ROUTING.md`). `TraderAgent.propose()` takes a symbol and a
+  free-text directive and returns a validated `TradeIdea`
+  (side/quantity/stop_distance_pct/rationale) — **no price field at
+  all**. New `POST /brokers/{broker_id}/agent-trades`
+  (`apps/api/app/api/routes/trades.py`) combines that idea with the same
+  live-quote path D017 uses for price, converts the stop distance into a
+  real stop price deterministically, and submits through the identical
+  `submit_trade_and_record()` → Risk Engine path a human-submitted trade
+  uses — no separate or weaker validation for agent-originated trades.
+  Malformed/unparseable LLM output is 502 `AGENT_OUTPUT_INVALID:`, never
+  a fabricated trade; no provider configured is 400 `NOT_CONFIGURED:`,
+  same convention as every other optional vendor in this codebase. 13 new
+  tests (8 unit against a fake `LLMProvider`, 5 integration against real
+  Postgres — including one proving an oversized agent-proposed quantity
+  is rejected by the Risk Engine and not the agent, and one proving a
+  missing broker grant returns 403 before the agent is ever called, using
+  a provider that raises if invoked), 118/118 total tests passing,
+  ruff+mypy clean (47 source files). OmniRoute was unreachable in this
+  environment at implementation time (connection refused on
+  `127.0.0.1:20128`), so only the NOT_CONFIGURED path was verified live —
+  the "provider actually returns a usable completion" path is verified
+  only against a fake provider in tests, the same limitation D015
+  originally had for Longbridge before real credentials existed.
 
 ## In Progress
 
@@ -220,7 +255,11 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 15+ (order not finalized): agent/LLM layer, frontend.
+Phase 16+ (order not finalized): parallel analyst layer (technical/
+fundamental/news/sentiment) and research debate per the governing spec's
+"Target" architecture, frontend. Re-verify D018's live-provider path once
+OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is
+reachable.
 
 ## Technical Debt
 
@@ -234,7 +273,7 @@ optimization.
 
 ## Tests
 
-105 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+118 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), Longbridge provider
@@ -243,7 +282,8 @@ require auth+permission+broker grant — 14 pre-D017 + 4 covering the
 omitted-price/live-quote path), auth security unit tests (8),
 authorization unit tests (3), login route (4, DB-backed), admin routes
 (16, DB-backed — 9 create/grant + 7 update/deactivate), broker-state
-persistence (3, DB-backed).
+persistence (3, DB-backed), TraderAgent unit tests (8, against a fake
+`LLMProvider`), agent-trades HTTP endpoint (5, DB-backed).
 
 ## Known Issues
 

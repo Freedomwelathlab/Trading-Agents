@@ -1,6 +1,7 @@
 PROJECT:
-AI-powered multi-asset trading platform ("Trading OS"). Currently Phase 1
-(repo skeleton) — no agents, risk engine, or order path exist yet.
+AI-powered multi-asset trading platform ("Trading OS"). Phases 1-15 done
+(risk engine, order path, auth, admin API, market data, first agent) — see
+docs/IMPLEMENTATION_STATUS.md for exact status, don't assume from this file.
 
 PRIMARY OBJECTIVE:
 Build a production-grade AI trading operating system with strict
