@@ -66,10 +66,12 @@ restart. `GET /market-data/{symbol}/quote` (D015) is wired to Longbridge,
 and `estimated_price` on a trade submission is now optional (D017) — if
 the caller omits it, the same router supplies a live price and timestamp
 together; if supplied, the caller's price remains fully authoritative,
-unchanged from every phase before D017. No real Longbridge credentials
-exist in this environment, so only the "not configured" path and
-fake-provider-backed routing/trade logic were verified directly, not a
-live quote.
+unchanged from every phase before D017. Real paper-trading Longbridge
+credentials were supplied and verified live 2026-08-24 (local, gitignored
+`.env`, never committed) — both the read-only quote endpoint and an
+omitted-price trade returned genuine live Longbridge prices, not just the
+"not configured" path and fake-provider tests this was previously limited
+to.
 
 ## Planned Work
 

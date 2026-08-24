@@ -471,12 +471,17 @@ in the trading path calls it yet - `POST /brokers/{broker_id}/trades`
 still takes `estimated_price`/`market_data_as_of` directly from the
 caller, unchanged since Phase 6. Whether/how to connect the two is an
 explicit open decision, not an oversight (see `docs/PROJECT_CONTEXT.md`).
-No real Longbridge credentials exist in this environment, so the
-"configured" path (an actual live quote) could not be verified end to
-end - only the routing/fallback logic (unit-tested against a fake
-client) and the "not configured" path (verified live: app boots, logs
-`NOT_CONFIGURED`, and the endpoint returns 503 rather than any invented
-price) were verified directly.
+At the time this decision was made, no real Longbridge credentials
+existed in this environment, so only the routing/fallback logic
+(unit-tested against a fake client) and the "not configured" path
+(verified live: app boots, logs `NOT_CONFIGURED`, and the endpoint
+returns 503 rather than any invented price) had been verified directly.
+**Update 2026-08-24:** real paper-trading credentials were supplied and
+verified live - `GET /market-data/AAPL.US/quote` returned an actual
+Longbridge quote (`price: 311.550`, real `as_of` timestamp,
+`source: longbridge`), closing this gap. Credentials live in a local,
+gitignored `.env` (never committed) — see D017's update for the trade-path
+verification this unblocked.
 Status: Implemented, tested (`tests/marketdata/providers/test_longbridge.py`,
 8 unit tests covering snapshot construction, both timestamp shapes the
 SDK could plausibly return, empty results, non-positive price, a typed
@@ -589,10 +594,11 @@ Consequences: submitting without a price now depends on the market data
 vendor being configured and having data for the symbol - a new way for a
 trade submission to legitimately 400 that didn't exist before, but it's
 the same "fail closed, never fabricate" posture as every other gap in
-this codebase, not a weakening of it. No real Longbridge credentials
-exist in this environment, so the "vendor returns a real quote" path is
-verified only against a fake provider in tests, not Longbridge itself -
-same limitation D015 already had for the read endpoint.
+this codebase, not a weakening of it. At the time this decision was made,
+no real Longbridge credentials existed in this environment, so the
+"vendor returns a real quote" path was verified only against a fake
+provider in tests, not Longbridge itself - same limitation D015 already
+had for the read endpoint.
 Status: Implemented, tested (`tests/api/test_trades.py`, 4 new
 integration tests against real Postgres: omitting the price with no
 vendor wired is 400 `NOT_CONFIGURED`; omitting it with a fake vendor
@@ -607,3 +613,9 @@ Verified live against a running server, real Postgres, no Longbridge
 credentials configured: omitting `estimated_price` returned 400
 `NOT_CONFIGURED` as expected; supplying one still returned 200 filled
 exactly as every prior phase's trades did.
+**Update 2026-08-24:** re-verified live with real paper-trading Longbridge
+credentials configured — an omitted-price trade on a granted broker
+returned 200 `filled` with a real market price (`311.680`) sourced from
+`GET /market-data/{symbol}/quote`'s live response, closing the one
+remaining gap this entry originally flagged. Credentials in a local,
+gitignored `.env`, never committed.
