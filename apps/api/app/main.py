@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from apps.api.app.agents.anthropic_compatible import build_llm_provider
+from apps.api.app.agents.technical_analyst import build_technical_analyst
 from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
@@ -26,6 +27,11 @@ async def lifespan(app: FastAPI):
 
     llm_provider = build_llm_provider(settings)
     app.state.trader_agent = build_trader_agent(llm_provider)
+    # Phase 16 (D019): same underlying LLM_PROVIDER_* connection as
+    # TraderAgent - there's exactly one analyst this phase, so a second,
+    # separately-configured provider would be unused parallel infra with
+    # nothing to parallelize against (see D019's "future work" note).
+    app.state.technical_analyst = build_technical_analyst(llm_provider)
 
     logger.info(
         "trading_os_startup",
@@ -34,6 +40,7 @@ async def lifespan(app: FastAPI):
         emergency_stop_active=settings.emergency_stop_active,
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",
+        technical_analyst="configured" if app.state.technical_analyst else "NOT_CONFIGURED",
     )
     yield
 

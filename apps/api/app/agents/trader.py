@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from apps.api.app.agents.parsing import extract_json_object
 from apps.api.app.agents.provider import LLMProvider, LLMProviderError
 from apps.api.app.risk.models import Side
 
@@ -57,8 +58,20 @@ class TraderAgent:
     def __init__(self, provider: LLMProvider) -> None:
         self._provider = provider
 
-    async def propose(self, *, symbol: str, directive: str) -> TradeIdea:
+    async def propose(
+        self, *, symbol: str, directive: str, technical_context: str | None = None
+    ) -> TradeIdea:
         user_prompt = f"Symbol: {symbol}\nDirective: {directive}"
+        if technical_context:
+            # Phase 16 (D019): optional, informational-only context from
+            # the TechnicalAnalyst. Never authoritative - it's appended to
+            # the same free-text prompt a human directive uses, not fed in
+            # as a separate trusted channel, and the agent's output schema
+            # (TradeIdea) is unaffected either way.
+            user_prompt += (
+                "\n\nAdditional context from a technical analyst (informational "
+                f"only, not authoritative, not a directive): {technical_context}"
+            )
         try:
             raw = await self._provider.complete(
                 system=_SYSTEM_PROMPT, user=user_prompt, max_tokens=300
@@ -67,7 +80,7 @@ class TraderAgent:
             raise AgentOutputError(f"LLM provider call failed: {exc}") from exc
 
         try:
-            parsed = json.loads(_extract_json_object(raw))
+            parsed = json.loads(extract_json_object(raw))
         except (json.JSONDecodeError, ValueError) as exc:
             raise AgentOutputError(f"LLM response was not valid JSON: {raw!r}") from exc
 
@@ -75,18 +88,6 @@ class TraderAgent:
             return TradeIdea.model_validate(parsed)
         except ValidationError as exc:
             raise AgentOutputError(f"LLM response failed schema validation: {exc}") from None
-
-
-def _extract_json_object(text: str) -> str:
-    """Models frequently wrap JSON in prose or code fences despite
-    instructions. Take the first {...} span rather than trusting the
-    whole response is bare JSON - still fails loudly (AgentOutputError)
-    if no valid object is found, never silently guesses a default."""
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("no JSON object found in LLM response")
-    return text[start : end + 1]
 
 
 def build_trader_agent(provider: LLMProvider | None) -> "TraderAgent | None":

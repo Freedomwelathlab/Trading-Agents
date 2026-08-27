@@ -12,24 +12,31 @@ Full spec: `../../MASTER CLAUDE CODE PROMPT — WALL STREET AI TRADING OPERATING
 ## Current Architecture
 
 Modular monolith, ports-and-adapters. Today: FastAPI app + Postgres/TimescaleDB
-+ Redis, no agent layer yet. See [ARCHITECTURE.md](ARCHITECTURE.md).
++ Redis + a first, narrow agent layer (TraderAgent, TechnicalAnalyst — D018,
+D019). See [ARCHITECTURE.md](ARCHITECTURE.md) for the diagram and how this
+compares to the full target.
 
 ## Major Decisions
 
-See [DECISIONS.md](DECISIONS.md) — D001 (build fresh, vendor reusable
-TradingAgents pieces) and D002 (typed execution-mode gate) so far.
+See [DECISIONS.md](DECISIONS.md) — D001 through D019 so far; see
+"Current Status" below and IMPLEMENTATION_STATUS.md for the running summary.
 
 ## Agent Organization
 
-Not built yet. Planned per spec: analyst team (technical/fundamental/news/
-sentiment) → research (bull/bear debate) → trader → deterministic risk gate →
-portfolio manager → OMS → broker adapter. None of this exists in code today —
-do not assume agent modules are implemented.
+`TraderAgent` (D018) and `TechnicalAnalyst` (D019) exist — a proposal-only
+agent and a single read-only analyst, both routed through
+`AnthropicCompatibleProvider`. Not yet built: the full parallel analyst team
+(fundamental/news/sentiment — blocked on real data providers,
+`packages/data_providers/` is still an empty placeholder), research
+(bull/bear debate), and Portfolio Manager. Do not assume those modules are
+implemented.
 
-## Trading Workflow (target, not yet built)
+## Trading Workflow (target, not yet built in full)
 
-Data → Analysts → Research debate → Trader proposal → **Risk Engine
-(deterministic, non-LLM)** → Portfolio → OMS → Broker adapter.
+Data → Analysts (one exists: TechnicalAnalyst) → Research debate (not built)
+→ Trader proposal (TraderAgent exists) → **Risk Engine (deterministic,
+non-LLM, implemented)** → Portfolio (not built) → OMS (implemented) → Broker
+adapter (paper only, implemented).
 
 ## Safety Rules
 
@@ -46,13 +53,15 @@ Frontend (Next.js/TypeScript, per spec) not started.
 
 ## Current Status
 
-Phases 1-15 complete: repo skeleton, deterministic risk engine, paper
+Phases 1-16 complete: repo skeleton, deterministic risk engine, paper
 broker + OMS, order/fill persistence, market-data routing, HTTP trade
 submission, authentication, role-based authorization, per-broker access
 grants, a minimal admin API (now including update/deactivate), persisted
 paper-broker state, a real Longbridge market-data provider, market data
-connected to trade submission, and the first agent (a single
-`TraderAgent`). See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+connected to trade submission, the first agent (a single `TraderAgent`),
+and the first (one-analyst) slice of the parallel analyst layer (a single
+read-only `TechnicalAnalyst`). See
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
 `broker_id` — all of which can be set up via `/admin/*` routes after one
@@ -79,15 +88,33 @@ the result goes through the identical Risk Engine path a human-submitted
 trade uses. OmniRoute was unreachable in this environment at
 implementation time, so this route's "provider actually configured" path
 is verified only against a fake provider in tests, not a real completion
-yet.
+yet. Phase 16 (D019) adds the first analyst: `TechnicalAnalyst.analyze()`
+reads the same live quote `agent-trades` already fetches and writes a
+short, structured, read-only `TechnicalRead` (`stance`/`summary`/
+`confidence` — no side/quantity/price field). It computes no indicator
+itself (RSI/MACD/etc must be deterministic code once real historical
+price data exists — `packages/data_providers/` is still an empty
+placeholder). When configured (same `LLM_PROVIDER_*` connection as
+`TraderAgent`, not a separate one), its read is passed to
+`TraderAgent.propose()` as optional prompt context; absent or failed, the
+trade proceeds exactly as it did before Phase 16, no context appended,
+never blocked. Only a `TechnicalAnalyst` was built this phase — no
+`FundamentalAnalyst`/`NewsAnalyst`/`SentimentAnalyst`, since no real data
+source for any of those is wired into this codebase (spec §57's
+no-fabrication rule).
 
 ## Planned Work
 
-Phase 16+: the parallel analyst layer (technical/fundamental/news/
-sentiment) and research debate per the governing spec's "Target"
-architecture, frontend. Order not finalized. Also pending: re-verify
-D018's live-provider path once OmniRoute (or another compatible endpoint)
-is reachable.
+Phase 17+: the rest of the parallel analyst layer (fundamental/news/
+sentiment — each blocked on a real, wired data source per spec §57),
+research debate, and Portfolio Manager per the governing spec's "Target"
+architecture, frontend (a separate Phase 17 track is in progress on
+branch `phase-17-frontend`, tracked independently — not detailed here).
+Order not finalized. Also pending: re-verify D018/D019's live-provider
+paths once OmniRoute (or another compatible endpoint) is reachable; if a
+second analyst is ever added, revisit whether parallel-execution/fan-out
+infrastructure across analysts is now warranted (deliberately not built
+in Phase 16 — one analyst has nothing to parallelize against).
 
 ## Known Problems
 
@@ -106,11 +133,15 @@ what this repo's docs can verify.)
 - First agent: done (D018) — a single `TraderAgent` (side/quantity/stop
   distance only, never price), reachable via
   `POST /brokers/{broker_id}/agent-trades`, going through the same Risk
-  Engine path as a human-submitted trade. Still open: the parallel
-  analyst layer, research debate, and Portfolio Manager from the
-  governing spec's target architecture are not started; re-verifying
-  D018 against a real OmniRoute completion (only fake-provider-verified
-  so far, OmniRoute unreachable at implementation time).
+  Engine path as a human-submitted trade.
+- First analyst: done (D019) — a single read-only `TechnicalAnalyst`
+  (`stance`/`summary`/`confidence`, never price/side/quantity), wired as
+  optional context into `TraderAgent.propose()`. Still open: fundamental/
+  news/sentiment analysts (each blocked on a real wired data source),
+  research debate, and Portfolio Manager from the governing spec's target
+  architecture are not started; re-verifying D018/D019 against a real
+  OmniRoute completion (only fake-provider-verified so far, OmniRoute
+  unreachable at implementation time).
 - Risk-engine rule set is decided and implemented (D004). Still open:
   duplicate-order detection and an explicit emergency-stop *source*
   (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —

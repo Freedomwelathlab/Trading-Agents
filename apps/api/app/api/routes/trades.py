@@ -13,6 +13,11 @@ The agent-trades route (D018) never accepts a price at all - side,
 quantity, and stop distance come from the TraderAgent, and price always
 comes from the same live-quote path, never the agent (docs/AGENT_POLICY.md:
 no agent output is authoritative for price).
+
+D019 adds an optional TechnicalAnalyst read of that same live quote as
+extra context appended to the TraderAgent's prompt - purely informational,
+never a separate trusted channel, never required (its absence, or a
+failure, silently omits the context rather than blocking the trade).
 """
 
 import uuid
@@ -22,10 +27,12 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.agents.technical_analyst import AnalystOutputError, TechnicalAnalyst
 from apps.api.app.agents.trader import AgentOutputError, TraderAgent, stop_price_from_distance
 from apps.api.app.api.dependencies import (
     AuthorizedBroker,
     get_market_data_router,
+    get_technical_analyst,
     get_trader_agent,
     require_broker_access,
 )
@@ -37,6 +44,7 @@ from apps.api.app.api.schemas import (
 )
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
+from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import BrokerKind, OrderStatus
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
@@ -46,6 +54,7 @@ from apps.api.app.risk.models import RiskLimits, TradeProposal
 
 router = APIRouter(prefix="/brokers/{broker_id}/trades", tags=["trades"])
 agent_router = APIRouter(prefix="/brokers/{broker_id}/agent-trades", tags=["trades", "agents"])
+logger = get_logger(__name__)
 
 
 async def _resolve_live_quote(
@@ -177,6 +186,7 @@ async def submit_agent_trade_endpoint(
     authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
     market_data_router: MarketDataRouter | None = Depends(get_market_data_router),
     trader_agent: TraderAgent | None = Depends(get_trader_agent),
+    technical_analyst: TechnicalAnalyst | None = Depends(get_technical_analyst),
 ) -> AgentTradeResponse:
     _require_paper_broker(authorized)
 
@@ -189,13 +199,9 @@ async def submit_agent_trade_endpoint(
             ),
         )
 
-    try:
-        idea = await trader_agent.propose(symbol=request.symbol, directive=request.directive)
-    except AgentOutputError as exc:
-        raise HTTPException(status_code=502, detail=f"AGENT_OUTPUT_INVALID: {exc}") from None
-
-    # Price is always deterministic (D017), never the agent's - the idea
-    # only supplies side/quantity/stop distance.
+    # Price is always deterministic (D017), never any agent's - fetched
+    # up front so both the (optional) TechnicalAnalyst and the
+    # TraderAgent's price-free proposal share the exact same quote.
     estimated_price, market_data_as_of = await _resolve_live_quote(
         request.symbol,
         market_data_router,
@@ -204,6 +210,37 @@ async def submit_agent_trade_endpoint(
             "(see docs/DECISIONS.md D008/D017)."
         ),
     )
+
+    technical_context: str | None = None
+    if technical_analyst is not None:
+        # D019: optional additional context only - a failed or
+        # unavailable technical read must never block the trade, since
+        # this analyst is informational and TraderAgent already treats
+        # a missing directive-adjacent context as normal. Never
+        # fabricated: on failure the context is simply omitted, not
+        # guessed.
+        try:
+            read = await technical_analyst.analyze(
+                symbol=request.symbol,
+                price=estimated_price,
+                as_of=market_data_as_of.isoformat(),
+            )
+        except AnalystOutputError as exc:
+            logger.warning("technical_analyst_unavailable", symbol=request.symbol, error=str(exc))
+        else:
+            technical_context = (
+                f"stance={read.stance.value}, confidence={read.confidence}: {read.summary}"
+            )
+
+    try:
+        idea = await trader_agent.propose(
+            symbol=request.symbol,
+            directive=request.directive,
+            technical_context=technical_context,
+        )
+    except AgentOutputError as exc:
+        raise HTTPException(status_code=502, detail=f"AGENT_OUTPUT_INVALID: {exc}") from None
+
     stop_price = stop_price_from_distance(
         price=estimated_price, side=idea.side, stop_distance_pct=idea.stop_distance_pct
     )

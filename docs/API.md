@@ -122,6 +122,15 @@ data vendor is wired; 502 `AGENT_OUTPUT_INVALID:` if the provider's
 response isn't parseable/valid JSON matching the expected schema — never
 a fabricated trade in either failure case.
 
+Request/response shape unchanged since D018. As of Phase 16 (D019), when
+a `TechnicalAnalyst` is configured (same `LLM_PROVIDER_*` connection as
+the trader agent — no separate config), its read of the same live quote
+is appended to the `TraderAgent`'s prompt as informational-only context,
+invisible to the caller — no new request or response field. If no
+analyst is configured, or its read fails/doesn't parse, the trade
+proceeds exactly as before Phase 16 with no context appended — this never
+produces a new error response, since the analyst is optional.
+
 ## `POST /admin/users`
 
 Requires `Authorization: Bearer <token>` from a user whose role grants

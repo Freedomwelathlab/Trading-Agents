@@ -1,8 +1,9 @@
 # AI Optimization Policy
 
-Applies now that the agent/LLM layer exists (`TraderAgent`, D018 —
-one narrow agent so far, not the full parallel-analyst stack). Written
-before the first agent shipped so it was built against a decided policy
+Applies now that the agent/LLM layer exists (`TraderAgent` D018,
+`TechnicalAnalyst` D019 — two narrow agents so far, not the full
+parallel-analyst stack). Written before the first agent shipped so it
+was built against a decided policy
 instead of retrofitting one later.
 
 ## Objectives

@@ -4,11 +4,12 @@ System-level view. "—" means not built yet; do not assume it exists.
 
 | Module | Responsibility | Inputs | Outputs | Depends on | Status |
 |---|---|---|---|---|---|
-| API (`apps/api`) | HTTP entrypoint, settings, logging, trade submission, admin | HTTP requests | JSON | DB, OMS, Risk Engine, Broker Registry, Auth, Agents | Phase 1, 6, 7, 10, 13, 15 |
+| API (`apps/api`) | HTTP entrypoint, settings, logging, trade submission, admin | HTTP requests | JSON | DB, OMS, Risk Engine, Broker Registry, Auth, Agents | Phase 1, 6, 7, 10, 13, 15, 16 |
 | Database | Persist users/roles/assets/brokers/orders/fills | ORM calls | Rows | Postgres | Phase 1, 4 |
 | Frontend | — | — | — | API | Not started |
-| Agents | Draft a trade idea (side/quantity/stop distance) from a symbol + directive; never authoritative for price/risk | Symbol, directive text | `TradeIdea` (structured, validated) | LLM provider (Anthropic Messages API-compatible), Risk Engine (validates the idea downstream) | Phase 15 (done) — single `TraderAgent` only (D018), reachable via `POST /brokers/{broker_id}/agent-trades`; not the parallel analyst/debate layer below |
-| Research (debate) | — | — | — | Agents | Not started |
+| Agents | Draft a trade idea (side/quantity/stop distance) from a symbol + directive; never authoritative for price/risk | Symbol, directive text | `TradeIdea` (structured, validated) | LLM provider (Anthropic Messages API-compatible), Risk Engine (validates the idea downstream) | Phase 15 (done) — single `TraderAgent` only (D018), reachable via `POST /brokers/{broker_id}/agent-trades` |
+| Analysts (parallel layer) | Read-only market commentary — Phase 16 has one: `TechnicalAnalyst`, qualitative comment on a single live quote | Symbol, live price, quote timestamp | `TechnicalRead` (`stance`/`summary`/`confidence`, structured, validated) — no side/quantity/price field | LLM provider (same connection as Agents); consumed as optional prompt context by `TraderAgent.propose()`, never a trusted or required input | Phase 16 (done) — single `TechnicalAnalyst` only (D019); no fundamental/news/sentiment analyst exists — no real data source for them yet (`packages/data_providers/` still empty) |
+| Research (debate) | — | — | — | Agents, Analysts | Not started |
 | Risk Engine | Deterministic trade validation, fail-closed | Trade proposal, account state | Approve/block | Portfolio, market data | Phase 2 (done) |
 | Portfolio | Track positions/P&L | Fills, prices | Position/P&L state | Risk Engine, Broker | Not started — paper broker tracks cash/positions itself for now, no separate portfolio module |
 | Execution/OMS | Order lifecycle, structurally enforces risk gate | Approved trade | Fill or rejection | Risk Engine, Broker Adapter | Phase 3-4, 6, 11 (done) — paper broker, persisted to `orders`/`fills` (decision audit) AND `broker_accounts`/`broker_positions` (current cash/positions), reachable via `POST /brokers/{broker_id}/trades`; survives a restart |

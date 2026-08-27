@@ -709,3 +709,108 @@ live against a running server, real Postgres: with no `LLM_PROVIDER_*`
 configured, the app booted logging `llm_provider=NOT_CONFIGURED`, and
 `POST /brokers/{id}/agent-trades` returned 400 `NOT_CONFIGURED` rather
 than any fabricated trade idea.
+
+---
+
+**D019 — First analyst: a single read-only TechnicalAnalyst, no fabricated data sources for the analysts that would need them**
+Date: 2026-08-27
+Decision: `apps/api/app/agents/technical_analyst.py` adds the first
+member of the parallel analyst layer per the governing spec's "Target"
+architecture — a single `TechnicalAnalyst`, not the full technical/
+fundamental/news/sentiment team. `TechnicalAnalyst.analyze(symbol, price,
+as_of)` calls the same `LLMProvider`/`AnthropicCompatibleProvider`
+connection `TraderAgent` uses and returns a validated `TechnicalRead`
+(`stance: bullish|bearish|neutral`, `summary`, `confidence`) — **no
+price, side, or quantity field at all**, so there is no field a caller
+could mistake for a trade proposal. It is deliberately read-only and
+deliberately not a technical-indicator calculator: it receives one live
+quote (price + timestamp, from the same D017 live-quote path
+`agent-trades` already resolves), never a price series, and its system
+prompt explicitly forbids claiming to compute RSI/MACD/moving averages/
+etc — `docs/TOKEN_POLICY.md`'s mandatory-deterministic list still applies
+to any *real* indicator; this codebase just doesn't have the historical
+price data to compute one yet (`packages/data_providers/` remains an
+empty placeholder). Extracted `apps/api/app/agents/parsing.py`'s
+`extract_json_object()` out of `trader.py` so both agents share one
+JSON-extraction helper instead of duplicating it. `POST
+/brokers/{broker_id}/agent-trades` (`trades.py`) now resolves the live
+quote once, up front, then optionally runs the `TechnicalAnalyst` against
+that same quote and appends its read to `TraderAgent.propose()`'s prompt
+as informational context (a new `technical_context: str | None` param) —
+never a separate trusted channel, never required, and a missing or
+failing analyst silently omits the context rather than blocking or
+degrading the trade in any way.
+Reason: `docs/AGENT_POLICY.md` explicitly warns against "run[ning] agents
+whose output the current task can't use," and this codebase's
+no-fabrication rule (`docs/TRADING_SAFETY.md` spec §57) forbids inventing
+a data source. There is no real fundamental/news/sentiment feed wired
+into this codebase — only a live price quote via Longbridge (D015/D017).
+Building a `FundamentalAnalyst`/`NewsAnalyst`/`SentimentAnalyst` today
+would mean either fabricating a data feed (forbidden outright) or naming
+an agent after data it doesn't actually have access to (dishonest, and a
+predictable source of confusion for whoever wires a real feed in later
+and has to figure out what the agent was actually doing before). Building
+only the one analyst type with genuine data behind it is the same
+conservative, "build only what has real data behind it" call this
+project has made at every prior phase (D008 shipping a routing skeleton
+with no vendor, D015 introducing exactly one vendor rather than several
+speculative ones). A single analyst also means there is nothing to
+parallelize yet — `docs/AI_OPTIMIZATION.md`'s "parallelize independent
+agents" rule presumes more than one agent exists; building fan-out/
+concurrency infrastructure for one agent would be unused complexity, not
+optimization, so it isn't built this phase (see Consequences).
+Alternatives: (a) build all four analyst types now, with fundamental/
+news/sentiment analysts operating on whatever data happens to be
+reachable (e.g. asking the LLM to reason about a company "from general
+knowledge") - rejected, that's not analysis of real data, it's the model
+inventing a plausible-sounding opinion with nothing underneath it, which
+is exactly the fabrication spec §57 prohibits in spirit even though no
+literal fake price is involved. (b) have the `TechnicalAnalyst` compute a
+real indicator from Longbridge's candlestick history endpoints (not yet
+wired into `apps/api/app/marketdata/`) - rejected as scope creep past
+"first analyst"; wiring historical OHLC data is its own decision with its
+own testing/verification burden, better done deliberately (see Planned
+Work) than as a side effect of shipping the first analyst. (c) give
+`TechnicalAnalyst` its own separately-configured `LLM_PROVIDER_*`
+connection - rejected as unnecessary; nothing yet distinguishes what
+model tier the analyst vs. the trader should use, and a shared connection
+is simpler to operate and matches "don't build unused infrastructure."
+Consequences: `agent-trades` now resolves the live quote *before* calling
+`TraderAgent.propose()` (previously the agent was called first, since it
+never needed a price) - purely an internal reordering so the
+`TechnicalAnalyst` and `TraderAgent` can share one quote rather than each
+fetching separately, but it meant an existing D018 test
+(`test_malformed_agent_output_is_a_502_not_a_fabricated_trade`) that
+never stubbed a market-data router started failing on the NOT_CONFIGURED
+quote path before ever reaching the agent - fixed by stubbing a fake
+router in that test, matching its siblings; this is a real behavior
+change worth noting for anyone reading `git blame` on that line, not a
+flaky test. No fan-out/parallel-execution scaffolding was built - if/when
+a second analyst is added, revisit `docs/AI_OPTIMIZATION.md`'s
+parallelize-independent-agents rule then, not speculatively now. Real
+historical price data (for an actual computed indicator, not qualitative
+commentary) remains unwired - a genuine "future work" gap, not a
+completed item being understated.
+Status: Implemented, tested: `tests/agents/test_technical_analyst.py` (7
+unit tests against a fake `LLMProvider` - valid JSON, malformed JSON, a
+response missing a required field, a provider error wrapped as
+`AnalystOutputError`, and boundary values for `confidence`);
+`tests/api/test_technical_analyst_wiring.py` (3 integration tests against
+real Postgres - no analyst configured still succeeds with no context
+appended; a configured analyst's read demonstrably reaches
+`TraderAgent`'s prompt, proven with a `CapturingTraderAgent` subclass that
+records what it was called with rather than relying on an LLM to echo it
+back; a failing analyst never blocks the trade, context silently omitted).
+128/128 total tests passing (127 in one run plus the fail-closed
+JWT-secret test re-verified in true isolation, the same known
+shell-env-false-failure pattern documented in every prior phase),
+ruff+mypy clean (49 source files). Verified live against a running
+server, real Postgres, no `LLM_PROVIDER_*` configured: the app booted
+logging `technical_analyst=NOT_CONFIGURED` alongside `llm_provider=NOT_CONFIGURED`,
+and `POST /brokers/{id}/agent-trades` returned 400 `NOT_CONFIGURED` (the
+same D018 gate - a missing `TraderAgent` is checked first) rather than
+any fabricated trade idea or analyst read. OmniRoute was unreachable in
+this environment at implementation time (connection refused on
+`127.0.0.1:20128`), so - same limitation as D018 - the "analyst actually
+returns a usable read" path is verified only against a fake provider in
+tests, not a real completion.

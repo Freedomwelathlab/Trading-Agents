@@ -157,7 +157,14 @@ async def test_an_oversized_agent_idea_is_rejected_by_the_risk_engine_not_the_ag
 
 @pytest.mark.asyncio
 async def test_malformed_agent_output_is_a_502_not_a_fabricated_trade():
+    from apps.api.app.marketdata.router import MarketDataRouter
+
     fake_agent = TraderAgent(FakeLLMProvider("not json at all"))
+    # D019 resolves the live quote before calling the trader agent (so an
+    # optional TechnicalAnalyst can share the same quote) - a market data
+    # router must be stubbed here too, or this test would hit the
+    # NOT_CONFIGURED quote path before ever reaching the agent at all.
+    fake_market_data = MarketDataRouter([FakeMarketDataProvider()])
 
     async with (
         db_session() as session,
@@ -167,6 +174,7 @@ async def test_malformed_agent_output_is_a_502_not_a_fabricated_trade():
     ):
         async with api_client() as client:
             app.dependency_overrides[get_trader_agent] = lambda: fake_agent
+            app.dependency_overrides[get_market_data_router] = lambda: fake_market_data
             try:
                 token = await _get_token(client, email)
                 response = await client.post(
@@ -176,6 +184,7 @@ async def test_malformed_agent_output_is_a_502_not_a_fabricated_trade():
                 )
             finally:
                 del app.dependency_overrides[get_trader_agent]
+                del app.dependency_overrides[get_market_data_router]
 
         assert response.status_code == 502
         assert "AGENT_OUTPUT_INVALID" in response.json()["detail"]

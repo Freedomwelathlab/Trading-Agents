@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.agents.technical_analyst import TechnicalAnalyst
 from apps.api.app.agents.trader import TraderAgent
 from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
@@ -29,6 +30,15 @@ def get_trader_agent(request: Request) -> TraderAgent | None:
     """None means no LLM provider is configured (D018) - callers must
     render that as NOT_CONFIGURED, never silently skip the check."""
     return request.app.state.trader_agent
+
+
+def get_technical_analyst(request: Request) -> TechnicalAnalyst | None:
+    """None means no LLM provider is configured (D019) - callers must
+    treat this exactly like get_trader_agent's NOT_CONFIGURED convention,
+    except this analyst is optional context, not a hard requirement: its
+    absence means agent-trades proceeds without technical commentary, it
+    never blocks the trader agent's own proposal."""
+    return request.app.state.technical_analyst
 
 
 @dataclass

@@ -1,8 +1,9 @@
 # Agent Policy
 
-One agent exists (`TraderAgent`, D018) — a single-responsibility trade-idea
-drafter, not the full parallel-analyst/research-debate stack below. This
-remains the policy every future agent is designed against.
+Two agents exist: `TraderAgent` (D018), a single-responsibility trade-idea
+drafter, and `TechnicalAnalyst` (D019), a single-responsibility read-only
+analyst — neither is the full parallel-analyst/research-debate stack
+below. This remains the policy every future agent is designed against.
 
 ## Rules
 

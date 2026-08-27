@@ -244,10 +244,43 @@ Update this after meaningful implementation work — not for every commit.
   the "provider actually returns a usable completion" path is verified
   only against a fake provider in tests, the same limitation D015
   originally had for Longbridge before real credentials existed.
+- Phase 16: first analyst, TechnicalAnalyst (2026-08-27). Closes the
+  first slice of the parallel analyst layer per the governing spec's
+  "Target" architecture — one analyst, not the full technical/
+  fundamental/news/sentiment team, since only one has a real data source
+  wired (Longbridge live quotes; `packages/data_providers/` remains an
+  empty placeholder, so fundamental/news/sentiment would mean fabricating
+  a feed, forbidden per spec §57). `TechnicalAnalyst.analyze()` reads the
+  same live quote `agent-trades` already resolves and returns a
+  `TechnicalRead` (`stance`/`summary`/`confidence`) — no price/side/
+  quantity field, so nothing here can be mistaken for a trade proposal.
+  It computes no indicator itself (real indicators must stay
+  deterministic per `docs/TOKEN_POLICY.md` once real historical price
+  data exists — it doesn't yet). Wired as optional context into
+  `TraderAgent.propose()`'s prompt on `POST /brokers/{broker_id}/agent-trades`
+  — absent or failed, the trade proceeds exactly as before this phase, no
+  context appended, never blocked. `agent-trades` now resolves the live
+  quote before calling the trader agent (was: agent first) so the
+  analyst and trader share one quote; this real behavior change broke an
+  existing D018 test that hadn't stubbed a market-data router, fixed by
+  stubbing one to match its siblings. 10 new tests (7 unit against a fake
+  `LLMProvider`, 3 integration against real Postgres — including proof
+  via a `CapturingTraderAgent` subclass that the analyst's read actually
+  reaches the trader's prompt, and proof that a failing analyst never
+  blocks the trade), 128/128 total tests passing, ruff+mypy clean (49
+  source files). Verified live against a running server, real Postgres,
+  no `LLM_PROVIDER_*` configured: app booted logging
+  `technical_analyst=NOT_CONFIGURED`, and `POST /brokers/{id}/agent-trades`
+  returned 400 `NOT_CONFIGURED` rather than any fabricated read or trade.
+  OmniRoute was unreachable at implementation time, same limitation as
+  D018 — the "analyst returns a usable read" path is verified only
+  against a fake provider.
 
 ## In Progress
 
-Nothing currently mid-implementation.
+Nothing currently mid-implementation in this worktree. (A separate,
+independently-tracked frontend build is in progress on branch
+`phase-17-frontend`.)
 
 ## Blocked
 
@@ -255,11 +288,14 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 16+ (order not finalized): parallel analyst layer (technical/
-fundamental/news/sentiment) and research debate per the governing spec's
-"Target" architecture, frontend. Re-verify D018's live-provider path once
-OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is
-reachable.
+Phase 18+ (order not finalized): the rest of the parallel analyst layer
+(fundamental/news/sentiment — each blocked on a real, wired data source),
+research debate, and Portfolio Manager per the governing spec's "Target"
+architecture. Re-verify D018/D019's live-provider paths once OmniRoute
+(or another Anthropic-Messages-API-compatible endpoint) is reachable. If
+a second analyst is ever added, revisit whether parallel-execution
+infrastructure across analysts is now warranted (deliberately not built
+in Phase 16 — one analyst has nothing to parallelize against).
 
 ## Technical Debt
 
@@ -273,7 +309,7 @@ optimization.
 
 ## Tests
 
-118 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+128 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), Longbridge provider
@@ -283,7 +319,9 @@ omitted-price/live-quote path), auth security unit tests (8),
 authorization unit tests (3), login route (4, DB-backed), admin routes
 (16, DB-backed — 9 create/grant + 7 update/deactivate), broker-state
 persistence (3, DB-backed), TraderAgent unit tests (8, against a fake
-`LLMProvider`), agent-trades HTTP endpoint (5, DB-backed).
+`LLMProvider`), agent-trades HTTP endpoint (5, DB-backed), TechnicalAnalyst
+unit tests (7, against a fake `LLMProvider`), technical-analyst wiring on
+agent-trades (3, DB-backed).
 
 ## Known Issues
 

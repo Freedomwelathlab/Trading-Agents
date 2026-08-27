@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-15)
+## Current (Phase 1-16)
 
 ```mermaid
 flowchart LR
@@ -22,9 +22,12 @@ flowchart LR
     router -.-> snapshot[MarketSnapshot]
 
     client --> agentroute["POST /brokers/{id}/agent-trades\nsame auth+grant checks"]
+    agentroute -->|price always from router,\nnever an agent (D018)| router
+    agentroute --> techanalyst["TechnicalAnalyst.analyze()\nread-only, optional (D019)"]
+    techanalyst -.->|technical_context,\nomitted on failure| traderagent
     agentroute --> traderagent["TraderAgent.propose()\nside/quantity/stop_distance_pct"]
     traderagent --> llmprovider["LLMProvider\nAnthropic Messages API\nOmniRoute or compatible"]
-    agentroute -->|price always from router,\nnever the agent (D018)| router
+    techanalyst --> llmprovider
     agentroute --> proposal
 
     proposal[TradeProposal] --> loadbroker["load_paper_broker\nSELECT ... FOR UPDATE"]
@@ -81,6 +84,24 @@ segment, not the parallel analyst layer or research debate. Price is
 never the agent's — it always comes from the same live-quote path D017
 uses, and the resulting proposal goes through the identical Risk Engine
 path a human-submitted trade does, no separate or weaker validation.
+
+Phase 16 (D019) adds the first (one-analyst) slice of the "Target"
+diagram's parallel analyst layer: `TechnicalAnalyst.analyze()` reads that
+same live quote and writes a short, structured `TechnicalRead`
+(`stance`/`summary`/`confidence`) — read-only by construction, no
+side/quantity/price field exists on it. It never itself submits or sizes
+a trade, and it never computes an indicator (RSI/MACD/etc); this codebase
+has no historical price series wired yet (`packages/data_providers/` is
+still an empty placeholder), so it is honestly framed as qualitative
+commentary on one quote, not technical-indicator analysis. When
+configured, `agent-trades` passes its read to `TraderAgent.propose()` as
+optional additional prompt context alongside the human's directive — never
+a separate trusted channel, never required. A missing or failing analyst
+never blocks the trade; the context is simply omitted, matching this
+codebase's fail-closed-but-never-fabricate posture applied to an optional
+feature rather than a hard dependency. There is exactly one analyst this
+phase, so no parallel-execution/fan-out infrastructure was built for it —
+see D019's "future work" note for when a second analyst exists.
 
 ## Target (per governing spec, not yet built)
 

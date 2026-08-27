@@ -314,19 +314,30 @@ answers for Longbridge's own SDK, so don't trust documentation alone.
 ## Agents
 
 Purpose: the first LLM-backed code in this codebase — a single
-`TraderAgent`, not the full analyst/research-debate/portfolio-manager
-stack the governing spec eventually wants (D018).
+`TraderAgent` plus (Phase 16, D019) a single read-only `TechnicalAnalyst`,
+not the full analyst/research-debate/portfolio-manager stack the
+governing spec eventually wants (D018/D019).
 Main files: `apps/api/app/agents/provider.py` (`LLMProvider` Protocol,
 `LLMProviderError` — mirrors `marketdata/provider.py`'s shape),
 `apps/api/app/agents/anthropic_compatible.py`
 (`AnthropicCompatibleProvider`, `build_llm_provider`),
-`apps/api/app/agents/trader.py` (`TradeIdea`, `AgentOutputError`,
-`TraderAgent`, `build_trader_agent`, `stop_price_from_distance`)
+`apps/api/app/agents/parsing.py` (`extract_json_object` — shared by both
+agents below, D019), `apps/api/app/agents/trader.py` (`TradeIdea`,
+`AgentOutputError`, `TraderAgent`, `build_trader_agent`,
+`stop_price_from_distance`), `apps/api/app/agents/technical_analyst.py`
+(`TechnicalRead`, `Stance`, `AnalystOutputError`, `TechnicalAnalyst`,
+`build_technical_analyst`)
 Dependencies: `httpx` (the only network client `AnthropicCompatibleProvider`
-uses — not imported by `TraderAgent` or by tests)
+uses — not imported by either agent or by tests)
 Tests: `tests/agents/test_trader.py` (8 unit tests against a fake
-`LLMProvider` — never a real network call), `tests/api/test_agent_trades.py`
-(5 integration tests against real Postgres for `POST /brokers/{id}/agent-trades`)
+`LLMProvider`), `tests/agents/test_technical_analyst.py` (7 unit tests
+against a fake `LLMProvider`), `tests/api/test_agent_trades.py`
+(5 integration tests against real Postgres for `POST /brokers/{id}/agent-trades`),
+`tests/api/test_technical_analyst_wiring.py` (3 integration tests against
+real Postgres proving the optional analyst wiring — no analyst configured
+still succeeds without context, a configured analyst's read reaches the
+trader agent's prompt, a failing analyst never blocks the trade) — none
+of these are real network calls.
 Important: `build_llm_provider(settings)` returns `None` unless
 `LLM_PROVIDER_BASE_URL`/`_API_KEY`/`_MODEL` are *all* set — same
 all-or-nothing posture as Longbridge (D015). The client is deliberately
@@ -345,6 +356,24 @@ Malformed/unparseable LLM output raises `AgentOutputError`, surfaced as
 unreachable in this environment at implementation time, so only the
 NOT_CONFIGURED path and fake-provider-backed logic are verified directly
 here — not a real vendor completion.
+`TechnicalAnalyst` (D019, Phase 16) is read-only by construction:
+`TechnicalRead` has **no side/quantity/price field at all**, only
+`stance`/`summary`/`confidence` — there is no order-submission path for
+this agent to bypass. It shares the same `build_llm_provider(settings)`
+connection as `TraderAgent` (no second `LLM_PROVIDER_*` set) since there's
+exactly one analyst this phase — `build_technical_analyst(llm_provider)`
+returns `None` under the identical NOT_CONFIGURED convention. It never
+computes an indicator itself (RSI/MACD/etc must be deterministic code per
+`docs/TOKEN_POLICY.md`); with no historical price series wired
+(`packages/data_providers/` is still an empty placeholder), it only ever
+sees the one live quote `agent-trades` already fetched via D017's path,
+and its system prompt explicitly forbids claiming to compute an
+indicator. Wired into `POST /brokers/{id}/agent-trades` as **optional**
+context for `TraderAgent.propose(technical_context=...)` — absence (not
+configured) or a raised `AnalystOutputError` (bad/unparseable LLM output)
+both silently omit the context rather than blocking the trade or
+fabricating a read; only a genuinely successful, schema-valid
+`TechnicalRead` is ever passed through.
 
 ## Packages (placeholders, not yet populated)
 
