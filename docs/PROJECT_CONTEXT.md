@@ -42,7 +42,10 @@ secret-shaped keys (`apps/api/app/core/logging.py`).
 
 FastAPI, Pydantic v2/Pydantic Settings, SQLAlchemy 2.0 async, asyncpg,
 Alembic, Postgres 16 + TimescaleDB, Redis 7, structlog, pytest, ruff, mypy.
-Frontend (Next.js/TypeScript, per spec) not started.
+Frontend: Next.js 16 (App Router)/TypeScript/Tailwind v4 in `apps/web/`
+(D020) — Next.js route handlers proxy every backend call server-side so
+the JWT can live in an httpOnly cookie rather than browser-readable
+storage; Vitest + React Testing Library for component tests.
 
 ## Current Status
 
@@ -85,9 +88,27 @@ yet.
 
 Phase 16+: the parallel analyst layer (technical/fundamental/news/
 sentiment) and research debate per the governing spec's "Target"
-architecture, frontend. Order not finalized. Also pending: re-verify
-D018's live-provider path once OmniRoute (or another compatible endpoint)
-is reachable.
+architecture. Frontend: first slice done (Phase 17, D020) — login, health
+status, quote lookup, paper-trade submission. v2 candidates: admin UI,
+agent-trades UI, broker discovery (no such endpoint exists yet), session
+refresh/expiry UX, e2e tests against a live backend. Also pending:
+re-verify D018's live-provider path once OmniRoute (or another compatible
+endpoint) is reachable.
+
+`apps/web/` (D020, Phase 17) is the first frontend — a minimal Next.js
+app covering login, `/health` display, quote lookup, and paper-trade
+submission, each rendering the backend's real response shape (including
+`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:` sentinel details and a rejected
+trade's `block_reason`) rather than any fabricated data. The JWT is
+stored in an httpOnly cookie set by a Next.js route handler that proxies
+`/auth/login`; all other authenticated calls go through further route
+handlers (`/api/health`, `/api/quote/[symbol]`, `/api/trades/[brokerId]`)
+that read the cookie server-side and forward the request — the browser
+never holds the token directly. `npm run build` passes with zero type
+errors; 7 Vitest component tests cover the quote/trade success and error
+rendering paths. Not yet verified end-to-end against a running backend in
+this environment (Docker Desktop's daemon was unreachable here) — only
+`npm run dev` + curl against the Next.js app itself was confirmed.
 
 ## Known Problems
 

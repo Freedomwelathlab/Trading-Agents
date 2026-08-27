@@ -709,3 +709,103 @@ live against a running server, real Postgres: with no `LLM_PROVIDER_*`
 configured, the app booted logging `llm_provider=NOT_CONFIGURED`, and
 `POST /brokers/{id}/agent-trades` returned 400 `NOT_CONFIGURED` rather
 than any fabricated trade idea.
+
+---
+
+**D020 — First frontend: Next.js/TypeScript, JWT in an httpOnly cookie via a route-handler proxy, Vitest over Playwright for v1**
+
+Date: 2026-08-27
+Decision: Built `apps/web/` — Next.js 16 (App Router), TypeScript,
+Tailwind v4 — as the first UI on top of the API this repo has had since
+Phase 9. It covers exactly three screens' worth of function: `/login`
+(posts to `POST /auth/login`), and `/dashboard` (backend health status,
+a quote-lookup form against `GET /market-data/{symbol}/quote`, and a
+paper-trade submission form against `POST /brokers/{broker_id}/trades`).
+The browser never calls the backend directly — every backend call goes
+through a same-origin Next.js route handler
+(`app/api/auth/login`, `app/api/health`, `app/api/quote/[symbol]`,
+`app/api/trades/[brokerId]`) that does the actual `fetch` to
+`API_BASE_URL` server-side. The JWT from `/auth/login` is stored as an
+httpOnly cookie set by the login route handler, never in `localStorage`
+or any value client JS can read; the other route handlers read that
+cookie server-side and attach `Authorization: Bearer <token>` before
+calling the backend. `proxy.ts` (Next.js 16's replacement for the
+deprecated `middleware.ts` convention) redirects `/dashboard/*` to
+`/login` when the cookie is absent — presence only, not validity; an
+expired or otherwise-invalid token still surfaces as the backend's real
+401 through the route handlers, never guessed at the proxy layer. Test
+strategy: Vitest + React Testing Library (jsdom), 7 component tests
+covering the quote-lookup and trade-submission components' real
+rendering of success, the 503 `NOT_CONFIGURED:` and 404
+`NO_DATA_AVAILABLE:` sentinel details, a 403 detail, a rejected trade's
+`block_reason`, a filled trade's fill price/quantity, and a network
+failure — never a generic "error occurred" swallowing which case fired.
+Reason: Next.js/TypeScript is mandated by
+`docs/ARCHITECTURE.md`/`docs/PROJECT_CONTEXT.md`'s "Technology Stack"
+entry (`Frontend (Next.js/TypeScript, per spec) not started`), so that
+part wasn't a choice to make, just to execute. The httpOnly-cookie
+choice follows directly from `docs/TRADING_SAFETY.md`'s "never fabricate
+... use NOT_CONFIGURED / DATA_UNAVAILABLE sentinels" posture extended to
+the frontend: a token sitting in `localStorage` is readable by any
+script that runs on the page (XSS), which for a trading UI that can
+submit real (paper, today; live, eventually) orders is a materially
+worse blast radius than the added plumbing of routing every authenticated
+call through a proxy handler. Vitest/RTL over Playwright: this phase
+ships three screens with no complex client-side state machine and no
+existing browser-driven flow worth protecting end-to-end yet — the
+value Playwright adds (real browser, real navigation, real cookie
+handling) is exactly the surface `npm run build`'s type check plus curl
+verification (see Consequences) already covered by hand for this pass,
+while Vitest component tests catch the thing most likely to actually
+regress here: a response-shape rendering path silently swallowing a
+sentinel string.
+Alternatives: (a) JWT in `localStorage`, read directly by client
+components calling the backend's CORS-enabled endpoints — rejected as
+the weaker security posture above; kept as the explicit v2 reconsideration
+point below since it is simpler (no route-handler duplication, no cookie
+plumbing) and some teams accept the XSS tradeoff deliberately. (b) a
+single generic `/api/proxy/[...path]` route handler forwarding path/method/
+body to the backend generically — rejected for now because it would
+also blindly forward whatever headers/methods a compromised client sent,
+whereas one route handler per endpoint keeps the attack surface and the
+request/response shape explicit and typed; worth reconsidering only if
+the number of proxied endpoints grows enough that the duplication cost
+exceeds this benefit. (c) Playwright from the start — rejected per
+Reason above; noted as the natural v2 addition once there's a
+login → dashboard → trade flow with real navigation/session state worth
+protecting, not before.
+Consequences: every new authenticated backend endpoint this frontend
+wants to call needs its own route handler repeating the
+cookie-read-and-forward pattern — a real but small and consistent tax,
+not a design flaw. No CSRF token exists yet; `sameSite: "lax"` on the
+cookie is the only mitigation today, and should be revisited if
+state-changing routes grow beyond the current login/trade-submission
+pair. `npm run build` passes with zero TypeScript errors (confirmed via
+the actual build output, not assumed). Verified via `npm run dev` +
+curl against the Next.js app's own routes: `/login` returns 200 with the
+correct page title, `/dashboard` 307-redirects to `/login` with no
+cookie, `/api/health` returns a real 503
+`DATA_UNAVAILABLE: could not reach the trading API` (backend not running
+in this pass, not faked as healthy), and `/api/quote/[symbol]` /
+`/api/trades/[brokerId]` both correctly 401 `Not authenticated` with no
+cookie present. NOT verified: a live login/quote/trade round-trip
+against the real backend — Docker Desktop's daemon was unreachable in
+this environment (`npipe:////./pipe/dockerDesktopLinuxEngine` connection
+refused, and no working launcher path was found either), so
+`docker compose up` could not be run here at all; this is a genuine gap,
+not a "didn't bother" — the next session with a working Docker daemon
+should run `docker compose up -d` (remapping ports if a sibling
+Phase 16 worktree's containers are still up on 8000/5432/6379) and
+confirm the login → quote → trade path against a real, seeded user.
+v2 candidates, deliberately cut from this pass: `/admin/*` UI,
+`POST /brokers/{id}/agent-trades` UI (both explicitly out of scope per
+the Phase 17 task), a broker-discovery UI (no such endpoint exists —
+broker IDs are entered by hand today), session refresh/expiry UX (an
+expired cookie today just means the next authenticated call 401s and the
+user has to log in again manually), and Playwright e2e coverage once a
+protectable flow exists.
+Status: Implemented. `npm run build` clean (zero TypeScript errors),
+`npm test` (Vitest) 7/7 passing. Verified against the Next.js app itself
+via curl per Consequences above; not yet verified end-to-end against a
+running backend — see Consequences and the frontend entry in
+`docs/IMPLEMENTATION_STATUS.md`.

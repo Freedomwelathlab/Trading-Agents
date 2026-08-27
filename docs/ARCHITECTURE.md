@@ -114,7 +114,42 @@ Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,
 `broker_accounts`/`broker_positions` are mutable current-state — the two
 serve different purposes and are not duplicates of each other (D014).
 
+## Frontend (Phase 17, D020)
+
+`apps/web/` is a Next.js 16 (App Router) + TypeScript + Tailwind v4 app.
+It never calls the backend directly from the browser — every backend
+call is proxied through a same-origin Next.js route handler:
+
+```mermaid
+flowchart LR
+    browser[Browser] --> loginpage["/login page"]
+    loginpage --> loginroute["/api/auth/login\nroute handler"]
+    loginroute -->|form-encoded| backendlogin["backend\nPOST /auth/login"]
+    backendlogin --> loginroute
+    loginroute -->|sets httpOnly cookie| browser
+
+    browser --> dashpage["/dashboard page\n(middleware requires cookie)"]
+    dashpage --> healthroute["/api/health"]
+    dashpage --> quoteroute["/api/quote/[symbol]"]
+    dashpage --> traderoute["/api/trades/[brokerId]"]
+    healthroute --> backendhealth["backend GET /health"]
+    quoteroute -->|Bearer from cookie| backendquote["backend GET /market-data/.../quote"]
+    traderoute -->|Bearer from cookie| backendtrade["backend POST /brokers/.../trades"]
+```
+
+The JWT lives only in an httpOnly cookie set by `/api/auth/login` — the
+browser's own JS never reads it, so it's inert against XSS-driven
+exfiltration. The cost: every proxied route handler must re-derive the
+token from the request cookie and forward it, and there's no CSRF
+token yet (mitigated for now by `sameSite: "lax"`). See D020 for the
+full localStorage-vs-cookie tradeoff. `middleware.ts` gates `/dashboard`
+on cookie presence only — an expired/invalid token still surfaces as the
+backend's real 401 through the route handlers, never guessed by the
+middleware.
+
 ## Deployment
 
 `docker-compose.yml` runs Postgres, Redis, and the API locally. No
-staging/production deployment config exists yet.
+staging/production deployment config exists yet. `apps/web/` is not yet
+part of `docker-compose.yml` — it runs via `npm run dev`/`npm run build`
++ `npm run start` against `API_BASE_URL` (see `apps/web/README.md`).

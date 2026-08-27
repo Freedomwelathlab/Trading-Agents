@@ -353,8 +353,85 @@ Apache-2.0-licensed code vendored from TradingAgents once the full
 analyst/research-debate layer (beyond the single `TraderAgent` above)
 starts. Currently just READMEs. See root `NOTICE`.
 
+## Frontend
+
+Purpose: Phase 17 (D020) first frontend slice — login, health status,
+quote lookup, paper-trade submission, each rendering the backend's real
+response, never fabricated data.
+Root: `apps/web/` — Next.js 16 (App Router), TypeScript, Tailwind v4.
+
+`apps/web/lib/backend.ts` — server-only helpers: `backendBaseUrl()`
+(reads `API_BASE_URL`, defaults to `http://localhost:8000`), `backendUrl(path)`,
+and the shared `AUTH_COOKIE_NAME` constant. Never imported from a client
+component.
+
+`apps/web/proxy.ts` — Next.js 16 proxy convention (replaces the
+deprecated `middleware.ts`). `proxy(request)` redirects `/dashboard/*` to
+`/login` when the auth cookie is absent. Only checks presence, not
+validity — an expired/invalid token still surfaces as the backend's real
+401 through the route handlers below, never guessed here.
+
+`apps/web/app/api/auth/login/route.ts` — `POST`, takes `{email, password}`
+JSON from the browser, forwards it to the backend as OAuth2
+form-encoded (`username=<email>&password=<password>`) per the API
+contract, and on success sets the JWT as an httpOnly cookie
+(`AUTH_COOKIE_NAME`). On failure, passes through the backend's actual
+status and body.
+`apps/web/app/api/auth/logout/route.ts` — `POST`, clears the cookie.
+`apps/web/app/api/health/route.ts` — `GET`, proxies `GET /health`
+(no auth required by contract; still proxied so the browser only ever
+talks same-origin).
+`apps/web/app/api/quote/[symbol]/route.ts` — `GET`, reads the JWT from
+the cookie, calls `GET /market-data/{symbol}/quote` with
+`Authorization: Bearer`, passes through the backend's exact status and
+body (including 503 `NOT_CONFIGURED:` / 404 `NO_DATA_AVAILABLE:`
+details). 401 if the cookie is missing.
+`apps/web/app/api/trades/[brokerId]/route.ts` — `POST`, same
+cookie-to-Bearer pattern, proxies `POST /brokers/{broker_id}/trades`,
+passes through the full `TradeSubmissionResponse` body and status
+unmodified.
+
+`apps/web/app/login/page.tsx` — client component, email/password form
+posting to `/api/auth/login`; on success routes to `/dashboard`; renders
+the real error detail from a failed login (network failure vs backend
+401 are distinguished in the UI copy but both render, never silently).
+`apps/web/app/dashboard/page.tsx` — server component shell (gated by
+`proxy.ts`) composing three client components.
+`apps/web/components/HealthStatus.tsx` — fetches `/api/health` on mount,
+renders `status`/`trading_mode`/`live_trading_enabled` or a real error.
+`apps/web/components/QuoteLookup.tsx` — symbol input, fetches
+`/api/quote/[symbol]`, renders the quote or the backend's exact error
+`detail` string (with HTTP status prefixed) on 503/404/other failure.
+`apps/web/components/TradeForm.tsx` — broker ID + symbol/side/quantity/
+optional estimated_price/stop_price form, posts to
+`/api/trades/[brokerId]`, renders the full response including a
+rejected trade's `block_reason`.
+`apps/web/components/LogoutButton.tsx` — posts to `/api/auth/logout`,
+redirects to `/login`.
+`apps/web/app/page.tsx` — server component, redirects `/` to
+`/dashboard` or `/login` based on cookie presence.
+
+Tests: `apps/web/test/QuoteLookup.test.tsx` (4 tests — success render,
+503 NOT_CONFIGURED detail rendered verbatim, 404 NO_DATA_AVAILABLE
+detail rendered verbatim, network failure renders a real error and never
+fabricated data), `apps/web/test/TradeForm.test.tsx` (3 tests — rejected
+trade's `block_reason` rendered legibly, filled trade's fill
+price/quantity rendered, a real 403 detail rendered). Vitest + React
+Testing Library + jsdom (`apps/web/vitest.config.ts`,
+`apps/web/test/setup.ts`), chosen over Playwright for this phase's scope
+— see D020.
+
+Important: the JWT never reaches browser-readable storage — it's set as
+an httpOnly cookie by `/api/auth/login` and read only inside route
+handlers running server-side. Every route handler that talks to the
+backend catches its own network failure and returns a
+`DATA_UNAVAILABLE:`-prefixed detail rather than letting the client see a
+generic Next.js error page. `API_BASE_URL` (server-side env var, see
+`apps/web/.env.example`) is the only backend location the app knows.
+
 ## Not yet present
 
-The parallel analyst layer, research debate, Portfolio Manager, and
-frontend (see the "Target" diagram in `docs/ARCHITECTURE.md`). Do not
-import from paths that don't exist yet.
+The parallel analyst layer, research debate, Portfolio Manager. Frontend
+v2 (see `docs/PROJECT_CONTEXT.md`'s Planned Work): `/admin/*` UI,
+agent-trades UI, broker discovery UI. Do not import from paths that
+don't exist yet.
