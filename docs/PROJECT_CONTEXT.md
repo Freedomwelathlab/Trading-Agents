@@ -49,18 +49,21 @@ secret-shaped keys (`apps/api/app/core/logging.py`).
 
 FastAPI, Pydantic v2/Pydantic Settings, SQLAlchemy 2.0 async, asyncpg,
 Alembic, Postgres 16 + TimescaleDB, Redis 7, structlog, pytest, ruff, mypy.
-Frontend (Next.js/TypeScript, per spec) not started.
+Frontend: Next.js 16 (App Router)/TypeScript/Tailwind v4 in `apps/web/`
+(D020) — Next.js route handlers proxy every backend call server-side so
+the JWT can live in an httpOnly cookie rather than browser-readable
+storage; Vitest + React Testing Library for component tests.
 
 ## Current Status
 
-Phases 1-16 complete: repo skeleton, deterministic risk engine, paper
+Phases 1-17 complete: repo skeleton, deterministic risk engine, paper
 broker + OMS, order/fill persistence, market-data routing, HTTP trade
 submission, authentication, role-based authorization, per-broker access
 grants, a minimal admin API (now including update/deactivate), persisted
 paper-broker state, a real Longbridge market-data provider, market data
 connected to trade submission, the first agent (a single `TraderAgent`),
-and the first (one-analyst) slice of the parallel analyst layer (a single
-read-only `TechnicalAnalyst`). See
+the first (one-analyst) slice of the parallel analyst layer (a single
+read-only `TechnicalAnalyst`), and the first frontend (`apps/web/`). See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
@@ -105,16 +108,34 @@ no-fabrication rule).
 
 ## Planned Work
 
-Phase 17+: the rest of the parallel analyst layer (fundamental/news/
+Phase 18+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57),
 research debate, and Portfolio Manager per the governing spec's "Target"
-architecture, frontend (a separate Phase 17 track is in progress on
-branch `phase-17-frontend`, tracked independently — not detailed here).
-Order not finalized. Also pending: re-verify D018/D019's live-provider
-paths once OmniRoute (or another compatible endpoint) is reachable; if a
-second analyst is ever added, revisit whether parallel-execution/fan-out
-infrastructure across analysts is now warranted (deliberately not built
-in Phase 16 — one analyst has nothing to parallelize against).
+architecture. Order not finalized. Also pending: re-verify D018/D019's
+live-provider paths once OmniRoute (or another compatible endpoint) is
+reachable; if a second analyst is ever added, revisit whether
+parallel-execution/fan-out infrastructure across analysts is now
+warranted (deliberately not built in Phase 16 — one analyst has nothing
+to parallelize against). Frontend v2 candidates (D020): admin UI,
+agent-trades UI, broker discovery (no such endpoint exists yet), session
+refresh/expiry UX, a real Docker-backed e2e verification pass, Playwright
+if a protectable flow emerges.
+
+`apps/web/` (D020, Phase 17) is the first frontend — a minimal Next.js
+app covering login, `/health` display, quote lookup, and paper-trade
+submission, each rendering the backend's real response shape (including
+`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:` sentinel details and a rejected
+trade's `block_reason`) rather than any fabricated data. The JWT is
+stored in an httpOnly cookie set by a Next.js route handler that proxies
+`/auth/login`; all other authenticated calls go through further route
+handlers (`/api/health`, `/api/quote/[symbol]`, `/api/trades/[brokerId]`)
+that read the cookie server-side and forward the request — the browser
+never holds the token directly. `npm run build` passes with zero type
+errors; 7 Vitest component tests cover the quote/trade success and error
+rendering paths. Not yet verified end-to-end against a running backend
+(Docker Desktop's daemon was unreachable during the Phase 17 build) —
+only `npm run dev` + curl against the Next.js app itself was confirmed;
+a real Docker-backed login→quote→trade round-trip is still pending.
 
 ## Known Problems
 

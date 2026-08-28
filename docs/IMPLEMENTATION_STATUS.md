@@ -276,6 +276,39 @@ Update this after meaningful implementation work — not for every commit.
   D018 — the "analyst returns a usable read" path is verified only
   against a fake provider.
 
+- **Phase 17 — frontend, first slice (D020).** `apps/web/` — Next.js 16
+  (App Router), TypeScript, Tailwind v4. `/login` posts to a Next.js route
+  handler (`/api/auth/login`) that forwards OAuth2 form-encoded credentials
+  to the backend and, on success, stores the JWT in an httpOnly cookie —
+  the browser's own JS never touches the token. `/dashboard` (gated by
+  `middleware.ts` on cookie presence) renders three real backend
+  round-trips, each proxied through its own route handler that attaches
+  `Authorization: Bearer <token>` server-side: `GET /health` status,
+  a quote-lookup form against `GET /market-data/{symbol}/quote` (renders
+  the actual 503 `NOT_CONFIGURED:`/404 `NO_DATA_AVAILABLE:` detail string
+  on failure, never a generic message), and a paper-trade submission form
+  against `POST /brokers/{broker_id}/trades` (renders the full
+  `TradeSubmissionResponse` — `status`/`approved`/`block_reason`/
+  `fill_price`/`fill_quantity` — including a rejected trade's
+  `block_reason` legibly). No fabricated data anywhere: every fetch
+  failure renders a real error state. Deliberately out of scope for v1:
+  `/admin/*` UI, `/brokers/{id}/agent-trades` UI, broker discovery (no
+  such endpoint exists), session refresh. `npm run build` succeeds with
+  zero TypeScript errors. Test strategy: Vitest + React Testing Library
+  (7 component tests covering quote success/503/404/network-failure and
+  trade rejected/filled/403 rendering) — chosen over Playwright for this
+  phase's scope (no real browser E2E flow to protect yet, and the app has
+  no complex client-side state machine that unit/component tests can't
+  already cover); Playwright is a reasonable v2 addition once there's a
+  login → dashboard → trade flow worth protecting end-to-end. Verified:
+  `npm run build` (zero type errors), `npm run dev` + curl against the
+  Next.js app's own pages/routes. (Update 2026-08-28: re-verified
+  end-to-end against a real running backend — a real login set the
+  httpOnly cookie, a quote lookup returned the backend's genuine 503
+  `NOT_CONFIGURED:`, and a trade submission returned a genuine `filled`
+  response with a real fill price, all through the frontend's own proxy
+  routes. See D020's update for full detail.)
+
 ## In Progress
 
 Nothing currently mid-implementation in this worktree. (A separate,
@@ -291,11 +324,16 @@ Nothing currently blocked.
 Phase 18+ (order not finalized): the rest of the parallel analyst layer
 (fundamental/news/sentiment — each blocked on a real, wired data source),
 research debate, and Portfolio Manager per the governing spec's "Target"
-architecture. Re-verify D018/D019's live-provider paths once OmniRoute
-(or another Anthropic-Messages-API-compatible endpoint) is reachable. If
-a second analyst is ever added, revisit whether parallel-execution
-infrastructure across analysts is now warranted (deliberately not built
-in Phase 16 — one analyst has nothing to parallelize against).
+architecture. If a second analyst is ever added, revisit whether
+parallel-execution infrastructure across analysts is now warranted
+(deliberately not built in Phase 16 — one analyst has nothing to
+parallelize against). Frontend v2 candidates (D020): `/admin/*` UI,
+agent-trades UI, broker discovery, session refresh/expiry UX, a real
+Docker-backed e2e verification pass (Docker was unreachable during Phase
+17's build — this should be done as soon as a working Docker daemon is
+available), Playwright if a protectable flow emerges. Re-verify
+D018/D019's live-provider paths once OmniRoute (or another
+Anthropic-Messages-API-compatible endpoint) is reachable.
 
 ## Technical Debt
 
