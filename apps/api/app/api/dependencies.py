@@ -17,6 +17,7 @@ from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerGrant, User
+from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.router import MarketDataRouter
 
 
@@ -24,6 +25,14 @@ def get_market_data_router(request: Request) -> MarketDataRouter | None:
     """None means no vendor is configured (D008/D015) - callers must
     render that as NOT_CONFIGURED, never silently skip the check."""
     return request.app.state.market_data_router
+
+
+def get_history_provider(request: Request) -> HistoryProvider | None:
+    """None means no historical-price vendor is configured (D021) - like
+    get_technical_analyst, this is optional context: its absence means a
+    real indicator can't be computed, never a reason to block a trade or
+    fabricate a value."""
+    return request.app.state.history_provider
 
 
 def get_trader_agent(request: Request) -> TraderAgent | None:

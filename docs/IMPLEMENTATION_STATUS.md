@@ -308,12 +308,36 @@ Update this after meaningful implementation work — not for every commit.
   `NOT_CONFIGURED:`, and a trade submission returned a genuine `filled`
   response with a real fill price, all through the frontend's own proxy
   routes. See D020's update for full detail.)
+- Phase 18: real historical prices for TechnicalAnalyst (2026-08-28).
+  Closes D019's "future work" gap. `apps/api/app/marketdata/history_provider.py`
+  adds a `HistoryProvider` Protocol (a price series, distinct from
+  `MarketDataProvider`'s single quote); `LongbridgeHistoryProvider`
+  implements it via the same Longbridge SDK connection (D015) using
+  `candlesticks()`, verified against the real installed package by
+  introspection. `apps/api/app/marketdata/indicators.py` adds pure,
+  deterministic `sma()`/`rsi()` — no LLM, per `docs/TOKEN_POLICY.md`'s
+  mandatory-deterministic list. `TechnicalAnalyst` (D019) can now narrate
+  real computed indicator values when history is available — its prompt
+  still explicitly forbids calculating or inventing one itself. Wired
+  into `POST /brokers/{broker_id}/agent-trades`: optional, never blocking
+  — a short history, vendor failure, or unconfigured provider all just
+  mean no indicator context that call. 18 new tests (9 indicator unit
+  tests, 5 unit tests against a fake candlestick client, 4 integration
+  tests against real Postgres), 145/145 total tests passing, ruff+mypy
+  clean (51 source files). One real bug caught during this phase's own
+  test run and fixed: `rsi()`'s `zip(..., strict=True)` was wrong for its
+  naturally-unequal-length consecutive-pair slices, raising on every real
+  call. Verified live against the real Longbridge API directly (real
+  paper-trading credentials): fetched 30 real daily closes for `AAPL.US`
+  and computed genuine `SMA(20)=309.3215`/`RSI(14)=51.57...` — a level of
+  verification D019 couldn't reach at the time. Also verified against a
+  running server with no credentials configured: startup logged
+  `history_provider=NOT_CONFIGURED`, `agent-trades` correctly 400s on
+  D018's LLM-provider gate first.
 
 ## In Progress
 
-Nothing currently mid-implementation in this worktree. (A separate,
-independently-tracked frontend build is in progress on branch
-`phase-17-frontend`.)
+Nothing currently mid-implementation.
 
 ## Blocked
 
@@ -321,19 +345,18 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 18+ (order not finalized): the rest of the parallel analyst layer
+Phase 19+ (order not finalized): the rest of the parallel analyst layer
 (fundamental/news/sentiment — each blocked on a real, wired data source),
 research debate, and Portfolio Manager per the governing spec's "Target"
 architecture. If a second analyst is ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
 parallelize against). Frontend v2 candidates (D020): `/admin/*` UI,
-agent-trades UI, broker discovery, session refresh/expiry UX, a real
-Docker-backed e2e verification pass (Docker was unreachable during Phase
-17's build — this should be done as soon as a working Docker daemon is
-available), Playwright if a protectable flow emerges. Re-verify
-D018/D019's live-provider paths once OmniRoute (or another
-Anthropic-Messages-API-compatible endpoint) is reachable.
+agent-trades UI, broker discovery, session refresh/expiry UX, Playwright
+if a protectable flow emerges. Re-verify D018/D019's LLM-completion path
+once OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is
+reachable — D021 confirmed the Longbridge/history side works with real
+data, but no real LLM completion has been exercised yet, only fakes.
 
 ## Technical Debt
 
@@ -347,7 +370,7 @@ optimization.
 
 ## Tests
 
-128 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+145 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (14), paper
 broker (5), OMS (3), execution context (5), order/fill persistence (3,
 DB-backed), market data router + snapshot model (9), Longbridge provider
@@ -359,7 +382,9 @@ authorization unit tests (3), login route (4, DB-backed), admin routes
 persistence (3, DB-backed), TraderAgent unit tests (8, against a fake
 `LLMProvider`), agent-trades HTTP endpoint (5, DB-backed), TechnicalAnalyst
 unit tests (7, against a fake `LLMProvider`), technical-analyst wiring on
-agent-trades (3, DB-backed).
+agent-trades (3, DB-backed), indicator unit tests (9, pure math),
+Longbridge history provider unit tests (5, against a fake candlestick
+client), history-provider wiring on agent-trades (4, DB-backed).
 
 ## Known Issues
 

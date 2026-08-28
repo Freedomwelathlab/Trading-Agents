@@ -56,14 +56,15 @@ storage; Vitest + React Testing Library for component tests.
 
 ## Current Status
 
-Phases 1-17 complete: repo skeleton, deterministic risk engine, paper
+Phases 1-18 complete: repo skeleton, deterministic risk engine, paper
 broker + OMS, order/fill persistence, market-data routing, HTTP trade
 submission, authentication, role-based authorization, per-broker access
 grants, a minimal admin API (now including update/deactivate), persisted
 paper-broker state, a real Longbridge market-data provider, market data
 connected to trade submission, the first agent (a single `TraderAgent`),
 the first (one-analyst) slice of the parallel analyst layer (a single
-read-only `TechnicalAnalyst`), and the first frontend (`apps/web/`). See
+read-only `TechnicalAnalyst`), the first frontend (`apps/web/`), and real
+historical prices feeding that analyst's narration. See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
@@ -104,11 +105,17 @@ trade proceeds exactly as it did before Phase 16, no context appended,
 never blocked. Only a `TechnicalAnalyst` was built this phase — no
 `FundamentalAnalyst`/`NewsAnalyst`/`SentimentAnalyst`, since no real data
 source for any of those is wired into this codebase (spec §57's
-no-fabrication rule).
+no-fabrication rule). Phase 18 (D021) closes the "no historical price
+data" gap D019 flagged: `HistoryProvider`/`LongbridgeHistoryProvider`
+fetch real daily closes via the same Longbridge SDK, and
+`marketdata/indicators.py`'s pure `sma()`/`rsi()` compute real values
+from them — the LLM never calculates, only narrates. Verified live
+against the real Longbridge API directly (not just fakes): real
+`AAPL.US` closes produced genuine `SMA(20)`/`RSI(14)` values.
 
 ## Planned Work
 
-Phase 18+: the rest of the parallel analyst layer (fundamental/news/
+Phase 19+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57),
 research debate, and Portfolio Manager per the governing spec's "Target"
 architecture. Order not finalized. Also pending: re-verify D018/D019's
@@ -157,12 +164,16 @@ what this repo's docs can verify.)
   Engine path as a human-submitted trade.
 - First analyst: done (D019) — a single read-only `TechnicalAnalyst`
   (`stance`/`summary`/`confidence`, never price/side/quantity), wired as
-  optional context into `TraderAgent.propose()`. Still open: fundamental/
-  news/sentiment analysts (each blocked on a real wired data source),
-  research debate, and Portfolio Manager from the governing spec's target
-  architecture are not started; re-verifying D018/D019 against a real
-  OmniRoute completion (only fake-provider-verified so far, OmniRoute
-  unreachable at implementation time).
+  optional context into `TraderAgent.propose()`. Real historical prices
+  for it: done (D021) — `HistoryProvider`/`LongbridgeHistoryProvider` +
+  deterministic `sma()`/`rsi()`, verified live against real Longbridge
+  data. Still open: fundamental/news/sentiment analysts (each blocked on
+  a real wired data source), research debate, and Portfolio Manager from
+  the governing spec's target architecture are not started; re-verifying
+  D018/D019's LLM-completion path against a real OmniRoute completion
+  (only fake-provider-verified so far, OmniRoute unreachable at
+  implementation time — D021 confirmed the Longbridge/history side works
+  with real data, this gap is specifically about the LLM call itself).
 - Risk-engine rule set is decided and implemented (D004). Still open:
   duplicate-order detection and an explicit emergency-stop *source*
   (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —

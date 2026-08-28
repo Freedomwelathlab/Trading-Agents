@@ -12,7 +12,10 @@ from apps.api.app.api.routes.trades import router as trades_router
 from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
-from apps.api.app.marketdata.providers.longbridge import build_longbridge_provider
+from apps.api.app.marketdata.providers.longbridge import (
+    build_longbridge_history_provider,
+    build_longbridge_provider,
+)
 from apps.api.app.marketdata.router import MarketDataRouter
 
 settings = get_settings()
@@ -24,6 +27,10 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     longbridge = build_longbridge_provider(settings)
     app.state.market_data_router = MarketDataRouter([longbridge]) if longbridge else None
+    # D021: same credential gate as the quote provider, but a distinct
+    # capability (a price series, not one quote) - see
+    # apps/api/app/marketdata/history_provider.py.
+    app.state.history_provider = build_longbridge_history_provider(settings)
 
     llm_provider = build_llm_provider(settings)
     app.state.trader_agent = build_trader_agent(llm_provider)
@@ -39,6 +46,7 @@ async def lifespan(app: FastAPI):
         live_trading_enabled=settings.live_trading_enabled,
         emergency_stop_active=settings.emergency_stop_active,
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
+        history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",
         technical_analyst="configured" if app.state.technical_analyst else "NOT_CONFIGURED",
     )

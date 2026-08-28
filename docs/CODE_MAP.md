@@ -190,7 +190,7 @@ Main files: `apps/api/app/api/schemas.py` (`TradeSubmissionRequest` —
 `AgentTradeRequest`/`AgentTradeResponse` as of D018),
 `apps/api/app/api/dependencies.py`
 (`require_broker_access`, `AuthorizedBroker`, `get_market_data_router`,
-`get_trader_agent`),
+`get_trader_agent`, `get_technical_analyst`, `get_history_provider` (D021)),
 `apps/api/app/api/routes/trades.py` (`router`:
 `POST /brokers/{broker_id}/trades`; `agent_router`:
 `POST /brokers/{broker_id}/agent-trades` — both registered separately in
@@ -296,20 +296,35 @@ Important: Longbridge is the first concrete `MarketDataProvider` (D015,
 closing D008). `build_longbridge_provider(settings)` returns `None`
 unless `LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN`
 are *all* set — a partial configuration is treated the same as none, not
-guessed at. `GET /market-data/{symbol}/quote` exposes it but **nothing in
-the trading path calls it** — `POST /brokers/{broker_id}/trades` still
-takes price/timestamp from the caller, unchanged since Phase 6; whether
-to connect the two is an explicit open decision (D015), not a gap to
-"complete." Only `DataUnavailableError` and `VendorError` trigger
-fallback to the next provider; any other exception propagates
-immediately rather than being silently treated as "try the next one."
-When every provider fails, `NoDataAvailableError`'s message is prefixed
-`NO_DATA_AVAILABLE:` by convention — grep for that prefix, don't invent a
-different sentinel elsewhere in the codebase. If you add a second
-provider (e.g. IBKR), verify its actual SDK surface by installing the
-real package and introspecting it directly (`dir()`/`inspect.signature()`)
-before writing code against it — two web sources gave conflicting
-answers for Longbridge's own SDK, so don't trust documentation alone.
+guessed at. `GET /market-data/{symbol}/quote` exposes it, and as of D017
+`POST /brokers/{broker_id}/trades` also uses it when `estimated_price` is
+omitted. Only `DataUnavailableError` and `VendorError` trigger fallback
+to the next provider; any other exception propagates immediately rather
+than being silently treated as "try the next one." When every provider
+fails, `NoDataAvailableError`'s message is prefixed `NO_DATA_AVAILABLE:`
+by convention — grep for that prefix, don't invent a different sentinel
+elsewhere in the codebase. If you add a second provider (e.g. IBKR),
+verify its actual SDK surface by installing the real package and
+introspecting it directly (`dir()`/`inspect.signature()`) before writing
+code against it — two web sources gave conflicting answers for
+Longbridge's own SDK, so don't trust documentation alone.
+
+**Historical prices / indicators (D021)**: `apps/api/app/marketdata/history_provider.py`
+(`HistoryProvider` Protocol — a price *series*, `get_daily_closes(symbol,
+count) -> list[Decimal]` oldest-first, distinct from
+`MarketDataProvider`'s single quote), `apps/api/app/marketdata/indicators.py`
+(`sma()`, `rsi()`, `InsufficientDataError` — pure functions, no LLM, no
+I/O, per `docs/TOKEN_POLICY.md`'s mandatory-deterministic list),
+`apps/api/app/marketdata/providers/longbridge.py`'s
+`LongbridgeHistoryProvider`/`build_longbridge_history_provider`
+(`AsyncQuoteContext.candlesticks(symbol, Period.Day, count,
+AdjustType.NoAdjust)`, verified by introspection like the quote provider
+— the provider sorts candles by timestamp itself, never trusting the
+SDK's return order). `sma()`/`rsi()` raise `InsufficientDataError` rather
+than padding when too few closes exist — callers must handle a short
+series explicitly. Tests: `tests/marketdata/test_indicators.py` (9),
+`tests/marketdata/providers/test_longbridge_history.py` (5, fake client),
+`tests/api/test_history_provider_wiring.py` (4, DB-backed).
 
 ## Agents
 
@@ -336,8 +351,11 @@ against a fake `LLMProvider`), `tests/api/test_agent_trades.py`
 `tests/api/test_technical_analyst_wiring.py` (3 integration tests against
 real Postgres proving the optional analyst wiring — no analyst configured
 still succeeds without context, a configured analyst's read reaches the
-trader agent's prompt, a failing analyst never blocks the trade) — none
-of these are real network calls.
+trader agent's prompt, a failing analyst never blocks the trade),
+`tests/api/test_history_provider_wiring.py` (4 integration tests, D021 —
+see the Market data section above) — none of these are real network
+calls, though D021 was separately verified against the real Longbridge
+API directly (see D021's Status in `docs/DECISIONS.md`).
 Important: `build_llm_provider(settings)` returns `None` unless
 `LLM_PROVIDER_BASE_URL`/`_API_KEY`/`_MODEL` are *all* set — same
 all-or-nothing posture as Longbridge (D015). The client is deliberately
@@ -364,16 +382,19 @@ connection as `TraderAgent` (no second `LLM_PROVIDER_*` set) since there's
 exactly one analyst this phase — `build_technical_analyst(llm_provider)`
 returns `None` under the identical NOT_CONFIGURED convention. It never
 computes an indicator itself (RSI/MACD/etc must be deterministic code per
-`docs/TOKEN_POLICY.md`); with no historical price series wired
-(`packages/data_providers/` is still an empty placeholder), it only ever
-sees the one live quote `agent-trades` already fetched via D017's path,
-and its system prompt explicitly forbids claiming to compute an
-indicator. Wired into `POST /brokers/{id}/agent-trades` as **optional**
-context for `TraderAgent.propose(technical_context=...)` — absence (not
-configured) or a raised `AnalystOutputError` (bad/unparseable LLM output)
-both silently omit the context rather than blocking the trade or
-fabricating a read; only a genuinely successful, schema-valid
-`TechnicalRead` is ever passed through.
+`docs/TOKEN_POLICY.md`) — its system prompt explicitly forbids claiming
+to calculate or invent one. As of D021, when a `HistoryProvider` is
+configured (see the Market data section above), `agent-trades` computes
+real `SMA(20)`/`RSI(14)` values deterministically and passes them to
+`analyze(indicator_context=...)`, which the analyst may narrate but never
+recompute; with no history available it still falls back to commentary
+on the one live quote alone, same as D019's original behavior. Wired
+into `POST /brokers/{id}/agent-trades` as **optional** context for
+`TraderAgent.propose(technical_context=...)` — absence (not configured)
+or a raised `AnalystOutputError` (bad/unparseable LLM output) both
+silently omit the context rather than blocking the trade or fabricating
+a read; only a genuinely successful, schema-valid `TechnicalRead` is
+ever passed through.
 
 ## Packages (placeholders, not yet populated)
 

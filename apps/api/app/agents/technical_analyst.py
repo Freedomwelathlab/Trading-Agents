@@ -1,14 +1,17 @@
 """The parallel analyst layer's first (and, this phase, only) analyst
-(docs/DECISIONS.md D019). Single responsibility per docs/AGENT_POLICY.md:
-this agent reads the current live quote for a symbol and writes a short,
-qualitative technical read - it never proposes a trade, never sizes a
-position, and never computes an indicator (RSI/MACD/moving averages/etc)
-itself. Any real indicator must be computed deterministically in code from
-real historical data per docs/TOKEN_POLICY.md's mandatory-deterministic
-list; this codebase has no historical price series wired yet
-(packages/data_providers/ is an empty placeholder), so this agent's LLM
-call is honestly framed as qualitative commentary on a single live quote,
-not technical-indicator analysis.
+(docs/DECISIONS.md D019, D021). Single responsibility per
+docs/AGENT_POLICY.md: this agent reads the current live quote (and,
+since D021, real deterministically-computed indicator values when
+history is available) for a symbol and writes a short technical read -
+it never proposes a trade, never sizes a position, and never computes an
+indicator (RSI/MACD/moving averages/etc) itself. Every real indicator
+value it narrates was computed by apps/api/app/marketdata/indicators.py
+(pure functions, no LLM) per docs/TOKEN_POLICY.md's mandatory-
+deterministic list - this agent's job is strictly narration of numbers
+it was handed, never calculation. When no history is available (D019's
+original, still-supported case), it honestly falls back to qualitative
+commentary on the single live quote alone, never inventing an indicator
+value it wasn't given.
 
 Never authoritative (docs/TRADING_SAFETY.md spec Sec62, docs/AGENT_POLICY.md):
 this agent has no order-submission path at all - TechnicalRead has no
@@ -30,20 +33,23 @@ from apps.api.app.agents.provider import LLMProvider, LLMProviderError
 
 _SYSTEM_PROMPT = """You are a read-only market-commentary assistant for a \
 paper trading system. You are given a single live price quote for a \
-symbol - not a price history, not a chart, not any computed indicator. \
-You never see account balances, positions, or risk limits, and you never \
-propose or size a trade; a separate agent and a separate deterministic \
-Risk Engine handle that. Do not claim to calculate RSI, MACD, moving \
-averages, or any other technical indicator - you were given one price \
-point, not a series, so there is nothing to compute. Offer only brief, \
-honestly-qualitative commentary on the single quote you were given (e.g. \
-round-number proximity, the general question of whether the level looks \
-stretched) - never invent a trend, a support/resistance level, or any \
-other data you were not given.
+symbol, and sometimes also real, already-computed indicator values \
+(e.g. an SMA or RSI) - these were calculated by deterministic code, not \
+by you; you never see account balances, positions, or risk limits, and \
+you never propose or size a trade; a separate agent and a separate \
+deterministic Risk Engine handle that. Never claim to calculate or \
+recompute RSI, MACD, moving averages, or any other technical indicator \
+yourself, and never state a numeric indicator value that was not given \
+to you in this prompt - you may only narrate/interpret values you were \
+actually handed. If no indicator values are given, you were given only \
+one price point, not a series - offer brief, honestly-qualitative \
+commentary on that quote alone (e.g. round-number proximity) and do not \
+invent a trend, support/resistance level, or indicator value you were \
+not given.
 
 Respond with ONLY a single JSON object, no other text, matching exactly:
 {"stance": "bullish" or "bearish" or "neutral", "summary": "<1-3 \
-sentences of qualitative commentary on this one quote>", "confidence": \
+sentences, referencing only data actually given to you>", "confidence": \
 "<decimal string between 0 and 1>"}
 """
 
@@ -84,8 +90,20 @@ class TechnicalAnalyst:
     def __init__(self, provider: LLMProvider) -> None:
         self._provider = provider
 
-    async def analyze(self, *, symbol: str, price: Decimal, as_of: str) -> TechnicalRead:
+    async def analyze(
+        self,
+        *,
+        symbol: str,
+        price: Decimal,
+        as_of: str,
+        indicator_context: str | None = None,
+    ) -> TechnicalRead:
         user_prompt = f"Symbol: {symbol}\nCurrent price: {price}\nQuote as of: {as_of}"
+        if indicator_context:
+            # D021: real, deterministically-computed indicator values
+            # (apps/api/app/marketdata/indicators.py) - narration input
+            # only, never something this call is asked to calculate.
+            user_prompt += f"\nComputed indicators (real, not estimates): {indicator_context}"
         try:
             raw = await self._provider.complete(
                 system=_SYSTEM_PROMPT, user=user_prompt, max_tokens=300

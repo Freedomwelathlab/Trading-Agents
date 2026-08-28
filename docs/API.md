@@ -113,7 +113,13 @@ Response (200, `AgentTradeResponse` — `TradeSubmissionResponse` plus
 }
 ```
 `rationale` is the agent's one-sentence explanation — informational only,
-never itself validated or acted on.
+never itself validated or acted on. If a `TechnicalAnalyst` is configured
+(D019) it reads the same live quote and, if a `HistoryProvider` is also
+configured (D021), real computed `SMA(20)`/`RSI(14)` values — its read
+becomes optional context in the `TraderAgent`'s prompt; absence or
+failure of either never blocks the request, and `rationale`/the response
+shape are unaffected either way (there's no field exposing the
+analyst's read directly in this response).
 
 Error responses: same 401/403/404 as the human-submitted route, plus 400
 `NOT_CONFIGURED:` if no LLM provider is wired

@@ -923,3 +923,97 @@ vendor wired in this environment) rather than any fabricated quote;
 against a real granted broker and returned `200` with a genuine fill
 (`status: "filled"`, `fill_price: "100"`) — closing the one remaining gap
 this entry originally flagged.
+
+---
+
+**D021 — Real historical prices for TechnicalAnalyst: a HistoryProvider port, deterministic SMA/RSI, LLM narrates but never calculates**
+Date: 2026-08-28
+Decision: Closes D019's explicit "future work" gap. `apps/api/app/marketdata/history_provider.py`
+adds a `HistoryProvider` Protocol (`get_daily_closes(symbol, count) ->
+list[Decimal]`, oldest-first) — a distinct capability from
+`MarketDataProvider` (a series vs. one quote), deliberately not
+overloaded onto `get_snapshot()`. `LongbridgeHistoryProvider`
+(`marketdata/providers/longbridge.py`) implements it via
+`AsyncQuoteContext.candlesticks(symbol, Period.Day, count,
+AdjustType.NoAdjust)` — verified against the installed `longport`
+package (v4.3.7) by direct introspection, same discipline as D015: the
+real method returns `Candlestick` objects with `.close`/`.timestamp`,
+and the provider sorts them by timestamp itself rather than trusting the
+SDK's return order. `apps/api/app/marketdata/indicators.py` adds `sma()`
+and `rsi()` as pure functions - no LLM, no I/O, per
+`docs/TOKEN_POLICY.md`'s mandatory-deterministic list, which explicitly
+names both. `TechnicalAnalyst.analyze()` (D019) gained an optional
+`indicator_context` parameter and its system prompt now explicitly
+permits narrating *given* indicator values while still forbidding it
+from calculating or inventing one itself - the LLM's role stays strictly
+narration of numbers it was handed, never computation.
+`POST /brokers/{broker_id}/agent-trades` (`trades.py`) wires it: when a
+`HistoryProvider` is configured, it fetches 30 daily closes and computes
+SMA(20)/RSI(14) if enough history exists, passing whichever succeeded to
+the (also optional) `TechnicalAnalyst`; a short history, a vendor
+failure, or no configured provider all just mean no indicator context
+this call, never a blocked trade or an invented value - same
+never-blocking posture as D019's original TechnicalAnalyst wiring.
+Reason: D019 shipped honestly scoped to "no historical data exists yet,"
+explicitly framing the analyst's commentary as qualitative rather than
+technical-indicator analysis, and named wiring real OHLC data as the
+natural next step rather than doing it as a rushed side effect of
+shipping the first analyst. That data now exists via the same Longbridge
+SDK already integrated (D015) - no new vendor decision needed, just
+using more of the connection already trusted and tested. RSI's classic
+(simple-average, Wilder's original) definition was chosen over a
+smoothed/exponential variant deliberately - it's the textbook definition,
+not tuned to match any specific charting platform's convention, and
+matching a specific platform wasn't asked for.
+Alternatives: (a) let the LLM estimate an indicator from a description
+of recent price action in the prompt - rejected outright, this is
+exactly what `docs/TOKEN_POLICY.md` forbids: an LLM "computing" a number
+that must be deterministic. (b) overload `MarketDataProvider.get_snapshot()`
+to optionally return a series - rejected, conflates two different
+capabilities (one price now vs. many prices over time) into one method
+signature, and every existing caller of `get_snapshot()` would need to
+handle a shape it never asked for. (c) share one `AsyncQuoteContext`
+between the quote and history providers instead of each building their
+own - deferred as a reasonable future optimization, not built this
+phase; restructuring D015's already-tested construction path carries
+more risk than the connection-count savings justify right now.
+Consequences: a new optional `HISTORY_PROVIDER`-shaped credential gate
+exists alongside the market-data and LLM-provider gates already in
+`main.py`'s startup log (`history_provider`) - one more thing to notice
+is `NOT_CONFIGURED` when diagnosing why an agent trade has no indicator
+context, not a bug. `agent-trades` now makes up to one additional
+network call (the candlestick fetch) beyond what D019 required, still
+strictly optional and still never blocking the trade if it fails or is
+unconfigured.
+Status: Implemented, tested: `tests/marketdata/test_indicators.py` (9
+unit tests - SMA/RSI correctness including a strictly increasing series
+giving RSI 100, a strictly decreasing series giving RSI 0, a flat series
+giving the neutral 50, and both raising `InsufficientDataError` rather
+than padding when too few closes exist);
+`tests/marketdata/providers/test_longbridge_history.py` (5 unit tests
+against a fake candlestick client - out-of-order candles sorted
+correctly, empty results, an SDK exception wrapped as `VendorError`,
+both "no credentials"/"partial credentials" branches);
+`tests/api/test_history_provider_wiring.py` (4 integration tests against
+real Postgres - no provider configured succeeds with no indicator
+context; a configured provider with enough history produces real
+SMA(20)/RSI(14) values that demonstrably reach the analyst, proven via a
+`CapturingTechnicalAnalyst` subclass; too-short a history omits the
+context without failing; a failing provider never blocks the trade).
+145/145 total tests passing, ruff+mypy clean (51 source files). One real
+bug caught during this phase's own test run and fixed before completion:
+`rsi()`'s consecutive-pair `zip(window, window[1:], strict=True)` was
+wrong - the two slices are naturally different lengths by one (that's
+the intended pairing, not a data-integrity problem `strict=True` should
+guard against) and raised `ValueError` on every real call; fixed by
+removing `strict=True`.
+Verified live: (a) against the real Longbridge API directly (not just a
+fake client) using real paper-trading credentials - fetched 30 real
+daily closes for `AAPL.US` and computed genuine `SMA(20)=309.3215` /
+`RSI(14)=51.57...` from them, proving the whole real-data path works
+end to end, a level of verification D019 couldn't reach at the time
+(OmniRoute/no history data then); (b) against a running server with no
+`LLM_PROVIDER_*`/Longbridge credentials configured: startup logged
+`history_provider=NOT_CONFIGURED`, and `POST /brokers/{id}/agent-trades`
+returned 400 `NOT_CONFIGURED` for the LLM provider (D018's gate, checked
+first) rather than any fabricated trade or indicator.

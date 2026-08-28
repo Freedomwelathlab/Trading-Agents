@@ -18,6 +18,11 @@ D019 adds an optional TechnicalAnalyst read of that same live quote as
 extra context appended to the TraderAgent's prompt - purely informational,
 never a separate trusted channel, never required (its absence, or a
 failure, silently omits the context rather than blocking the trade).
+
+D021 adds an optional real indicator computation (SMA/RSI, deterministic
+code, never the LLM) from a HistoryProvider's daily closes, narrated
+(never calculated) by the TechnicalAnalyst when available - same
+optional, never-blocking posture as D019.
 """
 
 import uuid
@@ -31,6 +36,7 @@ from apps.api.app.agents.technical_analyst import AnalystOutputError, TechnicalA
 from apps.api.app.agents.trader import AgentOutputError, TraderAgent, stop_price_from_distance
 from apps.api.app.api.dependencies import (
     AuthorizedBroker,
+    get_history_provider,
     get_market_data_router,
     get_technical_analyst,
     get_trader_agent,
@@ -48,6 +54,9 @@ from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import BrokerKind, OrderStatus
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
+from apps.api.app.marketdata.history_provider import HistoryProvider
+from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
+from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
 from apps.api.app.oms.persistence import submit_trade_and_record
 from apps.api.app.risk.models import RiskLimits, TradeProposal
@@ -187,6 +196,7 @@ async def submit_agent_trade_endpoint(
     market_data_router: MarketDataRouter | None = Depends(get_market_data_router),
     trader_agent: TraderAgent | None = Depends(get_trader_agent),
     technical_analyst: TechnicalAnalyst | None = Depends(get_technical_analyst),
+    history_provider: HistoryProvider | None = Depends(get_history_provider),
 ) -> AgentTradeResponse:
     _require_paper_broker(authorized)
 
@@ -211,9 +221,32 @@ async def submit_agent_trade_endpoint(
         ),
     )
 
+    indicator_context: str | None = None
+    if history_provider is not None:
+        # D021: real, deterministically-computed indicators (never
+        # asked of an LLM) - optional, like everything else here. A
+        # short history, a vendor failure, or no configured provider all
+        # just mean no indicator context this call, never a blocked trade
+        # or a guessed value.
+        try:
+            closes = await history_provider.get_daily_closes(request.symbol, count=30)
+            indicator_lines = []
+            try:
+                indicator_lines.append(f"SMA(20)={sma(closes, 20)}")
+            except InsufficientDataError:
+                pass
+            try:
+                indicator_lines.append(f"RSI(14)={rsi(closes, 14)}")
+            except InsufficientDataError:
+                pass
+            if indicator_lines:
+                indicator_context = ", ".join(indicator_lines)
+        except (DataUnavailableError, VendorError) as exc:
+            logger.warning("history_provider_unavailable", symbol=request.symbol, error=str(exc))
+
     technical_context: str | None = None
     if technical_analyst is not None:
-        # D019: optional additional context only - a failed or
+        # D019/D021: optional additional context only - a failed or
         # unavailable technical read must never block the trade, since
         # this analyst is informational and TraderAgent already treats
         # a missing directive-adjacent context as normal. Never
@@ -224,6 +257,7 @@ async def submit_agent_trade_endpoint(
                 symbol=request.symbol,
                 price=estimated_price,
                 as_of=market_data_as_of.isoformat(),
+                indicator_context=indicator_context,
             )
         except AnalystOutputError as exc:
             logger.warning("technical_analyst_unavailable", symbol=request.symbol, error=str(exc))

@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-17)
+## Current (Phase 1-18)
 
 ```mermaid
 flowchart LR
@@ -23,7 +23,10 @@ flowchart LR
 
     client --> agentroute["POST /brokers/{id}/agent-trades\nsame auth+grant checks"]
     agentroute -->|price always from router,\nnever an agent (D018)| router
-    agentroute --> techanalyst["TechnicalAnalyst.analyze()\nread-only, optional (D019)"]
+    agentroute --> historyprovider["HistoryProvider\nLongbridge candlesticks (D021)"]
+    historyprovider --> indicators["sma()/rsi()\ndeterministic, no LLM (D021)"]
+    indicators -.->|indicator_context,\noptional| techanalyst
+    agentroute --> techanalyst["TechnicalAnalyst.analyze()\nread-only, narrates only, optional (D019/D021)"]
     techanalyst -.->|technical_context,\nomitted on failure| traderagent
     agentroute --> traderagent["TraderAgent.propose()\nside/quantity/stop_distance_pct"]
     traderagent --> llmprovider["LLMProvider\nAnthropic Messages API\nOmniRoute or compatible"]
@@ -90,18 +93,29 @@ diagram's parallel analyst layer: `TechnicalAnalyst.analyze()` reads that
 same live quote and writes a short, structured `TechnicalRead`
 (`stance`/`summary`/`confidence`) — read-only by construction, no
 side/quantity/price field exists on it. It never itself submits or sizes
-a trade, and it never computes an indicator (RSI/MACD/etc); this codebase
-has no historical price series wired yet (`packages/data_providers/` is
-still an empty placeholder), so it is honestly framed as qualitative
-commentary on one quote, not technical-indicator analysis. When
-configured, `agent-trades` passes its read to `TraderAgent.propose()` as
-optional additional prompt context alongside the human's directive — never
-a separate trusted channel, never required. A missing or failing analyst
-never blocks the trade; the context is simply omitted, matching this
-codebase's fail-closed-but-never-fabricate posture applied to an optional
-feature rather than a hard dependency. There is exactly one analyst this
-phase, so no parallel-execution/fan-out infrastructure was built for it —
-see D019's "future work" note for when a second analyst exists.
+a trade, and it never computes an indicator (RSI/MACD/etc) itself.
+When configured, `agent-trades` passes its read to `TraderAgent.propose()`
+as optional additional prompt context alongside the human's directive —
+never a separate trusted channel, never required. A missing or failing
+analyst never blocks the trade; the context is simply omitted, matching
+this codebase's fail-closed-but-never-fabricate posture applied to an
+optional feature rather than a hard dependency. There is exactly one
+analyst this phase, so no parallel-execution/fan-out infrastructure was
+built for it — see D019's "future work" note for when a second analyst
+exists.
+
+Phase 18 (D021) closes that "future work" gap: `HistoryProvider`
+(`marketdata/history_provider.py`) is a new port for a real price
+*series* (distinct from `MarketDataProvider`'s single quote);
+`LongbridgeHistoryProvider` implements it via the same Longbridge SDK
+connection already used for quotes (D015), fetching daily candlesticks.
+`marketdata/indicators.py`'s `sma()`/`rsi()` are pure deterministic
+functions computing real values from that series — the LLM never
+computes one, only narrates values it's handed. `TechnicalAnalyst` can
+now reference real indicator values when history is available, still
+honestly falling back to quote-only commentary when it isn't. Verified
+live against the real Longbridge API (not just fakes): real daily
+closes for `AAPL.US` produced genuine `SMA(20)`/`RSI(14)` values.
 
 ## Target (per governing spec, not yet built)
 
