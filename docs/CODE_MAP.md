@@ -271,6 +271,47 @@ D014), not the fills replay, so a snapshot's position sizes always match
 what the execution layer itself believes it holds. A missing mark for a
 currently-held symbol is 400 `DATA_UNAVAILABLE:`, never a guessed price.
 
+## Backtesting module + route
+
+Purpose: replays one hard-coded SMA(20)-crossover strategy against real
+historical closes through the real Risk Engine and paper-broker fill math
+(D025) — closes `docs/MODULE_MAP.md`'s previously-empty Backtesting row.
+No writes to any broker's persisted state, no LLM.
+Main files: `apps/api/app/backtesting/strategy.py` (`Signal`,
+`generate_signals()` — pure, reuses `marketdata/indicators.sma()`),
+`apps/api/app/backtesting/metrics.py` (`RoundTrip`,
+`compute_total_return_pct()`, `compute_max_drawdown_pct()`,
+`compute_win_rate_pct()` — pure), `apps/api/app/backtesting/models.py`
+(`BacktestRequest`, `EquityPoint`, `BacktestResult` — Pydantic, all
+`Decimal`), `apps/api/app/backtesting/errors.py`
+(`InsufficientHistoryError`, `UnsupportedDateRangeError`),
+`apps/api/app/backtesting/engine.py` (`run_backtest()` — the
+orchestration: fetches closes, generates signals, runs each signal
+through `evaluate_trade()` and a fresh `PaperBrokerAdapter`),
+`apps/api/app/api/routes/backtests.py` (`router`: `POST /backtests`)
+Dependencies: `apps.api.app.marketdata.history_provider.HistoryProvider`
+(D021, via `get_history_provider`), `apps.api.app.risk.engine.evaluate_trade`
+(D004), `apps.api.app.execution.paper_broker.PaperBrokerAdapter` (D014),
+`apps.api.app.auth.dependencies.get_current_user`
+Tests: `tests/backtesting/test_metrics.py` (10 pure unit tests, hand-
+computed), `tests/backtesting/test_strategy.py` (6 pure unit tests, a
+hand-derived crossover sequence), `tests/backtesting/test_engine.py` (5
+unit tests against a fake `HistoryProvider`, a hand-computed single round
+trip through the real Risk Engine/`PaperBrokerAdapter`), `tests/api/
+test_backtests.py` (7 integration tests against real Postgres and a fake
+`HistoryProvider`)
+Important: no `broker_id`, no `Permission`, no `BrokerGrant` — gated by
+`get_current_user` alone, since the endpoint structurally never touches a
+real broker's state (see D025 for the full reasoning). `end_date` in the
+request must equal today (UTC); `HistoryProvider.get_daily_closes()`
+(D021) only returns the most recent N closes as of now, with no
+timestamps attached, so an arbitrary past window can't be honestly
+served — see D025's "Consequences" for why extending `HistoryProvider`
+itself is explicit future work, not solved here. `RiskLimits` for a
+backtest set `require_stop_price=False` (the strategy's exit is its SELL
+signal, not a stop price) but otherwise reuse `Settings`' real risk
+limits unchanged.
+
 ## Market data route
 
 Purpose: read-only `GET /market-data/{symbol}/quote`, the HTTP surface

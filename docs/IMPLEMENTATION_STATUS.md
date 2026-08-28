@@ -472,9 +472,32 @@ Deferred until an agent/LLM layer exists — see [AI_OPTIMIZATION.md](AI_OPTIMIZ
 Building a token router/cache with nothing to route would be premature
 optimization.
 
+## Completed (continued)
+
+- Phase 23: backtesting engine (2026-08-28). `apps/api/app/backtesting/`
+  (`strategy.py`, `metrics.py`, `models.py`, `errors.py`, `engine.py`) — a
+  single hard-coded SMA(20)-crossover strategy replayed against real
+  historical closes (`HistoryProvider`, D021) through the real Risk
+  Engine (`evaluate_trade`, D004) and a fresh in-memory
+  `PaperBrokerAdapter` per run (D014) — never a real broker's persisted
+  state. `POST /backtests` (`api/routes/backtests.py`, gated by
+  `get_current_user` alone, no `broker_id`/`Permission`) returns a
+  `BacktestResult` (equity curve, total return, trade count, win rate,
+  max drawdown — every number hand-verified in tests). See
+  docs/DECISIONS.md D025 for the strategy/scope/permission reasoning and
+  the `HistoryProvider`-imposed `end_date == today` limitation. 33 new
+  tests (21 pure unit — metrics/strategy/engine — + 7 HTTP integration +
+  5 already counted via reused fixtures), 202/202 total tests passing,
+  ruff+mypy clean (67 source files). Live-verified against real
+  Longbridge paper-trading credentials: a real `AAPL.US` backtest over
+  the most recent ~45 days produced a genuine, non-trivial equity curve
+  with one real trade filled and risk-gated exactly as the unit tests
+  predict.
+
 ## Tests
 
-169 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+202 tests, all passing (see docs/DECISIONS.md D025 for the exact new-test
+breakdown). Prior baseline, 169 tests: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (23, incl. 9
 duplicate-order-detection tests — D024), paper broker (5), OMS (4, incl. 1
 proving `recent_orders` blocks a duplicate before the broker is touched),

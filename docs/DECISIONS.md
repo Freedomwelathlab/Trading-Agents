@@ -1420,3 +1420,184 @@ component coverage), a users/roles/grants listing UI (blocked on D013's
 deliberate no-listing-endpoints scope cut, not a frontend gap), and
 decoding the JWT client-side to pre-filter the nav (rejected above, not
 merely deferred).
+
+---
+
+**D025 — Backtesting engine: one hard-coded SMA(20)-crossover strategy, replayed through the real Risk Engine and a fresh in-memory PaperBrokerAdapter, never a real broker's persisted state**
+Date: 2026-08-28
+Decision: `apps/api/app/backtesting/` adds `strategy.py` (a pure
+`generate_signals(closes, period=20)` function - BUY when yesterday's
+close was at/below SMA(20) and today's is above it, SELL on the mirror
+crossover down, HOLD otherwise, reusing `marketdata/indicators.sma()`
+rather than recomputing a moving average a second way), `metrics.py`
+(pure `compute_total_return_pct`/`compute_max_drawdown_pct`/
+`compute_win_rate_pct`, hand-verifiable in isolation from the engine),
+`models.py` (`BacktestRequest`/`EquityPoint`/`BacktestResult`, all
+money/quantity fields `Decimal`), `errors.py`
+(`InsufficientHistoryError`/`UnsupportedDateRangeError`), and
+`engine.py`'s `run_backtest()`, which orchestrates all of the above: it
+fetches real closes via `HistoryProvider.get_daily_closes()` (D021),
+generates signals, and for every BUY/SELL signal builds a real
+`TradeProposal` and calls the real `evaluate_trade()` (D004) against a
+real `AccountState` read from a real `PaperBrokerAdapter.get_account_state()`
+(D014) - a fresh `PaperBrokerAdapter(starting_cash=...)` constructed once
+per run, in memory, and discarded at the end of the call. This module
+never imports `execution/persistence.py`'s `load_paper_broker`/
+`save_paper_broker` - the only two functions that ever touch the
+`broker_accounts`/`broker_positions` tables - so it is structurally
+impossible, not just policy, for a backtest run to read or write a real
+broker's persisted state. `POST /backtests` (`api/routes/backtests.py`,
+no `broker_id` in the path) wires it up, gated by `get_current_user`
+alone - no new `Permission`, no `require_broker_access` - and registered
+in `main.py`.
+
+Reason, on the four judgment calls this phase asked for:
+- Why SMA(20) crossover, and why hard-coded not pluggable: it is the
+  simplest strategy that still exercises every part of the pipeline this
+  phase exists to prove (a real signal, a real risk-gated proposal, a
+  real fill) without inventing a second, competing definition of "the
+  strategy" the way a config-driven or LLM-authored strategy would. A
+  pluggable strategy interface is real, useful future work - explicitly
+  not built here: half-building one (e.g. an abstract `Strategy` Protocol
+  with exactly one implementation) would add indirection with nothing yet
+  to justify it, the same "don't build unused parallel infra" judgment
+  D019/D021 already made about a second LLM provider. `strategy.py`'s
+  `generate_signals()` takes a `period` parameter mainly so its own tests
+  can exercise the crossover math on a short, hand-computable series
+  without needing 20+ closes - `engine.py` itself only ever calls it with
+  the hard-coded `SMA_PERIOD = 20`, never a caller-supplied value.
+- Why the strategy runs through the real Risk Engine instead of just
+  computing raw returns: that is this phase's entire point per the brief
+  - a backtest that only multiplied share counts by price deltas would
+  prove nothing about whether the Risk Engine behaves sanely over a real
+  historical sequence, which is the actual open question after D004
+  through D024 built the engine itself. Concretely, every BUY proposal
+  in the live-verified AAPL.US run below was sized as "all available
+  cash" and then genuinely blocked by `EXCEEDS_MAX_POSITION_SIZE` -
+  `engine._attempt_trade()` retries exactly once at the engine's own
+  `max_quantity_allowed` (a caller-side policy choice, not the engine
+  resizing itself - `RiskDecision.max_quantity_allowed`'s own docstring is
+  explicit that the engine never does that) and if that retry is also
+  rejected, the signal is simply skipped for that day. A SELL proposes
+  the entire held quantity and is not capped by
+  `max_position_pct_of_equity` (that limit governs how large a *new*
+  position may become, not how much of an *existing* one may be closed);
+  it still passes through every other check unchanged.
+- Why `require_stop_price=False` for this backtest's `RiskLimits`, unlike
+  every other trading path in this codebase: the SMA-crossover strategy's
+  exit rule *is* the SELL signal itself, not a stop price - it has no
+  independent stop-loss concept to supply a real value for. Setting
+  `require_stop_price=True` here would force `engine.py` to invent a stop
+  distance with no grounding in the strategy, which is exactly the kind
+  of fabrication `docs/TRADING_SAFETY.md` forbids in spirit even though
+  the letter of the rule is about prices, not risk parameters. Every
+  other limit (`max_position_pct_of_equity`,
+  `max_portfolio_exposure_pct_of_equity`, `max_risk_pct_of_equity_per_trade`,
+  `max_market_data_age_seconds`, `duplicate_order_window_seconds`) is read
+  from `Settings` unchanged, same values a real paper trade would be
+  gated by.
+- Why `POST /backtests` needs no `broker_id` and no specific `Permission`:
+  a backtest never reads or writes any broker's row - there is no
+  resource to scope a grant to, unlike `VIEW_PORTFOLIO`/
+  `SUBMIT_PAPER_TRADE` which both name a specific broker's money or
+  positions. It also never touches real capital by construction (see the
+  in-memory-only `PaperBrokerAdapter` point above), so unlike those two
+  permissions a coarse "any authenticated, active user" gate
+  (`get_current_user` alone) is proportionate - adding a dedicated
+  `Permission.RUN_BACKTEST` would be a permission that gates nothing a
+  plain authenticated check doesn't already gate equally safely, the same
+  "don't add a permission that does nothing" judgment `Permission.ADMIN`'s
+  own docstring makes about coarse-vs-fine-grained permissions (D013).
+Alternatives: (a) a pluggable/configurable strategy (parametrized SMA
+periods, multiple strategies, a strategy registry) - rejected as
+explicit future work per the brief's own instruction not to half-build
+this; noted above. (b) let the caller supply an explicit stop_price per
+backtest request - rejected, there is nowhere in an SMA-crossover
+strategy for a user-supplied stop to come from without turning "one
+hard-coded strategy" into "one hard-coded strategy plus one user-supplied
+parameter that changes its risk behavior," which is scope creep toward
+(a). (c) gate `POST /backtests` behind `SUBMIT_PAPER_TRADE` (reusing the
+existing trading permission) - rejected, a backtest is strictly weaker
+than submitting a paper trade (no broker state changes at all) and
+requiring a trading permission for a read-only simulation would be
+backwards, forcing a report-only user to hold trade rights they don't
+need, the same reasoning `VIEW_PORTFOLIO`'s docstring gives for being
+separate from `SUBMIT_PAPER_TRADE`. (d) let `HistoryProvider` gain a
+`get_daily_closes_between(symbol, start, end)` method so an arbitrary
+historical window could be served directly - rejected for this phase:
+`HistoryProvider` is a `marketdata/` capability shared by D021's
+indicator wiring, and this worktree's assigned scope is
+`apps/api/app/backtesting/` plus directly-related tests/docs; extending a
+shared Protocol other worktrees might also be touching is exactly the
+kind of change that scope boundary exists to prevent. Noted below as the
+natural next step for whoever picks this up.
+Consequences: `end_date` in `BacktestRequest` must equal today (UTC) - a
+request for an arbitrary past window (e.g. "backtest Q1 2024") gets a
+clear 400 `UNSUPPORTED_DATE_RANGE`, not a silently mislabeled result,
+because `HistoryProvider.get_daily_closes(symbol, count)` (D021) only
+ever returns "the most recent `count` closes as of now" with no
+timestamps attached - there is no way to honestly serve a historical
+window that doesn't end at the present without either fabricating dates
+on real prices or extending a Protocol outside this phase's scope (see
+alternative (d) above). Given that constraint, `start_date`/`end_date`
+are used only to size the `HistoryProvider` request (weekday count
+between them, plus a fixed 20-day SMA warmup) and to label the returned
+closes with best-effort trading-day dates (`engine._label_trading_days`,
+skipping weekends only - it does not know about market holidays, so a
+date label can be off by a day or two around one; the *prices* themselves
+are always exactly what the vendor returned, in order, never interpolated
+or padded). `InsufficientHistoryError` fires when the vendor has fewer
+closes than the requested window plus warmup requires - never a shorter,
+silently-truncated backtest. This is the single most significant scope
+note for whoever extends this phase: a real date-range backtest (e.g.
+"AAPL.US from 2023-01-01 to 2023-06-30") needs `HistoryProvider` itself
+to grow a timestamped, arbitrary-window query capability first; that is
+`marketdata/` work, explicitly out of scope here, not solved by this
+phase.
+Status: Implemented, tested: `tests/backtesting/test_metrics.py` (10
+unit tests - total return, max drawdown, and win rate every hand-computed
+in the test's own comments, including empty/single-point/all-flat edge
+cases); `tests/backtesting/test_strategy.py` (6 unit tests - a fully
+hand-derived SMA(3) crossover sequence showing HOLD/BUY/SELL/HOLD/SELL
+across a 7-close series, a too-short series, a warmup period, and a
+perfectly flat series that never signals); `tests/backtesting/test_engine.py`
+(5 unit tests against a fake `HistoryProvider` - a fully hand-computed
+single round trip through the real Risk Engine and real
+`PaperBrokerAdapter` showing the exact equity at every day including the
+`EXCEEDS_MAX_POSITION_SIZE`-then-retry sizing math, a flat series
+producing zero trades and zero return, `InsufficientHistoryError` on too
+little history, `UnsupportedDateRangeError` on a non-today `end_date`,
+and equity-curve dates spanning only the requested window, not the
+warmup); `tests/api/test_backtests.py` (7 integration tests against real
+Postgres and a fake `HistoryProvider` - 401 with no token, 400
+`NOT_CONFIGURED` with no history provider configured, a successful
+backtest run by a user whose role grants *no* permissions at all
+(proving the deliberate no-`Permission` gate), 400 `DATA_UNAVAILABLE` on
+insufficient history, 400 `UNSUPPORTED_DATE_RANGE` on a non-today
+`end_date`, 502 `DATA_UNAVAILABLE` on a failing vendor, and 422 on
+`end_date <= start_date`). 202/202 total tests passing (the 14 tests
+between D024's 159 and this phase's own 21 backtesting-unit + 7
+backtests-API tests belong to the sibling phase-24/25 worktrees' work,
+not this one), ruff+mypy clean (67 source files).
+Verified live: against a running server (real Postgres via this
+worktree's own `docker compose`, remapped to host ports 5433/6380 to
+avoid a port clash with the already-running phase-25 worktree's
+containers, `uvicorn` run directly on port 8023 to avoid the sibling
+worktrees' already-bound 8000) with real Longbridge paper-trading
+credentials (`Longbridge-MCP-Server/API Keys.env`) and a directly-inserted
+test user (bcrypt hash, same pattern as D021/D024): startup logged
+`history_provider=longbridge`; `POST /backtests` for `AAPL.US` over the
+most recent ~45-day window against real historical daily closes returned
+a genuine, non-trivial result - a 34-point equity curve that starts flat
+through the SMA(20) warmup-adjacent early days, one real trade filled on
+2026-08-20 (sized down from an all-cash proposal to a Risk-Engine-capped
+quantity, exactly the `EXCEEDS_MAX_POSITION_SIZE`-then-retry path the
+unit tests exercise with fake data), a small drawdown, and equity
+recovering by 2026-08-28 - `num_trades=1`, real dollar figures
+throughout, nothing fabricated. All inserted rows (the one test user)
+were deleted afterward; the `uvicorn` process, `.venv23`, and `.env`
+(including the real credentials) created for this verification were
+removed; `docker compose down -v` tore down this worktree's Postgres/
+Redis containers and volume; `docker-compose.yml`'s port mappings were
+restored to their committed values (the 5433/6380 remap was a
+local-only, never-committed change for this verification pass).

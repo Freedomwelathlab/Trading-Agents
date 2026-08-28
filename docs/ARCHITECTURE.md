@@ -153,6 +153,19 @@ existing execution layer already persists, for any caller (a future UI,
 a human checking a broker's state) to read — it never intercepts, sizes,
 or routes a trade.
 
+Phase 23 (D025) built a **backtesting engine**
+(`apps/api/app/backtesting/`, `POST /backtests`) — also not the "Portfolio
+Manager" box, and not the live trade path at all. It replays one
+hard-coded SMA(20)-crossover strategy against real historical closes
+through the same Risk Engine and paper-broker fill math the diagram's
+trade path uses, but does so entirely outside that path: a fresh,
+in-memory `PaperBrokerAdapter` is constructed per backtest run and
+discarded, never wired to `oms`/`execution/persistence.py`'s real
+broker-state tables. It exists to answer "how would this strategy have
+performed, and did the Risk Engine gate it sensibly, over real history" —
+a research/validation tool, structurally incapable of moving real
+capital or a real broker's position.
+
 ## Database
 
 Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,

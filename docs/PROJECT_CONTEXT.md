@@ -57,18 +57,21 @@ tests.
 
 ## Current Status
 
-Phases 1-22 complete (19-22 built in parallel worktrees, merged
-2026-08-28): repo skeleton, deterministic risk engine, paper broker +
-OMS, order/fill persistence, market-data routing, HTTP trade submission,
-authentication, role-based authorization, per-broker access grants, a
-minimal admin API (now including update/deactivate), persisted
+Phases 1-23 complete (19-22 built in parallel worktrees, merged
+2026-08-28; phase 23 built in its own worktree alongside sibling
+phase-24/25 work): repo skeleton, deterministic risk engine, paper broker
++ OMS, order/fill persistence, market-data routing, HTTP trade
+submission, authentication, role-based authorization, per-broker access
+grants, a minimal admin API (now including update/deactivate), persisted
 paper-broker state, a real Longbridge market-data provider, market data
 connected to trade submission, the first agent (a single `TraderAgent`),
 the first (one-analyst) slice of the parallel analyst layer (a single
 read-only `TechnicalAnalyst`), the first frontend (`apps/web/`), real
 historical prices feeding that analyst's narration, a real-time Portfolio
-module (D022), a frontend v2 (admin UI + agent-trades UI, D023), and
-deterministic duplicate-order detection in the Risk Engine (D024). See
+module (D022), a frontend v2 (admin UI + agent-trades UI, D023),
+deterministic duplicate-order detection in the Risk Engine (D024), and a
+backtesting engine replaying one hard-coded SMA(20)-crossover strategy
+through the real Risk Engine and paper-broker fill math (D025). See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
@@ -130,6 +133,24 @@ OMS — that component still doesn't exist and Phase 19 doesn't touch the
 trade path at all. Real-time snapshot only; no persisted history, so
 backtesting/alerts/performance-attribution-over-time are explicit future
 work, not built speculatively.
+
+Phase 23 (D025) closes that "backtesting" future-work note with the
+one-strategy v1 it deliberately deferred to: `apps/api/app/backtesting/`
+replays a single hard-coded SMA(20)-crossover strategy against real
+historical closes (`HistoryProvider`, D021) through the real Risk Engine
+(`evaluate_trade`, D004) and a fresh in-memory `PaperBrokerAdapter` per
+run (D014) — structurally never touching `broker_accounts`/
+`broker_positions`. `POST /backtests` (gated by `get_current_user` alone
+— no broker scoping, no new `Permission`, since it moves no real capital)
+returns a `BacktestResult` with a full equity curve, total return, trade
+count, win rate, and max drawdown, every formula hand-verified in tests.
+`HistoryProvider`'s "most recent N closes as of now" contract (no
+per-close timestamps, no arbitrary historical window) means `end_date`
+must equal today — a real "backtest an arbitrary past quarter" feature
+needs `HistoryProvider` itself extended first, noted as explicit future
+work rather than solved by fabricating dates on real prices. Live-verified
+against real Longbridge data: a real `AAPL.US` backtest produced a
+genuine equity curve with one real, risk-gated trade.
 
 ## Planned Work
 

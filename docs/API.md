@@ -183,6 +183,67 @@ no `BrokerGrant` for this broker), 404 (unknown `broker_id`), 400
 `DATA_UNAVAILABLE:` if a currently-held symbol's mark is missing from the
 request body — never a guessed or stale price.
 
+## `POST /backtests`
+
+Runs the one hard-coded SMA(20)-crossover strategy (D025) against real
+historical daily closes through the real Risk Engine and a fresh
+in-memory paper broker. Never touches any broker's persisted state.
+Requires `Authorization: Bearer <token>` from any authenticated, active
+user — no `broker_id`, no `Permission`, no `BrokerGrant` (see
+docs/DECISIONS.md D025 for why this endpoint is deliberately not scoped
+to a broker or gated by a specific permission).
+
+Request body (`BacktestRequest`):
+```json
+{
+  "symbol": "AAPL.US",
+  "start_date": "2026-08-24",
+  "end_date": "2026-08-28",
+  "starting_cash": "100000"
+}
+```
+`end_date` must equal today (UTC) — `HistoryProvider` (D021) only exposes
+the most recent N daily closes as of now, so an arbitrary past window
+can't be honestly served (see D025's "Consequences" section). `start_date`
+and `end_date` together determine how many trading days of history are
+requested, on top of a fixed 20-day SMA warmup buffer.
+
+Response (200, `BacktestResult`):
+```json
+{
+  "symbol": "AAPL.US",
+  "start_date": "2026-08-24",
+  "end_date": "2026-08-28",
+  "starting_cash": "100000",
+  "final_equity": "99966.830",
+  "total_return_pct": "-0.0331700",
+  "num_trades": 1,
+  "win_rate_pct": "0",
+  "max_drawdown_pct": "0.1714300",
+  "equity_curve": [
+    {"date": "2026-08-24", "equity": "100000"},
+    {"date": "2026-08-25", "equity": "100000"},
+    {"date": "2026-08-26", "equity": "99863.600"},
+    {"date": "2026-08-27", "equity": "99863.600"},
+    {"date": "2026-08-28", "equity": "99966.830"}
+  ]
+}
+```
+`num_trades`/`win_rate_pct` are computed over completed round trips (a
+BUY that opens a flat position, followed by the SELL that fully closes
+it), not raw fill count. Every trade proposal in the run was gated by the
+same Risk Engine a real paper trade uses — an all-cash BUY proposal that
+exceeds `max_position_pct_of_equity` is sized down and retried once, same
+as any other risk-gated trade in this system.
+
+Error responses: 401 (no/invalid token), 400 `NOT_CONFIGURED:` (no
+`HistoryProvider` configured — see D021/D015's Longbridge credential
+gate), 400 `UNSUPPORTED_DATE_RANGE:` (`end_date` isn't today), 400
+`DATA_UNAVAILABLE:` (the vendor has fewer closes than the requested
+window plus warmup requires — never a shorter, silently-truncated
+backtest), 502 `DATA_UNAVAILABLE:` (the vendor itself failed), 422
+(`end_date <= start_date` or any other request-shape validation error).
+
 ## `POST /admin/users`
 
 Requires `Authorization: Bearer <token>` from a user whose role grants
