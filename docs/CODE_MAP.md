@@ -74,21 +74,32 @@ comment history in `0001_initial.py` if adding a new enum column.
 Purpose: deterministic validation of a proposed trade — the boundary spec
 Sec3/Sec46 require between any LLM and a real order.
 Main files: `apps/api/app/risk/models.py` (`TradeProposal`, `AccountState`,
-`RiskLimits`, `RiskDecision`, `BlockReason`), `apps/api/app/risk/engine.py`
-(`evaluate_trade()`)
-Interface: `evaluate_trade(proposal, account, limits, *, emergency_stop_active=False, now=None) -> RiskDecision`
+`RiskLimits`, `RecentOrder`, `RiskDecision`, `BlockReason`),
+`apps/api/app/risk/engine.py` (`evaluate_trade()`)
+Interface: `evaluate_trade(proposal, account, limits, *, emergency_stop_active=False, now=None, recent_orders=None) -> RiskDecision`
 Dependencies: none — pure function, no LLM/network/DB/I-O import. This is
 load-bearing, not incidental: don't add an import here that could make the
-engine unable to run with every external service down.
-Tests: `tests/risk/test_engine.py` (14 tests, including one that proves the
-engine still blocks a bad trade when a stubbed LLM provider raises)
+engine unable to run with every external service down. `recent_orders`
+(D024, duplicate-order detection) is the one place external, DB-sourced
+data reaches the engine — as plain `RecentOrder` data the caller queried
+and handed in, never a DB call the engine makes itself; see
+`apps/api/app/oms/persistence.py`'s `get_recent_filled_orders()` for the
+one query that produces it.
+Tests: `tests/risk/test_engine.py` (23 tests, including one that proves the
+engine still blocks a bad trade when a stubbed LLM provider raises, and 9
+covering duplicate-order detection — D024)
 Important: every rejection is a typed `BlockReason`, never a bare `False` —
 add a new enum member rather than reusing an existing reason for a new rule.
 `RiskLimits` has no defaults; an unconfigured limit is a bug to fix, not a
 value to fall back to. The engine never resizes an order itself
 (`max_quantity_allowed` is informational only) — a caller must submit a new,
 explicit proposal, keeping the audit trail honest about what was actually
-approved.
+approved. Duplicate-order detection (D024): a proposal matching a FILLED
+order on the same broker — same symbol, side, quantity, and
+estimated_price — within `RiskLimits.duplicate_order_window_seconds`
+(default 5s, `Settings.risk_duplicate_order_window_seconds`) is blocked
+with `BlockReason.DUPLICATE_ORDER`; REJECTED orders are deliberately never
+compared against — see D024 for the full reasoning.
 
 ## Execution (broker adapters)
 

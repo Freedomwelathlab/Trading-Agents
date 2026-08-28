@@ -215,3 +215,50 @@ async def test_missing_broker_grant_is_403_before_the_agent_is_ever_called():
                 del app.dependency_overrides[get_trader_agent]
 
         assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicate():
+    """docs/DECISIONS.md D024: an LLM-originated duplicate is just as real
+    a risk as a human-submitted one, so the agent-trades route must go
+    through the exact same duplicate check as POST .../trades."""
+    from apps.api.app.marketdata.router import MarketDataRouter
+
+    fake_agent = TraderAgent(
+        FakeLLMProvider(
+            '{"side": "buy", "quantity": "1", "stop_distance_pct": "2", '
+            '"rationale": "clean breakout"}'
+        )
+    )
+    fake_market_data = MarketDataRouter([FakeMarketDataProvider()])
+
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            app.dependency_overrides[get_trader_agent] = lambda: fake_agent
+            app.dependency_overrides[get_market_data_router] = lambda: fake_market_data
+            try:
+                token = await _get_token(client, email)
+                headers = {"Authorization": f"Bearer {token}"}
+                payload = {"symbol": "AAPL", "directive": "moderate long"}
+                first = await client.post(
+                    f"/brokers/{broker_id}/agent-trades", headers=headers, json=payload
+                )
+                second = await client.post(
+                    f"/brokers/{broker_id}/agent-trades", headers=headers, json=payload
+                )
+            finally:
+                del app.dependency_overrides[get_trader_agent]
+                del app.dependency_overrides[get_market_data_router]
+
+        assert first.status_code == 200
+        assert first.json()["status"] == "filled"
+
+        assert second.status_code == 200
+        second_body = second.json()
+        assert second_body["status"] == "rejected"
+        assert second_body["block_reason"] == "duplicate_order"

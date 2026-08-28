@@ -47,7 +47,7 @@ def rsi(closes: list[Decimal], period: int = 14) -> Decimal:
     # window has period+1 closes; window[1:] is naturally one shorter -
     # that's the intended pairing (each close with its predecessor), not
     # a length mismatch to guard against, so strict=True would be wrong here.
-    for prev, curr in zip(window, window[1:]):
+    for prev, curr in zip(window, window[1:], strict=False):
         change = curr - prev
         if change > 0:
             gains += change

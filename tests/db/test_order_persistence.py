@@ -5,7 +5,7 @@ only Order/Fill schema round-trips correctly, which no pure unit test can.
 
 import contextlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -16,7 +16,7 @@ from apps.api.app.db.models import Broker, BrokerKind, OrderStatus
 from apps.api.app.db.models import Fill as FillRow
 from apps.api.app.db.models import Order as OrderRow
 from apps.api.app.execution.paper_broker import PaperBrokerAdapter
-from apps.api.app.oms.persistence import submit_trade_and_record
+from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
 from apps.api.app.risk.models import AccountState, RiskLimits, Side, TradeProposal
 
 NOW = datetime(2026, 8, 23, 12, 0, 0, tzinfo=UTC)
@@ -58,6 +58,7 @@ def make_limits(**overrides) -> RiskLimits:
         max_risk_pct_of_equity_per_trade=Decimal("0.01"),
         require_stop_price=True,
         max_market_data_age_seconds=60,
+        duplicate_order_window_seconds=5,
     )
     defaults.update(overrides)
     return RiskLimits(**defaults)
@@ -152,3 +153,57 @@ async def test_each_submission_is_a_new_row_never_an_update():
             await session.execute(select(OrderRow).where(OrderRow.broker_id == broker_id))
         ).scalars().all()
         assert len(orders) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_recent_filled_orders_only_returns_filled_within_the_window_for_the_symbol():
+    """`submitted_at` is a DB server_default (func.now()), not the `now`
+    passed to submit_trade_and_record's risk evaluation - so this asserts
+    against real wall-clock time, not the fixed NOW used elsewhere in this
+    file for risk-engine determinism."""
+    async with db_session() as session, paper_broker_row(session) as broker_id:
+        broker = PaperBrokerAdapter(starting_cash=Decimal(50_000))
+        real_now = datetime.now(UTC)
+
+        # Filled AAPL order, within window.
+        await submit_trade_and_record(
+            session, broker_id, make_proposal(), make_account(), make_limits(), broker, now=NOW
+        )
+        # Rejected AAPL order (oversized), within window - must be excluded.
+        await submit_trade_and_record(
+            session,
+            broker_id,
+            make_proposal(quantity=Decimal(200)),
+            make_account(),
+            make_limits(),
+            broker,
+            now=NOW,
+        )
+        # Filled MSFT order, within window - different symbol, must be excluded.
+        await submit_trade_and_record(
+            session,
+            broker_id,
+            make_proposal(symbol="MSFT", quantity=Decimal(1)),
+            make_account(),
+            make_limits(),
+            broker,
+            now=NOW,
+        )
+
+        recent = await get_recent_filled_orders(
+            session, broker_id, "AAPL", window_seconds=30, now=real_now
+        )
+        assert len(recent) == 1
+        assert recent[0].symbol == "AAPL"
+        assert recent[0].quantity == Decimal(10)
+
+        # Same filled AAPL order, but querying from far enough in the future
+        # that it falls outside the window.
+        older = await get_recent_filled_orders(
+            session,
+            broker_id,
+            "AAPL",
+            window_seconds=5,
+            now=real_now + timedelta(hours=1),
+        )
+        assert older == []

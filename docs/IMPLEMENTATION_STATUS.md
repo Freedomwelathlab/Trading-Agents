@@ -334,6 +334,32 @@ Update this after meaningful implementation work — not for every commit.
   running server with no credentials configured: startup logged
   `history_provider=NOT_CONFIGURED`, `agent-trades` correctly 400s on
   D018's LLM-provider gate first.
+- Phase 22: deterministic duplicate-order detection in the Risk Engine
+  (2026-08-28, D024). Closes the `docs/PROJECT_CONTEXT.md` "Open
+  Decisions" gap D004 flagged as not built. A duplicate is defined as a
+  proposal matching a FILLED order on the same broker (symbol, side,
+  quantity, estimated_price all equal) within a 5s window — REJECTED
+  orders are deliberately excluded (see D024). `apps/api/app/risk/models.py`
+  adds `RecentOrder` and `RiskLimits.duplicate_order_window_seconds`;
+  `evaluate_trade()` gains an optional `recent_orders` parameter and stays
+  fully I/O-free — the caller (`trades.py`'s `_execute_trade()`, shared by
+  both the human and agent-trades routes) queries
+  `oms/persistence.py`'s new `get_recent_filled_orders()` and hands the
+  result in as plain data. A new composite index
+  `ix_orders_broker_symbol_submitted` (migration 0007) backs that query.
+  New `BlockReason.DUPLICATE_ORDER`. 14 new tests (9 pure unit tests in
+  `tests/risk/test_engine.py`, 1 in `tests/oms/test_service.py`, 1
+  DB-backed in `tests/db/test_order_persistence.py`, 2 DB-backed HTTP
+  integration tests in `tests/api/test_trades.py`, 1 DB-backed HTTP
+  integration test in `tests/api/test_agent_trades.py`), 159/159 total
+  tests passing, ruff+mypy clean (also fixed one pre-existing, unrelated
+  ruff finding in `marketdata/indicators.py`). Verified live against a
+  running server with a directly-inserted user/role/broker/grant: an
+  identical `AAPL buy 10 @ 100` paper trade submitted twice ~0.5s apart —
+  first filled, second rejected with `block_reason=duplicate_order`; a
+  third submission with `quantity=5` right after filled normally,
+  confirming no over-firing. All verification rows and infra (venv,
+  `.env`, Docker containers) removed afterward.
 
 ## In Progress
 
@@ -370,21 +396,25 @@ optimization.
 
 ## Tests
 
-145 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
-secret), log redaction (1), health endpoint (1), risk engine (14), paper
-broker (5), OMS (3), execution context (5), order/fill persistence (3,
-DB-backed), market data router + snapshot model (9), Longbridge provider
-(8, against a fake client), trades HTTP endpoint (18, DB-backed, all
-require auth+permission+broker grant — 14 pre-D017 + 4 covering the
-omitted-price/live-quote path), auth security unit tests (8),
+159 tests, all passing: fail-closed live-mode gate (4, incl. missing JWT
+secret), log redaction (1), health endpoint (1), risk engine (23, incl. 9
+duplicate-order-detection tests — D024), paper broker (5), OMS (4, incl. 1
+proving `recent_orders` blocks a duplicate before the broker is touched),
+execution context (5), order/fill persistence (4, DB-backed, incl. 1
+covering `get_recent_filled_orders()`), market data router + snapshot
+model (9), Longbridge provider (8, against a fake client), trades HTTP
+endpoint (20, DB-backed, all require auth+permission+broker grant — 14
+pre-D017 + 4 covering the omitted-price/live-quote path + 2 covering
+duplicate-order detection — D024), auth security unit tests (8),
 authorization unit tests (3), login route (4, DB-backed), admin routes
 (16, DB-backed — 9 create/grant + 7 update/deactivate), broker-state
 persistence (3, DB-backed), TraderAgent unit tests (8, against a fake
-`LLMProvider`), agent-trades HTTP endpoint (5, DB-backed), TechnicalAnalyst
-unit tests (7, against a fake `LLMProvider`), technical-analyst wiring on
-agent-trades (3, DB-backed), indicator unit tests (9, pure math),
-Longbridge history provider unit tests (5, against a fake candlestick
-client), history-provider wiring on agent-trades (4, DB-backed).
+`LLMProvider`), agent-trades HTTP endpoint (6, DB-backed, incl. 1 covering
+duplicate-order detection — D024), TechnicalAnalyst unit tests (7, against
+a fake `LLMProvider`), technical-analyst wiring on agent-trades (3,
+DB-backed), indicator unit tests (9, pure math), Longbridge history
+provider unit tests (5, against a fake candlestick client), history-provider
+wiring on agent-trades (4, DB-backed).
 
 ## Known Issues
 

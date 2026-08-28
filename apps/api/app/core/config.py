@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     risk_max_risk_pct_of_equity_per_trade: Decimal = Decimal("0.01")
     risk_require_stop_price: bool = True
     risk_max_market_data_age_seconds: int = 300
+    risk_duplicate_order_window_seconds: int = 5
+    """See docs/DECISIONS.md D024 for why 5s was chosen over a shorter or
+    longer window."""
 
     longport_app_key: str | None = None
     longport_app_secret: str | None = None

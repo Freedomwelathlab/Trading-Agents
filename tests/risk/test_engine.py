@@ -7,6 +7,7 @@ from apps.api.app.risk.engine import evaluate_trade
 from apps.api.app.risk.models import (
     AccountState,
     BlockReason,
+    RecentOrder,
     RiskLimits,
     Side,
     TradeProposal,
@@ -41,9 +42,22 @@ def make_limits(**overrides) -> RiskLimits:
         max_risk_pct_of_equity_per_trade=Decimal("0.01"),
         require_stop_price=True,
         max_market_data_age_seconds=60,
+        duplicate_order_window_seconds=5,
     )
     defaults.update(overrides)
     return RiskLimits(**defaults)
+
+
+def make_recent_order(**overrides) -> RecentOrder:
+    defaults = dict(
+        symbol="AAPL",
+        side=Side.BUY,
+        quantity=Decimal(10),
+        estimated_price=Decimal(100),
+        submitted_at=NOW,
+    )
+    defaults.update(overrides)
+    return RecentOrder(**defaults)
 
 
 def test_approves_a_well_formed_trade_within_all_limits():
@@ -167,3 +181,83 @@ def test_blocks_a_bad_trade_even_when_every_llm_provider_is_stubbed_to_raise():
 
     assert decision.approved is False
     assert decision.reason is BlockReason.EXCEEDS_MAX_POSITION_SIZE
+
+
+def test_blocks_an_exact_duplicate_filled_within_the_window():
+    recent = [make_recent_order(submitted_at=NOW - timedelta(seconds=3))]
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=recent
+    )
+    assert decision.approved is False
+    assert decision.reason is BlockReason.DUPLICATE_ORDER
+
+
+def test_allows_the_same_order_just_outside_the_window():
+    recent = [make_recent_order(submitted_at=NOW - timedelta(seconds=6))]
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=recent
+    )
+    assert decision.approved is True
+
+
+def test_allows_a_different_quantity_within_the_window():
+    recent = [make_recent_order(quantity=Decimal(11), submitted_at=NOW - timedelta(seconds=1))]
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=recent
+    )
+    assert decision.approved is True
+
+
+def test_allows_a_different_price_within_the_window():
+    recent = [
+        make_recent_order(estimated_price=Decimal(101), submitted_at=NOW - timedelta(seconds=1))
+    ]
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=recent
+    )
+    assert decision.approved is True
+
+
+def test_allows_the_opposite_side_within_the_window():
+    recent = [make_recent_order(side=Side.SELL, submitted_at=NOW - timedelta(seconds=1))]
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=recent
+    )
+    assert decision.approved is True
+
+
+def test_allows_a_different_symbol_within_the_window():
+    recent = [make_recent_order(symbol="MSFT", submitted_at=NOW - timedelta(seconds=1))]
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=recent
+    )
+    assert decision.approved is True
+
+
+def test_a_previously_rejected_identical_order_is_not_itself_flagged_as_a_duplicate():
+    """D024: only FILLED orders are ever passed in as recent_orders - the
+    engine trusts the caller's filtering rather than re-checking a status
+    field it doesn't have. An empty recent_orders list (the caller's
+    equivalent of 'the only prior identical order was REJECTED') must not
+    block this otherwise-identical resubmission."""
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=[]
+    )
+    assert decision.approved is True
+
+
+def test_duplicate_check_is_skipped_entirely_when_no_recent_orders_supplied():
+    decision = evaluate_trade(make_proposal(), make_account(), make_limits(), now=NOW)
+    assert decision.approved is True
+
+
+def test_duplicate_check_ignores_unrelated_recent_orders_and_still_blocks_the_real_one():
+    recent = [
+        make_recent_order(symbol="MSFT", submitted_at=NOW - timedelta(seconds=1)),
+        make_recent_order(submitted_at=NOW - timedelta(seconds=2)),
+    ]
+    decision = evaluate_trade(
+        make_proposal(), make_account(), make_limits(), now=NOW, recent_orders=recent
+    )
+    assert decision.approved is False
+    assert decision.reason is BlockReason.DUPLICATE_ORDER

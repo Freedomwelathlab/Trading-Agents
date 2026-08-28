@@ -14,6 +14,7 @@ from apps.api.app.execution.broker import BrokerAdapter, Fill, OrderRequest
 from apps.api.app.risk.engine import evaluate_trade
 from apps.api.app.risk.models import (
     AccountState,
+    RecentOrder,
     RiskDecision,
     RiskLimits,
     TradeProposal,
@@ -42,9 +43,15 @@ def submit_trade(
     *,
     emergency_stop_active: bool = False,
     now: datetime | None = None,
+    recent_orders: list[RecentOrder] | None = None,
 ) -> OMSResult:
     decision = evaluate_trade(
-        proposal, account, limits, emergency_stop_active=emergency_stop_active, now=now
+        proposal,
+        account,
+        limits,
+        emergency_stop_active=emergency_stop_active,
+        now=now,
+        recent_orders=recent_orders,
     )
     if not decision.approved:
         return OMSResult(status=OMSStatus.REJECTED, risk_decision=decision)

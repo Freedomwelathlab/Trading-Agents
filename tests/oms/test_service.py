@@ -4,7 +4,7 @@ from decimal import Decimal
 from apps.api.app.execution.broker import Fill, OrderRequest
 from apps.api.app.execution.paper_broker import PaperBrokerAdapter
 from apps.api.app.oms.service import OMSStatus, submit_trade
-from apps.api.app.risk.models import AccountState, RiskLimits, Side, TradeProposal
+from apps.api.app.risk.models import AccountState, RecentOrder, RiskLimits, Side, TradeProposal
 
 NOW = datetime(2026, 8, 23, 12, 0, 0, tzinfo=UTC)
 
@@ -29,6 +29,7 @@ def make_limits(**overrides) -> RiskLimits:
         max_risk_pct_of_equity_per_trade=Decimal("0.01"),
         require_stop_price=True,
         max_market_data_age_seconds=60,
+        duplicate_order_window_seconds=5,
     )
     defaults.update(overrides)
     return RiskLimits(**defaults)
@@ -93,4 +94,25 @@ def test_emergency_stop_blocks_before_the_broker_is_touched():
     )
 
     assert result.status is OMSStatus.REJECTED
+    assert spy.submit_order_calls == []
+
+
+def test_recent_orders_passed_through_to_the_engine_block_a_duplicate_before_the_broker():
+    spy = SpyBrokerAdapter()
+    recent = [
+        RecentOrder(
+            symbol="AAPL",
+            side=Side.BUY,
+            quantity=Decimal(10),
+            estimated_price=Decimal(100),
+            submitted_at=NOW,
+        )
+    ]
+
+    result = submit_trade(
+        make_proposal(), make_account(), make_limits(), spy, now=NOW, recent_orders=recent
+    )
+
+    assert result.status is OMSStatus.REJECTED
+    assert result.risk_decision.reason.value == "duplicate_order"
     assert spy.submit_order_calls == []
