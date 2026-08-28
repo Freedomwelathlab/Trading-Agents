@@ -450,7 +450,8 @@ starts. Currently just READMEs. See root `NOTICE`.
 ## Frontend
 
 Purpose: Phase 17 (D020) first frontend slice — login, health status,
-quote lookup, paper-trade submission, each rendering the backend's real
+quote lookup, paper-trade submission — extended in Phase 20 (D023) with
+an admin UI and an agent-trades UI, each rendering the backend's real
 response, never fabricated data.
 Root: `apps/web/` — Next.js 16 (App Router), TypeScript, Tailwind v4.
 
@@ -484,6 +485,25 @@ details). 401 if the cookie is missing.
 cookie-to-Bearer pattern, proxies `POST /brokers/{broker_id}/trades`,
 passes through the full `TradeSubmissionResponse` body and status
 unmodified.
+`apps/web/app/api/agent-trades/[brokerId]/route.ts` — `POST` (D023), same
+cookie-to-Bearer pattern, proxies `POST /brokers/{broker_id}/agent-trades`,
+passes through the full `AgentTradeResponse` body and status unmodified
+(including the 400 `NOT_CONFIGURED:` / 502 `AGENT_OUTPUT_INVALID:`
+sentinels).
+`apps/web/app/api/admin/users/route.ts` — `POST` (D023), proxies
+`POST /admin/users`.
+`apps/web/app/api/admin/users/[userId]/route.ts` — `PATCH` (D023),
+proxies `PATCH /admin/users/{user_id}`.
+`apps/web/app/api/admin/roles/route.ts` — `POST` (D023), proxies
+`POST /admin/roles`.
+`apps/web/app/api/admin/roles/[roleId]/route.ts` — `PATCH` (D023),
+proxies `PATCH /admin/roles/{role_id}`.
+`apps/web/app/api/admin/broker-grants/route.ts` — `POST` (D023), proxies
+`POST /admin/broker-grants`.
+`apps/web/app/api/admin/broker-grants/[grantId]/route.ts` — `DELETE`
+(D023), proxies `DELETE /admin/broker-grants/{grant_id}`; re-returns a
+204 as `new NextResponse(null, { status: 204 })` since a 204 must carry
+no JSON body.
 
 `apps/web/app/login/page.tsx` — client component, email/password form
 posting to `/api/auth/login`; on success routes to `/dashboard`; renders
@@ -504,16 +524,48 @@ rejected trade's `block_reason`.
 redirects to `/login`.
 `apps/web/app/page.tsx` — server component, redirects `/` to
 `/dashboard` or `/login` based on cookie presence.
+`apps/web/components/AgentTradeForm.tsx` (D023) — broker ID + symbol +
+directive + a `SYMBOL=price, SYMBOL2=price2` marks field parsed
+client-side into the `marks` object, posts to
+`/api/agent-trades/[brokerId]`, renders the full `AgentTradeResponse`
+(`side`/`quantity`/`rationale` plus the trade-response fields) or the
+real `NOT_CONFIGURED:`/`AGENT_OUTPUT_INVALID:` detail on failure.
+`apps/web/app/admin/page.tsx` (D023) — reachable by any authenticated
+user (gated on cookie presence only, same as `/dashboard`); composes six
+forms, two each for users/roles/broker-grants. Never hides itself based
+on a client-side permission guess — the real `admin:manage` gate is the
+backend's 403 on submit.
+`apps/web/components/admin/UsersAdmin.tsx` (D023) — `CreateUserForm`
+(email/password/role/active, posts to `/api/admin/users`) and
+`UpdateUserForm` (user ID + opt-in checkboxes to change active status
+and/or role, posts to `/api/admin/users/[userId]`), both rendering the
+real response or error detail.
+`apps/web/components/admin/RolesAdmin.tsx` (D023) — `CreateRoleForm`
+(name/description/comma-separated permissions, posts to
+`/api/admin/roles`) and `UpdateRoleForm` (role ID + opt-in checkboxes to
+change description and/or replace permissions, posts to
+`/api/admin/roles/[roleId]`).
+`apps/web/components/admin/BrokerGrantsAdmin.tsx` (D023) —
+`CreateBrokerGrantForm` (user ID + broker ID, posts to
+`/api/admin/broker-grants`) and `DeleteBrokerGrantForm` (grant ID, posts
+`DELETE` to `/api/admin/broker-grants/[grantId]`, renders a real 204
+confirmation or a real error, e.g. 404 for an unknown grant).
 
 Tests: `apps/web/test/QuoteLookup.test.tsx` (4 tests — success render,
 503 NOT_CONFIGURED detail rendered verbatim, 404 NO_DATA_AVAILABLE
 detail rendered verbatim, network failure renders a real error and never
 fabricated data), `apps/web/test/TradeForm.test.tsx` (3 tests — rejected
 trade's `block_reason` rendered legibly, filled trade's fill
-price/quantity rendered, a real 403 detail rendered). Vitest + React
-Testing Library + jsdom (`apps/web/vitest.config.ts`,
-`apps/web/test/setup.ts`), chosen over Playwright for this phase's scope
-— see D020.
+price/quantity rendered, a real 403 detail rendered),
+`apps/web/test/AgentTradeForm.test.tsx` (5 tests, D023 — filled/rejected
+rendering, real `NOT_CONFIGURED:`/`AGENT_OUTPUT_INVALID:` sentinels,
+network failure), `apps/web/test/UsersAdmin.test.tsx` (6 tests, D023),
+`apps/web/test/RolesAdmin.test.tsx` (4 tests, D023),
+`apps/web/test/BrokerGrantsAdmin.test.tsx` (6 tests, D023) — the admin
+tests cover success, a real 403 (non-admin caller), a real 404/409 where
+applicable, and network failure. Vitest + React Testing Library + jsdom
+(`apps/web/vitest.config.ts`, `apps/web/test/setup.ts`), chosen over
+Playwright for this phase's scope — see D020.
 
 Important: the JWT never reaches browser-readable storage — it's set as
 an httpOnly cookie by `/api/auth/login` and read only inside route
@@ -526,6 +578,8 @@ generic Next.js error page. `API_BASE_URL` (server-side env var, see
 ## Not yet present
 
 The parallel analyst layer, research debate, Portfolio Manager. Frontend
-v2 (see `docs/PROJECT_CONTEXT.md`'s Planned Work): `/admin/*` UI,
-agent-trades UI, broker discovery UI. Do not import from paths that
-don't exist yet.
+v2 remaining after Phase 20/D023 (`/admin/*` UI and agent-trades UI are
+now built — see `docs/PROJECT_CONTEXT.md`'s Planned Work): broker
+discovery UI, session refresh/expiry UX, Playwright e2e, a
+users/roles/grants listing UI. Do not import from paths that don't exist
+yet.

@@ -390,6 +390,49 @@ Update this after meaningful implementation work — not for every commit.
   third submission with `quantity=5` right after filled normally,
   confirming no over-firing. All verification rows and infra (venv,
   `.env`, Docker containers) removed afterward.
+- **Phase 20 — frontend v2: admin UI and agent-trades UI (D023).** Builds
+  the two "v2 candidates" Phase 17/D020 explicitly deferred, in
+  `apps/web/`, on the same route-handler-proxy pattern (no new auth
+  mechanism). Admin UI (`/admin`, gated by `proxy.ts` on cookie presence
+  only, same as `/dashboard`): six forms covering every `/admin/*`
+  endpoint — create/update user, create/update role, create/revoke broker
+  grant — each behind its own route handler
+  (`app/api/admin/users(/[userId])`, `app/api/admin/roles(/[roleId])`,
+  `app/api/admin/broker-grants(/[grantId])`). The dashboard's "Admin" nav
+  link is always shown regardless of the viewer's actual permissions —
+  deliberate: the real `admin:manage` gate is the backend's 403 on
+  submit, and a client-side guess about permissions the client can't
+  verify would be its own kind of fabrication. A non-admin submitting any
+  admin form sees the backend's real 403 detail string. Agent-trades UI:
+  `AgentTradeForm` on the dashboard, posting to
+  `POST /brokers/{broker_id}/agent-trades` via
+  `app/api/agent-trades/[brokerId]/route.ts`; renders the full
+  `AgentTradeResponse` (`side`/`quantity`/`rationale` plus the existing
+  trade-response fields) and the endpoint's two real error sentinels —
+  400 `NOT_CONFIGURED:` and 502 `AGENT_OUTPUT_INVALID:` — never a
+  fabricated trade. Deliberately out of scope, unchanged from D020:
+  broker-discovery UI (no such endpoint), session refresh/expiry UX,
+  Playwright e2e. `npm run build` succeeds with zero TypeScript errors.
+  `npm test`: 28/28 passing (7 pre-existing + 21 new component tests
+  across 4 new test files, covering success, a real 403, a real 404/409
+  where applicable, and network failure for every new form). Verified
+  live against a real running backend in this worktree (`docker compose
+  up -d --build`, host ports for Postgres/Redis temporarily remapped only
+  to avoid colliding with sibling Phase 19/21 worktrees, restored
+  afterward): ran real Alembic migrations, bootstrapped one admin
+  user/role via direct SQL (bcrypt hash, same pattern as D013/D016/D021),
+  then through `npm run dev` + curl against the frontend's own routes —
+  real 201s creating a role and a user, a real 200 assigning the role via
+  PATCH, a real 200 updating the role's description via PATCH, a real 201
+  granting broker access against a SQL-inserted paper broker, a real 204
+  revoking it followed by a real 404 on repeating the delete, a real 403
+  `Missing required permission: admin:manage` from the new non-admin user
+  attempting an admin action, and a real 400
+  `NOT_CONFIGURED: no LLM provider is wired` from that same non-admin
+  user's agent-trade attempt (no `LLM_PROVIDER_*` configured in this
+  pass). `AGENT_OUTPUT_INVALID:` (502) was exercised only via a mocked
+  component test, not a real misbehaving provider. See D023 for full
+  detail.
 
 ## In Progress
 
@@ -410,9 +453,11 @@ alternative to the current average-cost method. If a second analyst is
 ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
-parallelize against). Frontend v2 candidates (D020): `/admin/*` UI,
-agent-trades UI, broker discovery, session refresh/expiry UX, Playwright
-if a protectable flow emerges. Re-verify D018/D019's LLM-completion path
+parallelize against). Frontend v2 candidates remaining after Phase 20/D023
+(`/admin/*` UI and agent-trades UI are now built): broker discovery (no
+such endpoint exists yet), session refresh/expiry UX, Playwright if a
+protectable flow emerges, and a users/roles/grants listing UI (blocked on
+D013's deliberate no-listing-endpoints scope cut). Re-verify D018/D019's LLM-completion path
 once OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is
 reachable — D021 confirmed the Longbridge/history side works with real
 data, but no real LLM completion has been exercised yet, only fakes.

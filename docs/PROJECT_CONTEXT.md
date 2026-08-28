@@ -50,21 +50,25 @@ secret-shaped keys (`apps/api/app/core/logging.py`).
 FastAPI, Pydantic v2/Pydantic Settings, SQLAlchemy 2.0 async, asyncpg,
 Alembic, Postgres 16 + TimescaleDB, Redis 7, structlog, pytest, ruff, mypy.
 Frontend: Next.js 16 (App Router)/TypeScript/Tailwind v4 in `apps/web/`
-(D020) — Next.js route handlers proxy every backend call server-side so
-the JWT can live in an httpOnly cookie rather than browser-readable
-storage; Vitest + React Testing Library for component tests.
+(D020, extended D023) — Next.js route handlers proxy every backend call
+server-side so the JWT can live in an httpOnly cookie rather than
+browser-readable storage; Vitest + React Testing Library for component
+tests.
 
 ## Current Status
 
-Phases 1-18 complete: repo skeleton, deterministic risk engine, paper
-broker + OMS, order/fill persistence, market-data routing, HTTP trade
-submission, authentication, role-based authorization, per-broker access
-grants, a minimal admin API (now including update/deactivate), persisted
+Phases 1-22 complete (19-22 built in parallel worktrees, merged
+2026-08-28): repo skeleton, deterministic risk engine, paper broker +
+OMS, order/fill persistence, market-data routing, HTTP trade submission,
+authentication, role-based authorization, per-broker access grants, a
+minimal admin API (now including update/deactivate), persisted
 paper-broker state, a real Longbridge market-data provider, market data
 connected to trade submission, the first agent (a single `TraderAgent`),
 the first (one-analyst) slice of the parallel analyst layer (a single
-read-only `TechnicalAnalyst`), the first frontend (`apps/web/`), and real
-historical prices feeding that analyst's narration. See
+read-only `TechnicalAnalyst`), the first frontend (`apps/web/`), real
+historical prices feeding that analyst's narration, a real-time Portfolio
+module (D022), a frontend v2 (admin UI + agent-trades UI, D023), and
+deterministic duplicate-order detection in the Risk Engine (D024). See
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 `POST /brokers/{broker_id}/trades` requires a Bearer token, a role
 granting `trade:submit:paper`, AND an explicit grant for that specific
@@ -139,27 +143,36 @@ live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now
 warranted (deliberately not built in Phase 16 — one analyst has nothing
-to parallelize against). Frontend v2 candidates (D020): admin UI,
-agent-trades UI, a portfolio view against Phase 19's new endpoint, broker
-discovery (no such endpoint exists yet), session refresh/expiry UX, a
-real Docker-backed e2e verification pass, Playwright if a protectable
-flow emerges.
+to parallelize against). Frontend v3 candidates remaining after Phase
+20/D023 (admin UI and agent-trades UI are now built): a portfolio view
+against Phase 19/D022's new `GET /brokers/{id}/portfolio` endpoint,
+broker discovery (no such endpoint exists yet), session refresh/expiry
+UX, Playwright if a protectable flow emerges, and a users/roles/grants
+listing UI (blocked on D013's deliberate no-listing-endpoints scope cut).
 
-`apps/web/` (D020, Phase 17) is the first frontend — a minimal Next.js
-app covering login, `/health` display, quote lookup, and paper-trade
-submission, each rendering the backend's real response shape (including
-`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:` sentinel details and a rejected
-trade's `block_reason`) rather than any fabricated data. The JWT is
-stored in an httpOnly cookie set by a Next.js route handler that proxies
-`/auth/login`; all other authenticated calls go through further route
-handlers (`/api/health`, `/api/quote/[symbol]`, `/api/trades/[brokerId]`)
-that read the cookie server-side and forward the request — the browser
-never holds the token directly. `npm run build` passes with zero type
-errors; 7 Vitest component tests cover the quote/trade success and error
-rendering paths. Not yet verified end-to-end against a running backend
-(Docker Desktop's daemon was unreachable during the Phase 17 build) —
-only `npm run dev` + curl against the Next.js app itself was confirmed;
-a real Docker-backed login→quote→trade round-trip is still pending.
+`apps/web/` (D020, Phase 17; extended Phase 20/D023) is the frontend —
+login, `/health` display, quote lookup, paper-trade submission,
+agent-trade proposal, and an admin UI for every `/admin/*` endpoint, each
+rendering the backend's real response shape (including
+`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:`/`AGENT_OUTPUT_INVALID:` sentinel
+details, a rejected trade's `block_reason`, and a non-admin's real 403)
+rather than any fabricated data. The JWT is stored in an httpOnly cookie
+set by a Next.js route handler that proxies `/auth/login`; every other
+authenticated call goes through its own route handler that reads the
+cookie server-side and forwards the request — the browser never holds
+the token directly. The `/admin` page is reachable by any authenticated
+user (gated on cookie presence, same as `/dashboard`) — the frontend
+never hides the admin nav based on a guess about the viewer's
+permissions, since the real `admin:manage` gate is the backend's 403 on
+submit, which every admin form renders honestly. `npm run build` passes
+with zero type errors; 28 Vitest component tests (7 original + 21 new)
+cover success, error-sentinel, 403/404/409, and network-failure
+rendering paths across every form. Verified end-to-end against a real
+running backend in this worktree (D020's original Docker-unreachable gap
+is closed, and D023 re-confirms it for the new endpoints): real
+login → admin create/update user/role → create/revoke broker grant →
+agent-trade `NOT_CONFIGURED:` → non-admin 403, all through the app's own
+route handlers, never the backend directly.
 
 ## Known Problems
 

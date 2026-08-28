@@ -1290,3 +1290,133 @@ broker_grants, broker_accounts/positions, broker, user, role) were
 deleted afterward; the API process, `.venv21`, and `.env` created for
 this verification were removed; `docker compose down -v` tore down this
 worktree's Postgres/Redis containers and volume.
+
+---
+
+**D023 — Frontend v2: admin UI and agent-trades UI, one route handler per endpoint, same proxy pattern as D020**
+Date: 2026-08-28
+Decision: Built the two "v2 candidates" D020 explicitly deferred, in
+`apps/web/`, on top of D020's existing pattern unchanged (Next.js route
+handlers proxying to the backend with the httpOnly-cookie JWT attached
+server-side; no new auth mechanism). Admin UI (`/admin`,
+`app/admin/page.tsx`): six forms covering every `/admin/*` endpoint in
+docs/API.md — create/update user (`components/admin/UsersAdmin.tsx`),
+create/update role (`components/admin/RolesAdmin.tsx`), create/revoke
+broker grant (`components/admin/BrokerGrantsAdmin.tsx`) — each backed by
+its own route handler
+(`app/api/admin/users/route.ts`, `app/api/admin/users/[userId]/route.ts`,
+`app/api/admin/roles/route.ts`, `app/api/admin/roles/[roleId]/route.ts`,
+`app/api/admin/broker-grants/route.ts`,
+`app/api/admin/broker-grants/[grantId]/route.ts`) repeating D020's
+cookie-read-and-forward shape exactly, including the DELETE handler's one
+new wrinkle: a 204 backend response must be re-returned as
+`new NextResponse(null, { status: 204 })`, not `NextResponse.json(null, {
+status: 204 })`, since a 204 must carry no body. The `/admin` page is
+reachable by any authenticated user — `proxy.ts`'s matcher gates it on
+cookie presence only, the same as `/dashboard`, and the dashboard's nav
+always shows an "Admin" link regardless of the viewer's actual
+permissions. This was a deliberate choice, not an oversight: the real
+`admin:manage` gate is the backend's 403 on submit, and hiding the nav
+link based on a client-side guess about permissions the client cannot
+actually know (no "am I admin" endpoint exists, and the JWT's claims
+aren't decoded client-side) would imply a security boundary at the UI
+layer that doesn't exist there — see docs/TRADING_SAFETY.md's "no
+fabrication" posture extended to permissions, not just market data. A
+non-admin submitting any admin form sees the backend's real 403 detail
+string rendered as-is. Agent-trades UI: a new `AgentTradeForm` on the
+dashboard (`components/AgentTradeForm.tsx`) posting to
+`POST /brokers/{broker_id}/agent-trades` via
+`app/api/agent-trades/[brokerId]/route.ts`; renders the full
+`AgentTradeResponse` shape (`side`/`quantity`/`rationale` alongside the
+existing `TradeSubmissionResponse` fields) and the two error sentinels
+specific to this endpoint — 400 `NOT_CONFIGURED:` (no LLM provider or
+market data vendor wired) and 502 `AGENT_OUTPUT_INVALID:` (the agent's
+response didn't parse) — exactly as the backend returns them, never a
+fabricated trade for either case. `marks` is entered as a
+`SYMBOL=price, SYMBOL2=price2` string and parsed client-side into the
+object the API expects, matching the existing pattern of keeping
+malformed-input handling in the browser rather than adding a JSON
+textarea.
+Reason: both pieces are direct executions of what D020 already scoped
+and deferred — no new architectural choice was available or needed;
+following the identical route-handler-per-endpoint shape keeps the
+proxy layer's attack surface exactly as explicit as D020 argued it
+should be (alternative (b) in D020 — one generic passthrough proxy —
+remains rejected for the same reason, now across nine proxied endpoints
+instead of four). The "show the nav, surface the real 403" choice
+follows directly from this repo's fail-closed, never-fabricate posture:
+a client-side permission guess is itself a kind of fabrication (a claim
+about access the client isn't actually in a position to verify), and a
+hidden nav item is strictly worse than a visible one that 403s, because
+a hidden item can read as "you don't have this" when the true state is
+simply "unchecked."
+Alternatives: (a) decode the JWT client-side to conditionally hide the
+Admin link when the role's permission list doesn't include
+`admin:manage` — rejected: the JWT's claims are an implementation detail
+of `apps/api/app/auth/security.py`'s `create_access_token`, not a
+documented, stable contract this frontend should couple to, and doing so
+would be exactly the "client decides what it can't verify" pattern this
+entry's Reason argues against; the real check happens once, correctly,
+on the backend, on every request — duplicating it client-side buys
+nothing but a second place for it to drift out of sync. (b) a single
+combined create-or-update form per resource (toggle between modes)
+instead of two separate forms — rejected as a marginal UI simplification
+not worth the added state-management complexity for a UI this minimal;
+two forms per resource matches the two distinct backend endpoints
+one-to-one, which is easier to reason about and to test. (c) building
+broker-discovery UI, session refresh/expiry UX, or Playwright e2e in
+this pass — rejected per the Phase 20 task's explicit scope cut; these
+remain open, see Consequences.
+Consequences: nine new route handlers now repeat D020's
+cookie-read-and-forward tax (Consequences already flagged this scaling
+cost). No listing endpoints exist for users/roles/grants (D013), so an
+operator must already know a resource's UUID to update or delete it —
+the UI can't offer a picker; this is a real usability gap inherited from
+the API, not something the frontend can paper over without fabricating
+a list the backend doesn't provide. `npm run build` passes with zero
+TypeScript errors (confirmed via the actual build output). `npm test`
+(Vitest): 28/28 passing — the original 7 plus 21 new component tests
+across `test/UsersAdmin.test.tsx`, `test/RolesAdmin.test.tsx`,
+`test/BrokerGrantsAdmin.test.tsx`, and `test/AgentTradeForm.test.tsx`,
+covering success, a real 403 (non-admin), a real 404/409 where
+applicable, and network failure for every new form — the same
+sentinel-vs-generic-message discipline D020 established. Verified live
+against a real running backend (`docker compose up -d --build` in this
+worktree, with `docker-compose.override.yml`-style host-port remapping
+used only transiently during verification to avoid colliding with
+sibling Phase 19/21 worktrees' Postgres/Redis containers on
+5432/6379 — the port numbers in `docker-compose.yml` itself were
+restored to their originals afterward, since sibling worktrees are
+independent checkouts and this remapping was never meant to be a
+tracked change): ran real Alembic migrations, bootstrapped one admin
+user/role via direct SQL insert (bcrypt hash via
+`apps/api/app/auth/security.py:hash_password`, same pattern as
+D013/D016/D021), then through `npm run dev` + curl against the app's own
+route handlers — never calling the backend directly — logged in as that
+admin and got a real `POST /api/admin/roles` 201, a real
+`POST /api/admin/users` 201, a real `PATCH /api/admin/users/{id}` 200
+assigning the new role, a real `PATCH /api/admin/roles/{id}` 200, a real
+`POST /api/admin/broker-grants` 201 against a SQL-inserted paper broker,
+a real `DELETE /api/admin/broker-grants/{id}` 204 followed by a real 404
+on repeating the same delete, and a real 403
+`Missing required permission: admin:manage` when the newly-created
+non-admin user attempted `POST /api/admin/roles`. Also logged in as that
+non-admin user and got a real 400
+`NOT_CONFIGURED: no LLM provider is wired (see docs/DECISIONS.md D018).`
+from `POST /api/agent-trades/{brokerId}` — genuine, not fabricated, since
+no `LLM_PROVIDER_*` credentials were configured in this verification
+pass; `AGENT_OUTPUT_INVALID:` (502) was exercised only via the component
+test's mocked response, not against a real misbehaving provider, since
+reaching that path for real would require a configured-but-malfunctioning
+LLM provider, which this pass had no reason to set up.
+Status: Implemented and verified as above.
+v2 candidates still open, not built in this pass (unchanged from D020
+except broker-discovery, which remains blocked on the same missing
+endpoint): broker-discovery UI (still no such endpoint), session
+refresh/expiry UX (an expired cookie still just 401s the next
+authenticated call), Playwright e2e coverage (still no protectable
+navigation flow complex enough to justify it over the current Vitest
+component coverage), a users/roles/grants listing UI (blocked on D013's
+deliberate no-listing-endpoints scope cut, not a frontend gap), and
+decoding the JWT client-side to pre-filter the nav (rejected above, not
+merely deferred).
