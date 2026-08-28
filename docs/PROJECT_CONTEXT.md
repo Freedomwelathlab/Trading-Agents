@@ -143,20 +143,24 @@ live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now
 warranted (deliberately not built in Phase 16 — one analyst has nothing
-to parallelize against). Frontend v3 candidates remaining after Phase
-20/D023 (admin UI and agent-trades UI are now built): a portfolio view
-against Phase 19/D022's new `GET /brokers/{id}/portfolio` endpoint,
-broker discovery (no such endpoint exists yet), session refresh/expiry
-UX, Playwright if a protectable flow emerges, and a users/roles/grants
+to parallelize against). Frontend candidates remaining after Phase
+20/D023 and Phase 24/D026 (admin UI, agent-trades UI, and the portfolio
+view are now built): a historical performance chart on top of the
+portfolio view (blocked on Phase 25's persisted snapshots), broker
+discovery (no such endpoint exists yet), session refresh/expiry UX,
+Playwright if a protectable flow emerges, and a users/roles/grants
 listing UI (blocked on D013's deliberate no-listing-endpoints scope cut).
 
-`apps/web/` (D020, Phase 17; extended Phase 20/D023) is the frontend —
-login, `/health` display, quote lookup, paper-trade submission,
-agent-trade proposal, and an admin UI for every `/admin/*` endpoint, each
-rendering the backend's real response shape (including
-`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:`/`AGENT_OUTPUT_INVALID:` sentinel
-details, a rejected trade's `block_reason`, and a non-admin's real 403)
-rather than any fabricated data. The JWT is stored in an httpOnly cookie
+`apps/web/` (D020, Phase 17; extended Phase 20/D023, Phase 24/D026) is
+the frontend — login, `/health` display, quote lookup, paper-trade
+submission, agent-trade proposal, an admin UI for every `/admin/*`
+endpoint, and a real-time portfolio view against Phase 19/D022's
+`GET /brokers/{id}/portfolio`, each rendering the backend's real response
+shape (including
+`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:`/`AGENT_OUTPUT_INVALID:`/
+`DATA_UNAVAILABLE:` sentinel details, a rejected trade's `block_reason`,
+and a non-admin's real 403) rather than any fabricated data. The JWT is
+stored in an httpOnly cookie
 set by a Next.js route handler that proxies `/auth/login`; every other
 authenticated call goes through its own route handler that reads the
 cookie server-side and forwards the request — the browser never holds

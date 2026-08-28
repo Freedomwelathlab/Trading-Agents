@@ -3,6 +3,7 @@ import HealthStatus from "@/components/HealthStatus";
 import QuoteLookup from "@/components/QuoteLookup";
 import TradeForm from "@/components/TradeForm";
 import AgentTradeForm from "@/components/AgentTradeForm";
+import PortfolioView from "@/components/PortfolioView";
 import LogoutButton from "@/components/LogoutButton";
 
 export default function DashboardPage() {
@@ -27,6 +28,7 @@ export default function DashboardPage() {
       <QuoteLookup />
       <TradeForm />
       <AgentTradeForm />
+      <PortfolioView />
     </main>
   );
 }

@@ -1420,3 +1420,114 @@ component coverage), a users/roles/grants listing UI (blocked on D013's
 deliberate no-listing-endpoints scope cut, not a frontend gap), and
 decoding the JWT client-side to pre-filter the nav (rejected above, not
 merely deferred).
+
+---
+
+**D026 — Frontend v3: portfolio view, GET-with-body proxied via Node's `http`/`https` module instead of `fetch`**
+Date: 2026-08-28
+Decision: Built the "portfolio view" v2/v3 candidate D020/D023 both
+deliberately deferred, in `apps/web/`, against Phase 19/D022's
+`GET /brokers/{broker_id}/portfolio`. `PortfolioView`
+(`components/PortfolioView.tsx`) on `/dashboard` takes a broker UUID and
+a `SYMBOL=price, SYMBOL2=price2` marks string (same parsing pattern as
+`AgentTradeForm`'s marks input, D023), and renders the real
+`PortfolioSnapshot`: `cash`, a table of every position's
+`symbol`/`quantity`/`avg_cost`/`current_value`/`unrealized_pnl`/
+`realized_pnl`, and the three totals
+(`total_equity`/`total_unrealized_pnl`/`total_realized_pnl`) — a
+single real-time snapshot, deliberately not a historical chart (that
+needs Phase 25's persisted snapshots, out of scope here regardless of
+whether that work has landed by the time this is read). Backed by
+`app/api/portfolio/[brokerId]/route.ts`, exposed to the browser as a
+same-origin `POST` (matching every other authenticated route handler's
+shape: cookie read server-side, `Authorization: Bearer <token>`
+attached, real backend status/body passed through unchanged) that
+internally issues the real backend call as a `GET` carrying `marks` as a
+JSON body, exactly as D022 specifies. That internal call could not use
+this repo's established `fetch`-based proxy pattern: Node's built-in
+`fetch` (undici) throws `Request with GET/HEAD method cannot have body`
+for any GET carrying a body, unconditionally, per the Fetch spec — no
+override flag exists. `lib/backend.ts` gained `backendGetWithBody()`,
+which bypasses `fetch` for this one call and issues the request with
+Node's core `http`/`https` module directly (verified against the
+installed Node runtime by direct reproduction — see Consequences); the
+FastAPI/Starlette backend itself has no such restriction and accepts a
+GET-with-body exactly as documented.
+Reason: the httpOnly-cookie proxy shape itself is not a new choice — it's
+D020's established pattern, executed. The GET-with-body plumbing was the
+only real decision here. Alternatives considered below explain why a
+raw Node request, not a different HTTP method or a bundled HTTP client,
+was the right fix.
+Alternatives: (a) have the route handler call the backend with `POST`
+or put `marks` in the query string instead of a body-carrying GET —
+rejected: this frontend proxies the backend's actual contract, and D022
+explicitly chose a GET-with-body over a query string because
+`dict[symbol, price]` doesn't serialize cleanly as query params; the
+frontend re-deciding that tradeoff on its own would silently diverge
+from the one real contract this endpoint has. (b) pull in a third-party
+HTTP client (axios, node-fetch's older non-spec-compliant behavior,
+undici's lower-level `request()` API) — rejected in favor of Node's
+built-in `http`/`https` module: zero new dependencies, and the need is
+narrow enough (one call site) that a bespoke ~30-line Promise wrapper is
+easier to audit than a new package's full surface area. (c) special-case
+this one form to send the browser's own body as query params or a
+different shape than every other proxied form — rejected as inconsistent
+with the client-side pattern every other component here follows (POST a
+JSON body to a same-origin route handler; let the route handler carry
+the shape mismatch, if any, entirely server-side, invisible to the
+browser).
+Consequences: `npm run build` passes with zero TypeScript errors
+(confirmed via the actual build output). `npm test` (Vitest): 34/34
+passing — the existing 28 plus 6 new tests in
+`test/PortfolioView.test.tsx`, covering a real rendered snapshot (cash,
+one position's full field set, and all three totals), an empty-positions
+render, the real 400 `DATA_UNAVAILABLE:` sentinel for a missing mark,
+a real 403, a real 404, and network failure — same
+sentinel-vs-fabrication discipline as every prior frontend phase.
+Verified against a real running backend: `docker compose up -d --build`
+in this worktree, with the same transient host-port remapping D023 used
+to avoid colliding with sibling Phase 23/25 worktrees' Postgres/Redis
+containers (5433/6380 and 5432/6379 respectively were already taken;
+this pass ran Postgres on 5434, Redis on 6381, the API on 8001 — restored
+to `docker-compose.yml`'s original 5432/6379/8000 afterward, since this
+remapping was never meant to be a tracked change). Ran real Alembic
+migrations (`alembic upgrade head`, 0001 through 0007) against a fresh
+database — no tables existed before this pass ran them. Bootstrapped two
+users via direct SQL insert (bcrypt hash via
+`apps/api/app/auth/security.py:hash_password`, same pattern as D021/D023):
+one with a role holding both `trade:submit:paper` and `portfolio:view`
+plus a `BrokerGrant` on a SQL-inserted paper broker, one with
+`trade:submit:paper` only (no `portfolio:view`) and the same grant, to
+exercise the 403 path deliberately. Submitted a real trade via
+`POST /brokers/{id}/trades` directly against the backend
+(`estimated_price`/`stop_price` supplied by hand since no market data
+vendor is wired in this environment) that filled for real
+(`fill_price: "100"`, `fill_quantity: "10"`), so the portfolio actually
+held a position. Then, through `npm run dev` + curl against the app's
+own `/api/auth/login` and `/api/portfolio/[brokerId]` route handlers —
+never calling the backend directly for this half of the verification —
+confirmed: a real 200 rendering the exact filled position
+(`avg_cost: "100.00000000"`, `current_value: "1200.00000000"`,
+`unrealized_pnl: "200.0000000000000000"`) and totals
+(`total_equity: "100200.00000000"`) computed by the backend from a mark
+of `120`; a real 400
+`DATA_UNAVAILABLE: No mark supplied for open position 'AAPL.US'; cannot
+value account.` when the mark was omitted for that held position; a real
+404 `No broker with id ...` for a broker UUID that doesn't exist; a real
+401 `Not authenticated` with no session cookie; and, with the
+second seeded user's cookie, a real 403
+`Missing required permission: portfolio:view`. Every one of these five
+response bodies came from the real backend through the real proxy route,
+not a mock — the most complete live round-trip this repo's frontend
+phases have run to date (D020's original pass could not reach Docker at
+all; D023's re-verification covered success/403/404/409 for admin
+resources but not this endpoint's distinct 400 sentinel).
+Status: Implemented and verified as above.
+v3/v4 candidates still open, not built in this pass: a historical
+performance chart (blocked on Phase 25's persisted snapshots landing and
+being documented in docs/API.md — explicitly out of scope here per the
+Phase 24 task even if that work has landed by the time this is read), a
+positions/broker-holdings listing UI to discover broker IDs without
+knowing them in advance (same D013-rooted gap D023 already flagged for
+users/roles/grants — no listing endpoint exists), session refresh/expiry
+UX, and Playwright e2e coverage (unchanged reasoning from D020/D023).
