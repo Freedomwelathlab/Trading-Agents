@@ -191,10 +191,15 @@ what this repo's docs can verify.)
   (only fake-provider-verified so far, OmniRoute unreachable at
   implementation time — D021 confirmed the Longbridge/history side works
   with real data, this gap is specifically about the LLM call itself).
-- Risk-engine rule set is decided and implemented (D004). Still open:
-  duplicate-order detection and an explicit emergency-stop *source*
-  (currently just a boolean parameter on `evaluate_trade`/`submit_trade` —
-  where it reads from in production is undecided).
+- Risk-engine rule set is decided and implemented (D004). Duplicate-order
+  detection: done (D024) — same broker+symbol+side+quantity+estimated_price
+  within a 5s window, compared only against FILLED orders (a REJECTED
+  order's identical retry is deliberately not itself flagged), the
+  recent-orders query supplied to the still-pure `evaluate_trade()` as
+  plain data by the caller. Still open: an explicit emergency-stop
+  *source* (currently just a boolean parameter on
+  `evaluate_trade`/`submit_trade` — where it reads from in production is
+  undecided).
 - Order/fill persistence: done (D006). HTTP endpoint: done (D009).
   Authentication: done (D010). Authorization: done (D011) — requires the
   `trade:submit:paper` permission. Per-broker access grants: done (D012).

@@ -19,8 +19,9 @@ own flushed-but-uncommitted writes.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.db.models import Fill as FillRow
@@ -28,7 +29,47 @@ from apps.api.app.db.models import Order as OrderRow
 from apps.api.app.db.models import OrderStatus
 from apps.api.app.execution.broker import BrokerAdapter
 from apps.api.app.oms.service import OMSResult, OMSStatus, submit_trade
-from apps.api.app.risk.models import AccountState, RiskLimits, TradeProposal
+from apps.api.app.risk.models import AccountState, RecentOrder, RiskLimits, TradeProposal
+
+
+async def get_recent_filled_orders(
+    session: AsyncSession,
+    broker_id: uuid.UUID,
+    symbol: str,
+    *,
+    window_seconds: int,
+    now: datetime | None = None,
+) -> list[RecentOrder]:
+    """Queries this broker's FILLED orders for `symbol` submitted within the
+    last `window_seconds` - the only DB read the duplicate-order check
+    needs (docs/DECISIONS.md D024). Deliberately excludes REJECTED orders:
+    D024 explains why a rejected order's identical retry should not itself
+    be treated as a duplicate. Filtered by symbol (not just broker_id) so
+    this stays a targeted, indexed read (ix_orders_broker_symbol_submitted,
+    migration 0007) rather than a full per-broker order-history scan.
+    """
+    now = now or datetime.now(UTC)
+    since = now - timedelta(seconds=window_seconds)
+    rows = (
+        await session.execute(
+            select(OrderRow).where(
+                OrderRow.broker_id == broker_id,
+                OrderRow.symbol == symbol,
+                OrderRow.status == OrderStatus.FILLED,
+                OrderRow.submitted_at >= since,
+            )
+        )
+    ).scalars()
+    return [
+        RecentOrder(
+            symbol=row.symbol,
+            side=row.side,
+            quantity=row.quantity,
+            estimated_price=row.estimated_price,
+            submitted_at=row.submitted_at,
+        )
+        for row in rows
+    ]
 
 
 async def submit_trade_and_record(
@@ -42,6 +83,7 @@ async def submit_trade_and_record(
     emergency_stop_active: bool = False,
     now: datetime | None = None,
     submitted_by_user_id: uuid.UUID | None = None,
+    recent_orders: list[RecentOrder] | None = None,
 ) -> OMSResult:
     result = submit_trade(
         proposal,
@@ -50,6 +92,7 @@ async def submit_trade_and_record(
         broker,
         emergency_stop_active=emergency_stop_active,
         now=now,
+        recent_orders=recent_orders,
     )
 
     status = OrderStatus.FILLED if result.status is OMSStatus.FILLED else OrderStatus.REJECTED

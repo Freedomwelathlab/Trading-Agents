@@ -656,3 +656,79 @@ async def test_a_supplied_estimated_price_is_authoritative_even_with_a_vendor_wi
 
         assert response.status_code == 200
         assert response.json()["fill_price"] == "100"
+
+
+@pytest.mark.asyncio
+async def test_an_identical_trade_submitted_twice_in_a_row_is_blocked_as_a_duplicate():
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            headers = {"Authorization": f"Bearer {token}"}
+            payload = {
+                "symbol": "AAPL",
+                "side": "buy",
+                "quantity": "10",
+                "estimated_price": "100",
+                "stop_price": "95",
+            }
+            first = await client.post(
+                f"/brokers/{broker_id}/trades", headers=headers, json=payload
+            )
+            second = await client.post(
+                f"/brokers/{broker_id}/trades", headers=headers, json=payload
+            )
+
+        assert first.status_code == 200
+        assert first.json()["status"] == "filled"
+
+        assert second.status_code == 200
+        second_body = second.json()
+        assert second_body["status"] == "rejected"
+        assert second_body["approved"] is False
+        assert second_body["block_reason"] == "duplicate_order"
+        assert second_body["fill_price"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_different_quantity_right_after_is_not_treated_as_a_duplicate():
+    async with (
+        db_session() as session,
+        active_user(session) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            headers = {"Authorization": f"Bearer {token}"}
+            first = await client.post(
+                f"/brokers/{broker_id}/trades",
+                headers=headers,
+                json={
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": "10",
+                    "estimated_price": "100",
+                    "stop_price": "95",
+                },
+            )
+            second = await client.post(
+                f"/brokers/{broker_id}/trades",
+                headers=headers,
+                json={
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": "5",
+                    "estimated_price": "100",
+                    "stop_price": "95",
+                },
+            )
+
+        assert first.status_code == 200
+        assert first.json()["status"] == "filled"
+        assert second.status_code == 200
+        assert second.json()["status"] == "filled"

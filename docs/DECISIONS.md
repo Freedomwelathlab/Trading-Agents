@@ -1142,3 +1142,151 @@ disposable `.venv19`/`.env`/`docker-compose.override.yml` were all
 removed - nothing from this phase's local verification setup was left on
 disk or in git status, and the sibling `trading-os-phase21` Postgres
 container on port 5432 was never touched.
+
+---
+
+**D024 — Deterministic duplicate-order detection: same broker+symbol+side+quantity+price within a 5s window, FILLED orders only**
+Date: 2026-08-28
+Decision: A "duplicate" is defined precisely and deterministically: a new
+proposal whose (symbol, side, quantity, estimated_price) exactly matches
+a **FILLED** order on the same broker submitted within the preceding **5
+seconds**. `apps/api/app/risk/models.py` adds `RecentOrder` (the plain-data
+shape of one prior order) and `RiskLimits.duplicate_order_window_seconds`
+(no default, same "unconfigured is a bug" posture as every other limit on
+that model — the app-level default lives in
+`Settings.risk_duplicate_order_window_seconds = 5`, `core/config.py`).
+`evaluate_trade()` (`risk/engine.py`) gains an optional `recent_orders:
+list[RecentOrder] | None` parameter and checks it right after the
+market-data-freshness gate, before the stop-price/sizing rules — a
+duplicate-execution risk is checked as a fundamental precondition, not as
+one more sizing constraint. The engine never queries anything itself:
+`apps/api/app/oms/persistence.py` adds `get_recent_filled_orders()`, a
+single indexed SELECT the caller (`trades.py`'s `_execute_trade()`, shared
+by both the human and agent-trades routes) runs before calling
+`submit_trade_and_record()`, which now threads `recent_orders` straight
+through to `submit_trade()` -> `evaluate_trade()`. A new composite index
+`ix_orders_broker_symbol_submitted` (`broker_id`, `symbol`, `submitted_at`
+— migration 0007) backs that query; the existing single-column
+`ix_orders_symbol` doesn't serve a broker-scoped, time-bounded lookup
+well. A new `BlockReason.DUPLICATE_ORDER` is added — never an existing
+reason reused, per that enum's own docstring.
+
+Reason, on the four judgment calls this phase asked for:
+- Which fields define "identical": symbol+side+quantity+estimated_price
+  together, not a subset. Symbol+side alone would block a trader from
+  legitimately scaling into or out of a position seconds apart (a very
+  normal thing to do). Quantity and price make the match precise enough
+  that it's very unlikely two *different* real trading decisions would
+  produce the exact same four values by coincidence within a few seconds
+  — but a double-click, a client-side retry after a slow response, or a
+  frontend resubmitting the same form on a spinner would.
+- Why 5 seconds, not shorter or longer: a double-click is usually under
+  1s; a client retrying after an HTTP timeout is commonly configured in
+  the 2-5s range (typical `fetch`/`axios` defaults land there). 5s
+  comfortably covers both without needing to guess a specific client's
+  retry policy. Going shorter (e.g. 1s) would miss a slow-network retry
+  storm — the more damaging case, since it's the one likeliest to
+  double-execute a real order. Going longer (e.g. 60s) would block a
+  trader legitimately re-entering the exact same setup — same symbol,
+  side, size, and price — on a second signal or a scale-in a minute
+  later; that is normal rapid trading, not an accidental duplicate, and
+  the risk engine blocking it would be a false positive with real cost.
+  5s sits in the gap between "clearly a resubmission artifact" and
+  "clearly a new decision".
+- FILLED only, not REJECTED: a REJECTED order never reached the broker —
+  no market exposure was created, so there is no double-execution risk to
+  guard against. Flagging a REJECTED order's identical retry as a
+  *duplicate* would in fact be actively harmful: it would replace one
+  useful rejection reason (e.g. `exceeds_max_position_size`, telling the
+  caller exactly what to fix) with `duplicate_order`, which explains
+  nothing about why the original attempt failed. A resubmission of
+  identical parameters after a rejection is far more likely to be "I
+  fixed the underlying condition and I'm trying again" or "the condition
+  was transient" than "I am accidentally duplicating a position" — and if
+  the underlying condition still holds, the retry will simply be rejected
+  again on its own merits, which is the correct outcome. There is no
+  PENDING status in this schema today (the paper broker always fills
+  synchronously — `OrderStatus` only has `FILLED`/`REJECTED`) so this
+  decision didn't need to additionally resolve a PENDING case; if an
+  asynchronous/PENDING broker adapter is ever added, it should almost
+  certainly be included alongside FILLED (an in-flight order not yet
+  filled is exactly the double-execution risk this check exists for) —
+  noted for whoever builds that.
+- Where the check runs / what stays pure: per `docs/TRADING_SAFETY.md` and
+  `risk/engine.py`'s own docstring, the engine must stay I/O-free. Option
+  (a) from the phase brief was chosen over (b): the caller (the HTTP
+  layer, which already owns the DB session) queries recent orders and
+  hands them to the engine as plain `RecentOrder` data, exactly the same
+  shape `HistoryProvider`/D021 established for optional external data
+  reaching a pure component. This was preferred over teaching the
+  *engine* a DB-aware helper method because the module's entire reason
+  for existing (this docstring, `docs/TRADING_SAFETY.md`'s "must run even
+  if every LLM [or, by the same logic, every downstream service] is
+  down") is exactly this kind of boundary — adding even a well-isolated
+  DB call inside `risk/` would be the first crack in a property this
+  codebase has kept perfectly clean since D004.
+Alternatives: (a) hash-based idempotency key supplied by the client
+(standard for payment APIs) — rejected for now: it requires client
+cooperation (a header/field no current caller sends) and solves a
+different problem (exact request replay) than this task asked for
+(detecting *distinct* requests that happen to describe the same trade);
+worth revisiting once a frontend/agent client can be trusted to generate
+one. (b) compare against a broader set of statuses or no status filter at
+all — rejected per the FILLED-only reasoning above. (c) a longer window
+tied to `max_market_data_age_seconds` (300s) — rejected, conflates two
+unrelated concepts (how stale is the *price* vs. how recently was this
+*exact order* filled) and would block obviously-legitimate re-entries
+minutes apart. (d) resize/merge the duplicate into the existing position
+instead of rejecting — rejected, breaks D004's block-not-resize precedent
+and this module's audit-trail guarantee (what got approved is always
+exactly what was proposed).
+Consequences: every trade submission now does one additional indexed
+SELECT before evaluation — bounded and cheap (index-only, narrow window,
+single symbol) but real; if this ever needs to scale past a single-row
+lookup pattern, the index is already the right shape to extend. A
+resubmission of identical parameters within 5s of a fill now surfaces
+`duplicate_order` instead of whatever the *next* rule would have said
+(e.g. it would no longer separately report `insufficient_buying_power` on
+a genuine double-submit that also happens to exceed cash) — acceptable,
+since the duplicate check fires first specifically because it's the more
+fundamental problem. Closes the `docs/PROJECT_CONTEXT.md` "Open
+Decisions" gap D004 explicitly flagged as not built.
+Status: Implemented, tested: `tests/risk/test_engine.py` (9 new unit
+tests — exact duplicate within window blocked; same order just outside
+the window allowed; different quantity/price/side/symbol each allowed;
+an empty `recent_orders` list, standing in for "the only prior identical
+order was REJECTED", allowed; no `recent_orders` argument at all allowed;
+an unrelated recent order doesn't suppress a real duplicate elsewhere in
+the list); `tests/oms/test_service.py` (1 new test — `recent_orders`
+threaded through `submit_trade()` blocks before the broker is ever
+touched); `tests/db/test_order_persistence.py` (1 new integration test
+against real Postgres — `get_recent_filled_orders()` returns only the
+matching symbol's FILLED order within the window, excluding a REJECTED
+order, a different symbol, and anything outside the window);
+`tests/api/test_trades.py` + `tests/api/test_agent_trades.py` (3 new
+integration tests against real Postgres and the real HTTP routes — an
+identical trade submitted twice via `POST .../trades` is blocked on the
+second call with `block_reason=duplicate_order`; a different quantity
+right after is not blocked; the same protection is proven end-to-end on
+`POST .../agent-trades`, closing the "LLM-originated duplicate" half of
+the requirement). 159/159 total tests passing (145 at D021 + 14 new),
+ruff+mypy clean (fixed one pre-existing ruff finding encountered along
+the way in `marketdata/indicators.py` - a `zip()` without an explicit
+`strict=` - unrelated to this phase's own code but blocking a clean
+`ruff check .`).
+Verified live: against a running server (real Postgres, no Docker port
+conflict with the parallel phase-19/20 worktrees since Postgres/Redis run
+under this worktree's own `docker compose` project and the API ran
+directly via `uvicorn` on a non-default port to avoid the sibling
+worktrees' already-bound 8000) with a directly-inserted user/role/broker/
+grant (bcrypt hash generated via `apps.api.app.auth.security.hash_password`,
+same pattern as D021): submitted the identical AAPL buy 10 @ 100 paper
+trade twice via curl roughly 0.5s apart — the first filled normally, the
+second came back rejected with `block_reason=duplicate_order` and a
+detail naming the 0.5s gap and the 5s window; a third submission for the
+same symbol/side/price but quantity=5 immediately after filled normally,
+confirming the check doesn't over-fire. All inserted rows (fills, orders,
+broker_grants, broker_accounts/positions, broker, user, role) were
+deleted afterward; the API process, `.venv21`, and `.env` created for
+this verification were removed; `docker compose down -v` tore down this
+worktree's Postgres/Redis containers and volume.

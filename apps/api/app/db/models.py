@@ -3,7 +3,17 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -190,6 +200,9 @@ class Order(Base):
     """
 
     __tablename__ = "orders"
+    __table_args__ = (
+        Index("ix_orders_broker_symbol_submitted", "broker_id", "symbol", "submitted_at"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     broker_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brokers.id"), nullable=False)

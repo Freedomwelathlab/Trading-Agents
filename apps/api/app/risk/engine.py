@@ -11,12 +11,13 @@ things that should raise are Pydantic validation errors on malformed input,
 which the caller must treat as a block, not a crash to recover from.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from apps.api.app.risk.models import (
     AccountState,
     BlockReason,
+    RecentOrder,
     RiskDecision,
     RiskLimits,
     TradeProposal,
@@ -30,10 +31,18 @@ def evaluate_trade(
     *,
     emergency_stop_active: bool = False,
     now: datetime | None = None,
+    recent_orders: list[RecentOrder] | None = None,
 ) -> RiskDecision:
     """Fail closed at every branch: the moment a rule can't be verified as
     satisfied, return a rejection immediately rather than falling through
     to an approval at the end of the function.
+
+    recent_orders is optional data the caller queried from the DB (never
+    fetched here - see this module's docstring) - a list of this broker's
+    recent FILLED orders, in any order. None or an empty list simply means
+    "nothing to compare against", not "unverifiable"; unlike market-data
+    staleness this isn't a safety precondition the engine must refuse to
+    proceed without (docs/DECISIONS.md D024).
     """
     if emergency_stop_active:
         return RiskDecision(
@@ -59,6 +68,28 @@ def evaluate_trade(
                 f"{limits.max_market_data_age_seconds}s limit."
             ),
         )
+
+    if recent_orders:
+        window = timedelta(seconds=limits.duplicate_order_window_seconds)
+        for order in recent_orders:
+            age = now - order.submitted_at
+            if (
+                order.symbol == proposal.symbol
+                and order.side == proposal.side
+                and order.quantity == proposal.quantity
+                and order.estimated_price == proposal.estimated_price
+                and timedelta(0) <= age <= window
+            ):
+                return RiskDecision(
+                    approved=False,
+                    reason=BlockReason.DUPLICATE_ORDER,
+                    detail=(
+                        f"An identical order (symbol={order.symbol}, side={order.side.value}, "
+                        f"quantity={order.quantity}, estimated_price={order.estimated_price}) "
+                        f"filled {age.total_seconds():.1f}s ago, within the "
+                        f"{limits.duplicate_order_window_seconds}s duplicate-order window."
+                    ),
+                )
 
     if limits.require_stop_price and proposal.stop_price is None:
         return RiskDecision(

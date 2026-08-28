@@ -24,6 +24,7 @@ class BlockReason(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     EXCEEDS_PORTFOLIO_EXPOSURE = "exceeds_portfolio_exposure"
     INSUFFICIENT_BUYING_POWER = "insufficient_buying_power"
     LIMITS_NOT_CONFIGURED = "limits_not_configured"
+    DUPLICATE_ORDER = "duplicate_order"
 
 
 class TradeProposal(BaseModel):
@@ -63,6 +64,24 @@ class RiskLimits(BaseModel):
     max_risk_pct_of_equity_per_trade: Decimal = Field(gt=0, le=1)
     require_stop_price: bool = True
     max_market_data_age_seconds: int = Field(gt=0)
+    duplicate_order_window_seconds: int = Field(gt=0)
+    """See docs/DECISIONS.md D024 for why this window's length was chosen."""
+
+
+class RecentOrder(BaseModel):
+    """One prior FILLED order for the same broker, supplied by the caller
+    for the duplicate-order check (docs/DECISIONS.md D024). The engine
+    itself never queries for this - the caller (OMS/HTTP layer) owns the
+    DB read and hands the result in as plain data, keeping evaluate_trade()
+    free of I/O per its module docstring. Only FILLED orders should ever
+    be passed in here - see D024 for why a REJECTED order's identical
+    retry is deliberately not itself flagged as a duplicate."""
+
+    symbol: str = Field(min_length=1)
+    side: Side
+    quantity: Decimal = Field(gt=0)
+    estimated_price: Decimal = Field(gt=0)
+    submitted_at: datetime
 
 
 class RiskDecision(BaseModel):

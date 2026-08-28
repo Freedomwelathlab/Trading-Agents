@@ -23,6 +23,13 @@ D021 adds an optional real indicator computation (SMA/RSI, deterministic
 code, never the LLM) from a HistoryProvider's daily closes, narrated
 (never calculated) by the TechnicalAnalyst when available - same
 optional, never-blocking posture as D019.
+
+D024 adds deterministic duplicate-order detection: `_execute_trade()`
+(shared by both routes below, so a human-submitted and an LLM-originated
+trade get identical protection) queries this broker+symbol's recent
+FILLED orders and hands them to the risk engine as data - never a check
+the engine performs its own I/O for. See docs/DECISIONS.md D024 for the
+duplicate definition and window.
 """
 
 import uuid
@@ -58,7 +65,7 @@ from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
-from apps.api.app.oms.persistence import submit_trade_and_record
+from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
 from apps.api.app.risk.models import RiskLimits, TradeProposal
 
 router = APIRouter(prefix="/brokers/{broker_id}/trades", tags=["trades"])
@@ -115,6 +122,17 @@ async def _execute_trade(
         max_risk_pct_of_equity_per_trade=settings.risk_max_risk_pct_of_equity_per_trade,
         require_stop_price=settings.risk_require_stop_price,
         max_market_data_age_seconds=settings.risk_max_market_data_age_seconds,
+        duplicate_order_window_seconds=settings.risk_duplicate_order_window_seconds,
+    )
+
+    # D024: a targeted, indexed read of this broker+symbol's recent FILLED
+    # orders, handed to the (still pure) risk engine as plain data - never
+    # a DB access the engine makes itself.
+    recent_orders = await get_recent_filled_orders(
+        session,
+        broker_id,
+        proposal.symbol,
+        window_seconds=settings.risk_duplicate_order_window_seconds,
     )
 
     result = await submit_trade_and_record(
@@ -126,6 +144,7 @@ async def _execute_trade(
         broker_adapter,
         emergency_stop_active=settings.emergency_stop_active,
         submitted_by_user_id=submitted_by_user_id,
+        recent_orders=recent_orders,
     )
 
     await save_paper_broker(session, broker_id, broker_adapter)
