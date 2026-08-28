@@ -29,6 +29,8 @@ from apps.api.app.db.models import (
     BrokerGrant,
     BrokerKind,
     BrokerPosition,
+    PortfolioSnapshotPositionRow,
+    PortfolioSnapshotRow,
     Role,
     User,
 )
@@ -63,6 +65,18 @@ async def paper_broker_row(session, *, kind: BrokerKind = BrokerKind.PAPER):
             )
         )
         await session.execute(delete(OrderRow).where(OrderRow.broker_id == broker_id))
+        await session.execute(
+            delete(PortfolioSnapshotPositionRow).where(
+                PortfolioSnapshotPositionRow.snapshot_id.in_(
+                    select(PortfolioSnapshotRow.id).where(
+                        PortfolioSnapshotRow.broker_id == broker_id
+                    )
+                )
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotRow).where(PortfolioSnapshotRow.broker_id == broker_id)
+        )
         await session.execute(delete(BrokerGrant).where(BrokerGrant.broker_id == broker_id))
         await session.execute(delete(BrokerPosition).where(BrokerPosition.broker_id == broker_id))
         await session.execute(delete(BrokerAccount).where(BrokerAccount.broker_id == broker_id))

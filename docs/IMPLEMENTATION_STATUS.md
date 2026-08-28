@@ -433,6 +433,36 @@ Update this after meaningful implementation work — not for every commit.
   pass). `AGENT_OUTPUT_INVALID:` (502) was exercised only via a mocked
   component test, not a real misbehaving provider. See D023 for full
   detail.
+- **Phase 25 — persisted portfolio snapshots (2026-08-28, D027).** Closes
+  the "persisted historical portfolio snapshots" item Phase 19/D022
+  explicitly deferred. Two new append-only tables (migration
+  `0008_portfolio_snapshots.py`; models `PortfolioSnapshotRow`/
+  `PortfolioSnapshotPositionRow` in `apps/api/app/db/models.py`) - a
+  parent `portfolio_snapshots` row (cash/total_equity/total_unrealized_pnl/
+  total_realized_pnl/captured_at) plus a child `portfolio_snapshot_positions`
+  row per open position (chosen over a JSON column for queryability - see
+  D027). `POST /brokers/{broker_id}/portfolio/snapshots` computes a
+  snapshot via the existing `compute_portfolio_snapshot()` (same
+  `{"marks": {...}}` body, same `DATA_UNAVAILABLE:` missing-mark
+  discipline) and persists it; `GET /brokers/{broker_id}/portfolio/history`
+  returns persisted snapshots for a broker ordered oldest-to-newest by
+  `captured_at`, paginated (`limit` default 50/max 500, `offset` default
+  0). Both gated by the existing `Permission.VIEW_PORTFOLIO` (see D027 for
+  why no new permission was needed) plus `require_broker_access`.
+  Deliberately manual-only - no cron/scheduler was built; a snapshot only
+  ever exists because a caller explicitly POSTed it. 8 new integration
+  tests against real Postgres in `tests/api/test_portfolio.py` (23 total
+  in that file), plus `tests/api/test_trades.py`'s shared
+  `paper_broker_row` fixture extended to clean up the two new tables on
+  teardown. 188/188 total tests passing, `ruff check .`/`mypy apps` both
+  clean (58 source files). Verified live against a running Docker Compose
+  stack in this worktree: seeded a role/user/broker/grant via direct SQL
+  (bcrypt hash), submitted a real `AAPL` buy, POSTed a real snapshot with
+  a real mark (response showed the real position and P&L), then GET
+  `.../history` and confirmed both the pre-trade and post-trade snapshots
+  came back in the correct order with values matching exactly. All seeded
+  rows, the Docker stack, the local venv, and `.env` were removed
+  afterward.
 
 ## In Progress
 
@@ -446,10 +476,11 @@ Nothing currently blocked.
 
 Phase 20+ (order not finalized): the rest of the parallel analyst layer
 (fundamental/news/sentiment — each blocked on a real, wired data source),
-research debate, persisted historical portfolio snapshots (needed for
-backtesting/alerts/performance-attribution — explicitly deferred by
-Phase 19/D022), and FIFO/LIFO cost-basis reporting as a Portfolio module
-alternative to the current average-cost method. If a second analyst is
+research debate, and FIFO/LIFO cost-basis reporting as a Portfolio module
+alternative to the current average-cost method. Automatic/scheduled
+portfolio snapshotting (cron/background-job capture, on top of Phase
+25/D027's manual-only `POST .../snapshots`) - explicit future work, not
+started (see D027's Consequences for why). If a second analyst is
 ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
@@ -496,8 +527,10 @@ optimization.
 
 ## Tests
 
-202 tests, all passing (see docs/DECISIONS.md D025 for the exact new-test
-breakdown). Prior baseline, 169 tests: fail-closed live-mode gate (4, incl. missing JWT
+210 tests, all passing (202 from Phase 23/D025's backtesting engine on
+top of the 174 baseline, plus 8 more from Phase 25/D027's persisted
+snapshots - see docs/DECISIONS.md D025/D027 for the exact new-test
+breakdowns). Baseline, 174 tests: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (23, incl. 9
 duplicate-order-detection tests — D024), paper broker (5), OMS (4, incl. 1
 proving `recent_orders` blocks a duplicate before the broker is touched),
@@ -517,7 +550,9 @@ DB-backed), indicator unit tests (9, pure math), Longbridge history
 provider unit tests (5, against a fake candlestick client), history-provider
 wiring on agent-trades (4, DB-backed), Portfolio module unit tests (6,
 pure average-cost-basis replay math, hand-verified), portfolio HTTP
-endpoint (10, DB-backed — D022).
+endpoint (23, DB-backed — 15 pre-D027 covering `GET .../portfolio` + 8
+new covering `POST .../portfolio/snapshots` and
+`GET .../portfolio/history` — D027).
 
 ## Known Issues
 

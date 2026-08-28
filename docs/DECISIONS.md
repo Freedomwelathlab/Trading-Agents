@@ -1601,3 +1601,127 @@ removed; `docker compose down -v` tore down this worktree's Postgres/
 Redis containers and volume; `docker-compose.yml`'s port mappings were
 restored to their committed values (the 5433/6380 remap was a
 local-only, never-committed change for this verification pass).
+
+---
+
+**D027 — Persisted portfolio snapshots: a child positions table, manual capture only, same VIEW_PORTFOLIO gate**
+Date: 2026-08-28
+Decision: Two new append-only tables (migration `0008_portfolio_snapshots.py`,
+models `PortfolioSnapshotRow`/`PortfolioSnapshotPositionRow` in
+`apps/api/app/db/models.py`) close the gap D022 explicitly flagged -
+"future backtesting/alerts/performance-attribution work" needs persisted
+history, not just a point-in-time `compute_portfolio_snapshot()` read.
+`portfolio_snapshots` holds one row per capture (`broker_id`,
+`captured_at`, `cash`, `total_equity`, `total_unrealized_pnl`,
+`total_realized_pnl`); `portfolio_snapshot_positions` holds one row per
+open position in that capture (`snapshot_id` FK, `symbol`, `quantity`,
+`avg_cost`, `current_value`, `unrealized_pnl`, `realized_pnl`). Both are
+append-only like `orders`/`fills` - a historical record is never updated
+or overwritten, unlike the mutable `broker_accounts`/`broker_positions`
+current-state rows D022 explicitly declined to add more of.
+`POST /brokers/{broker_id}/portfolio/snapshots`
+(`apps/api/app/api/routes/portfolio.py`) takes the same `{"marks": {...}}`
+body as the existing GET, calls `compute_portfolio_snapshot()` exactly as
+the read endpoint does, and persists the result as one new
+`PortfolioSnapshotRow` plus its `PortfolioSnapshotPositionRow` children in
+a single commit. `GET /brokers/{broker_id}/portfolio/history` returns
+persisted snapshots for a broker ordered oldest-to-newest by
+`captured_at`, paginated with `limit` (default 50, max 500) and `offset`
+(default 0) query params. Both routes are gated by the existing
+`Permission.VIEW_PORTFOLIO` plus `require_broker_access`, same as the
+read endpoint - no new permission was added.
+Reason: a child table (`portfolio_snapshot_positions`), not a JSON column
+on `portfolio_snapshots`, was chosen for the per-position detail. This is
+a genuine judgment call the phase's task explicitly asked not to
+default-away, so the actual reasoning: a JSON column would be simpler to
+write today (one row, one nested value, no join), but this schema already
+treats "per-symbol history over time" as something worth its own indexed
+table everywhere else it appears - `orders`/`fills` are exactly that
+pattern for the trade side, and `docs/DECISIONS.md`'s own framing of this
+phase ("show me AAPL's position history") is precisely the query a JSON
+column makes hard: it would require either scanning every snapshot row
+and JSON-parsing its blob in application code, or a Postgres JSON-path
+index that duplicates most of a real table's value while still being
+harder to reason about and to extend (e.g. adding a new per-position
+column later is a plain `ALTER TABLE` on a child table, versus an
+application-level migration of every stored JSON blob). The extra join
+this costs on `GET .../history` is one `selectinload()` on a table that,
+by design (D027 below - manual capture only, no scheduler), grows at a
+caller-triggered, human-timescale rate, not a high-frequency one - the
+join cost is not a real concern at this table's expected size. `VIEW_PORTFOLIO`
+(not a new, stronger permission) was chosen to gate `POST .../snapshots`
+because creating a persisted record of the portfolio's current state
+doesn't move money, change any mutable state (`broker_accounts`/
+`broker_positions` are untouched), or place any order - it's exactly the
+same category of action `GET /brokers/{broker_id}/portfolio` already
+performs (D022's reasoning: viewing is strictly weaker than trading), it
+just additionally writes a timestamped copy of what was viewed. Requiring
+a stronger permission here would be inconsistent with D022's own
+least-privilege argument for why `VIEW_PORTFOLIO` exists as its own
+permission in the first place - the read/write distinction that matters
+in this codebase is "does this touch capital or orders," not "does this
+write any row at all." This phase is deliberately *not* an automatic or
+scheduled snapshotting system: no cron, no background job, no
+`APScheduler`/Celery-beat-style component was added. A snapshot is
+created only when a caller explicitly `POST`s to `.../snapshots` - see
+Consequences for why scheduled capture is left as explicit future work
+rather than half-built here.
+Alternatives: (a) a JSON column on `portfolio_snapshots` for position
+detail - rejected per the reasoning above; noted as the "simpler to build
+now" option the task explicitly warned against defaulting to. (b) a
+stronger new permission (e.g. `CREATE_PORTFOLIO_SNAPSHOT`) distinct from
+`VIEW_PORTFOLIO` for the POST route - rejected, this phase found no
+capability difference between "compute and return a snapshot" and
+"compute, return, and also persist a snapshot" that rises to D013/D016's
+bar for a genuinely distinct permission (unlike view-vs-trade, which
+D022 correctly treated as distinct); adding one anyway would just be
+permission-per-endpoint rather than permission-per-capability. (c) build
+a scheduled/automatic snapshot job in this same phase since the future
+need was already visible - rejected, out of scope as stated by the task,
+and a half-built scheduler (no retry/backoff policy, no decision on
+snapshot frequency, no interaction with `TRADING_MODE`) would be worse
+than clearly deferring it; see Consequences.
+Consequences: automatic/scheduled snapshotting (e.g. hourly or
+daily-close capture per broker) is explicit future work, not started
+here - it would need its own design pass (a scheduler component, a
+frequency policy, backoff/retry on a failed `MissingMarkError` capture,
+and a decision on whether a scheduled capture skips a broker with no
+fresh marks available or fails loudly) that this phase's scope
+deliberately excludes. Consumers named in D022's original gap
+(backtesting, alerting, performance attribution) can now read a real
+time series via `GET .../history` instead of having no persisted source
+at all, but each of those remains its own future phase - this phase only
+ever writes rows, it does not yet read them for any of those purposes.
+`portfolio_snapshot_positions` rows are never fabricated or interpolated:
+a snapshot POST that hits `MissingMarkError`/`BrokerAccountNotFoundError`
+persists nothing at all (the DB write happens only after
+`compute_portfolio_snapshot()` returns successfully), so a broker with
+incomplete marks has a gap in its history rather than a guessed data
+point - the same fail-closed posture `docs/TRADING_SAFETY.md` requires
+everywhere else.
+Status: Implemented, tested: `tests/api/test_portfolio.py` gained 8 new
+integration tests against real Postgres (23 total in that file) - POST
+persists a snapshot and it appears correctly in GET .../history; three
+POSTs return in oldest-to-newest order and `limit`/`offset` paginate
+correctly; a missing mark on POST is 400 `DATA_UNAVAILABLE:` and persists
+nothing (confirmed via a follow-up empty history read); POST and GET
+.../history each 403 without `VIEW_PORTFOLIO`; POST 403s without a
+broker grant even with the permission (mirroring D022's existing grant
+tests). `tests/api/test_trades.py`'s shared `paper_broker_row` fixture
+was extended to also clean up `portfolio_snapshot_positions`/
+`portfolio_snapshots` rows on teardown (a foreign-key violation surfaced
+this gap immediately - the fixture's existing broker-teardown delete list
+did not yet know about the new tables). 188 total tests passing
+(180 before this phase + 8 new), ruff and mypy both clean (58 source
+files). Verified live against a running Docker Compose stack (real
+Postgres + the built API image): seeded a role/user/broker/grant via
+direct SQL insert (D021/D022/D024 pattern, bcrypt-hashed password),
+logged in for a real JWT, submitted a real paper trade (`AAPL` x10 @
+100), `POST`ed a real snapshot with a real mark (`AAPL`: 120) - response
+showed the real position (`avg_cost=100`, `current_value=1200`,
+`unrealized_pnl=200`, `total_equity=100200`) - then `GET .../history`
+and confirmed both the empty pre-trade snapshot and the post-trade
+snapshot came back in the correct order with the persisted values
+matching exactly what the POST had returned. All seeded rows, the Docker
+stack (`docker compose down -v`), the local `.venv25`, and the local
+`.env` were removed after verification.

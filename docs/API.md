@@ -244,6 +244,70 @@ window plus warmup requires — never a shorter, silently-truncated
 backtest), 502 `DATA_UNAVAILABLE:` (the vendor itself failed), 422
 (`end_date <= start_date` or any other request-shape validation error).
 
+## `POST /brokers/{broker_id}/portfolio/snapshots`
+
+Persists a portfolio snapshot (D027). Computes a snapshot exactly as
+`GET /brokers/{broker_id}/portfolio` does — same
+`compute_portfolio_snapshot()` call, same `{"marks": {...}}` request
+body, same `DATA_UNAVAILABLE:` discipline on a missing mark — and, only
+if that computation succeeds, persists the result as a new append-only
+row (never a fabricated, interpolated, or scheduled one; see D027 —
+there is no cron/background job, a snapshot exists only because a caller
+explicitly POSTed here). Gated by the same `Permission.VIEW_PORTFOLIO` +
+`require_broker_access` as the read endpoint — see D027 for why creating
+a persisted record of the current state is still a "view" capability,
+not a stronger one.
+
+Request body: identical `PortfolioMarksRequest` shape as the GET above.
+
+Response (201, `PortfolioSnapshotHistoryEntry`):
+```json
+{
+  "id": "...",
+  "broker_id": "...",
+  "captured_at": "2026-08-28T13:35:16.948447Z",
+  "cash": "99000.00000000",
+  "positions": [
+    {
+      "symbol": "AAPL",
+      "quantity": "10.00000000",
+      "avg_cost": "100.00000000",
+      "current_value": "1200.00000000",
+      "unrealized_pnl": "200.00000000",
+      "realized_pnl": "0"
+    }
+  ],
+  "total_equity": "100200.00000000",
+  "total_unrealized_pnl": "200.00000000",
+  "total_realized_pnl": "0"
+}
+```
+
+Error responses: 401, 403 (same as the GET), 404 (unknown `broker_id`),
+400 `DATA_UNAVAILABLE:` on a missing mark for a held position — and, on
+that 400, nothing is persisted (the DB write happens only after
+`compute_portfolio_snapshot()` returns successfully).
+
+## `GET /brokers/{broker_id}/portfolio/history`
+
+Returns persisted snapshots for a broker (D027), oldest-to-newest by
+`captured_at`. Gated the same way as the two routes above.
+
+Query params: `limit` (default 50, max 500), `offset` (default 0).
+
+Response (200, `PortfolioSnapshotHistoryResponse`):
+```json
+{
+  "snapshots": [ /* list of PortfolioSnapshotHistoryEntry, oldest first */ ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
+Error responses: 401, 403 (same as the GET above), 404 (unknown
+`broker_id`). An empty `snapshots` list (200, not an error) means no
+snapshot has ever been POSTed for this broker.
+
 ## `POST /admin/users`
 
 Requires `Authorization: Bearer <token>` from a user whose role grants

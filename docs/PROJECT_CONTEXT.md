@@ -130,9 +130,23 @@ weaker `Permission.VIEW_PORTFOLIO` rather than reusing
 `docs/MODULE_MAP.md` flagged, not the trade-path "Portfolio Manager" the
 governing spec's Target architecture places between the Risk Engine and
 OMS — that component still doesn't exist and Phase 19 doesn't touch the
-trade path at all. Real-time snapshot only; no persisted history, so
-backtesting/alerts/performance-attribution-over-time are explicit future
-work, not built speculatively.
+trade path at all. Real-time snapshot only at the time; no persisted
+history yet, so backtesting/alerts/performance-attribution-over-time were
+explicit future work, not built speculatively.
+
+Phase 25 (D027) closes that persisted-history gap: `POST
+/brokers/{broker_id}/portfolio/snapshots` computes a snapshot via the
+same `compute_portfolio_snapshot()` and persists it as an append-only row
+(`portfolio_snapshots` + a child `portfolio_snapshot_positions` table,
+chosen over a JSON column for queryability - see D027); `GET
+/brokers/{broker_id}/portfolio/history` reads them back,
+oldest-to-newest, paginated. Still gated by the same
+`Permission.VIEW_PORTFOLIO` - no new permission was needed (D027).
+Deliberately manual-only: a snapshot exists only because a caller
+explicitly POSTed it, never a scheduled/automatic capture - that remains
+explicit future work. Backtesting/alerts/performance-attribution
+themselves are still not built; Phase 25 only gives them a real time
+series to eventually read.
 
 Phase 23 (D025) closes that "backtesting" future-work note with the
 one-strategy v1 it deliberately deferred to: `apps/api/app/backtesting/`
@@ -154,12 +168,12 @@ genuine equity curve with one real, risk-gated trade.
 
 ## Planned Work
 
-Phase 20+: the rest of the parallel analyst layer (fundamental/news/
+Phase 26+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57),
-research debate, persisted historical portfolio snapshots (needed for
-backtesting/alerts/performance-attribution, deferred by Phase 19), and
-the trade-path Portfolio Manager per the governing spec's "Target"
-architecture. Order not finalized. Also pending: re-verify D018/D019's
+research debate, automatic/scheduled portfolio snapshotting (on top of
+Phase 25/D027's manual-only capture), and the trade-path Portfolio
+Manager per the governing spec's "Target" architecture. Order not
+finalized. Also pending: re-verify D018/D019's
 live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now
