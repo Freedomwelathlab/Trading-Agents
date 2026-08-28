@@ -149,7 +149,7 @@ Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,
 `broker_accounts`/`broker_positions` are mutable current-state — the two
 serve different purposes and are not duplicates of each other (D014).
 
-## Frontend (Phase 17, D020)
+## Frontend (Phase 17/D020, extended Phase 20/D023)
 
 `apps/web/` is a Next.js 16 (App Router) + TypeScript + Tailwind v4 app.
 It never calls the backend directly from the browser — every backend
@@ -163,13 +163,23 @@ flowchart LR
     backendlogin --> loginroute
     loginroute -->|sets httpOnly cookie| browser
 
-    browser --> dashpage["/dashboard page\n(middleware requires cookie)"]
+    browser --> dashpage["/dashboard page\n(proxy.ts requires cookie)"]
     dashpage --> healthroute["/api/health"]
     dashpage --> quoteroute["/api/quote/[symbol]"]
     dashpage --> traderoute["/api/trades/[brokerId]"]
+    dashpage --> agentroute["/api/agent-trades/[brokerId]"]
     healthroute --> backendhealth["backend GET /health"]
     quoteroute -->|Bearer from cookie| backendquote["backend GET /market-data/.../quote"]
     traderoute -->|Bearer from cookie| backendtrade["backend POST /brokers/.../trades"]
+    agentroute -->|Bearer from cookie| backendagent["backend POST /brokers/.../agent-trades"]
+
+    browser --> adminpage["/admin page\n(proxy.ts requires cookie,\nnot permission)"]
+    adminpage --> usersroute["/api/admin/users(/[userId])"]
+    adminpage --> rolesroute["/api/admin/roles(/[roleId])"]
+    adminpage --> grantsroute["/api/admin/broker-grants(/[grantId])"]
+    usersroute -->|Bearer from cookie| backendusers["backend /admin/users*\n403 if not admin:manage"]
+    rolesroute -->|Bearer from cookie| backendroles["backend /admin/roles*\n403 if not admin:manage"]
+    grantsroute -->|Bearer from cookie| backendgrants["backend /admin/broker-grants*\n403 if not admin:manage"]
 ```
 
 The JWT lives only in an httpOnly cookie set by `/api/auth/login` — the
@@ -177,10 +187,16 @@ browser's own JS never reads it, so it's inert against XSS-driven
 exfiltration. The cost: every proxied route handler must re-derive the
 token from the request cookie and forward it, and there's no CSRF
 token yet (mitigated for now by `sameSite: "lax"`). See D020 for the
-full localStorage-vs-cookie tradeoff. `middleware.ts` gates `/dashboard`
-on cookie presence only — an expired/invalid token still surfaces as the
-backend's real 401 through the route handlers, never guessed by the
-middleware.
+full localStorage-vs-cookie tradeoff. `proxy.ts` (Next.js 16's rename of
+`middleware.ts`) gates `/dashboard` and, as of D023, `/admin` on cookie
+presence only — an expired/invalid token still surfaces as the backend's
+real 401 through the route handlers, never guessed by `proxy.ts`. The
+`/admin` gate is deliberately presence-only, not permission-aware: the
+frontend has no way to know whether the current user actually holds
+`admin:manage` short of asking the backend, so it doesn't guess — the
+nav link is always visible to any authenticated user, and the real
+`admin:manage` check happens once, on the backend, on every `/admin/*`
+call (D023).
 
 ## Deployment
 

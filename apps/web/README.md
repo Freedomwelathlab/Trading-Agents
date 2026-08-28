@@ -1,9 +1,11 @@
 # Trading OS — Web Frontend
 
 Phase 17 first frontend slice: login, backend health status, quote
-lookup, and paper-trade submission. Next.js 16 (App Router), TypeScript,
-Tailwind v4. See `docs/DECISIONS.md` D020 and `docs/CODE_MAP.md`'s
-"Frontend" section in the repo root for the full design rationale.
+lookup, and paper-trade submission — extended in Phase 20 with an admin
+UI (users/roles/broker-grants) and an agent-trades UI. Next.js 16 (App
+Router), TypeScript, Tailwind v4. See `docs/DECISIONS.md` D020/D023 and
+`docs/CODE_MAP.md`'s "Frontend" section in the repo root for the full
+design rationale.
 
 ## Setup
 
@@ -58,19 +60,33 @@ this repo, not a suggestion. `npm run start` serves the production build.
 npm run test
 ```
 
-Vitest + React Testing Library (jsdom environment). Covers the quote
-lookup and trade submission components' success and error-rendering
-paths, including the exact `NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:` sentinel
-strings and a rejected trade's `block_reason` — never a generic "error
-occurred" message. See D020 for why Vitest/RTL was chosen over Playwright
-for this phase.
+Vitest + React Testing Library (jsdom environment). 28 tests total.
+Covers the quote lookup, trade submission, agent-trade, and every admin
+form's success and error-rendering paths, including the exact
+`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:`/`AGENT_OUTPUT_INVALID:` sentinel
+strings, a rejected trade's `block_reason`, and a non-admin's real 403 —
+never a generic "error occurred" message. See D020 for why Vitest/RTL was
+chosen over Playwright for this phase.
 
 ## Auth model
 
 The JWT returned by `POST /auth/login` is stored in an httpOnly cookie
 set by `/api/auth/login`, a Next.js route handler — never in
 `localStorage` or any other browser-readable store. Every other
-authenticated call (`/api/quote/[symbol]`, `/api/trades/[brokerId]`) is
-also a route handler that reads the cookie server-side and attaches
+authenticated call (`/api/quote/[symbol]`, `/api/trades/[brokerId]`,
+`/api/agent-trades/[brokerId]`, `/api/admin/**`) is also a route handler
+that reads the cookie server-side and attaches
 `Authorization: Bearer <token>` before calling the backend. See D020 for
 the full tradeoff against a localStorage-based v1.
+
+## Admin UI
+
+`/admin` (reachable by any authenticated user — see below) has forms for
+every `/admin/*` endpoint: create/update user, create/update role,
+create/revoke broker grant. These require the backend's `admin:manage`
+permission; a non-admin account submitting any of them sees the
+backend's real 403 rendered as-is. The `/admin` nav link on `/dashboard`
+is **always shown**, deliberately — the frontend has no way to know
+whether the current session actually holds `admin:manage` short of
+asking the backend, so it never guesses client-side to decide what to
+render. See D023.
