@@ -15,6 +15,14 @@ class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     live confirmation flow spec Sec56 requires; granting this permission
     today would be a permission that does nothing, not a shortcut to live
     trading."""
+    VIEW_PORTFOLIO = "portfolio:view"
+    """Gates GET /brokers/{broker_id}/portfolio (D022). Deliberately
+    separate from SUBMIT_PAPER_TRADE - viewing a broker's positions/P&L is
+    a strictly weaker capability than moving money in it, and a role that
+    should only report on a broker (e.g. a read-only dashboard user)
+    should not have to also hold trade-submission rights to do so. Still
+    combined with a BrokerGrant for the specific broker (require_broker_access)
+    - this permission alone authorizes viewing no broker's portfolio."""
     ADMIN = "admin:manage"
     """Gates every route under /admin - creating users, roles, and broker
     grants. One coarse permission, not per-resource ones (admin:create_user

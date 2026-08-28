@@ -7,6 +7,7 @@ from apps.api.app.agents.technical_analyst import build_technical_analyst
 from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
+from apps.api.app.api.routes.portfolio import router as portfolio_router
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
 from apps.api.app.auth.routes.login import router as auth_router
@@ -59,6 +60,7 @@ app.include_router(trades_router)
 app.include_router(agent_trades_router)
 app.include_router(admin_router)
 app.include_router(marketdata_router)
+app.include_router(portfolio_router)
 
 
 @app.get("/health")

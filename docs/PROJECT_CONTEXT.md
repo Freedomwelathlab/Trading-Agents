@@ -113,20 +113,37 @@ from them — the LLM never calculates, only narrates. Verified live
 against the real Longbridge API directly (not just fakes): real
 `AAPL.US` closes produced genuine `SMA(20)`/`RSI(14)` values.
 
+Phase 19 (D022) builds the first Portfolio module — deterministic,
+read-only, no LLM: `compute_portfolio_snapshot()` reads
+`broker_accounts`/`broker_positions` (current cash/quantities) and
+replays `orders`/`fills` per symbol for average-cost-basis `avg_cost`/
+realized P&L, exposed via `GET /brokers/{broker_id}/portfolio` (a new,
+weaker `Permission.VIEW_PORTFOLIO` rather than reusing
+`SUBMIT_PAPER_TRADE`). This is the read-only reporting gap
+`docs/MODULE_MAP.md` flagged, not the trade-path "Portfolio Manager" the
+governing spec's Target architecture places between the Risk Engine and
+OMS — that component still doesn't exist and Phase 19 doesn't touch the
+trade path at all. Real-time snapshot only; no persisted history, so
+backtesting/alerts/performance-attribution-over-time are explicit future
+work, not built speculatively.
+
 ## Planned Work
 
-Phase 19+: the rest of the parallel analyst layer (fundamental/news/
+Phase 20+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57),
-research debate, and Portfolio Manager per the governing spec's "Target"
+research debate, persisted historical portfolio snapshots (needed for
+backtesting/alerts/performance-attribution, deferred by Phase 19), and
+the trade-path Portfolio Manager per the governing spec's "Target"
 architecture. Order not finalized. Also pending: re-verify D018/D019's
 live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now
 warranted (deliberately not built in Phase 16 — one analyst has nothing
 to parallelize against). Frontend v2 candidates (D020): admin UI,
-agent-trades UI, broker discovery (no such endpoint exists yet), session
-refresh/expiry UX, a real Docker-backed e2e verification pass, Playwright
-if a protectable flow emerges.
+agent-trades UI, a portfolio view against Phase 19's new endpoint, broker
+discovery (no such endpoint exists yet), session refresh/expiry UX, a
+real Docker-backed e2e verification pass, Playwright if a protectable
+flow emerges.
 
 `apps/web/` (D020, Phase 17) is the first frontend — a minimal Next.js
 app covering login, `/health` display, quote lookup, and paper-trade

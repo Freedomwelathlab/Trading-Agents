@@ -227,6 +227,39 @@ DB engine the same way D007's bug did. See `tests/api/test_trades.py`'s
 `app.router.lifespan_context(app)` since `AsyncClient` doesn't do that
 automatically the way `TestClient` does).
 
+## Portfolio module + route
+
+Purpose: deterministic, read-only position/P&L reporting (D022) — closes
+`docs/MODULE_MAP.md`'s previously-empty Portfolio row. No LLM, no writes,
+no new tables.
+Main files: `apps/api/app/portfolio/models.py` (`PortfolioSnapshot`,
+`PortfolioPosition` — Pydantic, all `Decimal`), `apps/api/app/portfolio/errors.py`
+(`MissingMarkError`, `BrokerAccountNotFoundError`), `apps/api/app/portfolio/snapshot.py`
+(`compute_portfolio_snapshot()`, `replay_symbol_fills()` — the latter a
+pure function, no DB/I/O, directly unit-testable), `apps/api/app/api/routes/portfolio.py`
+(`router`: `GET /brokers/{broker_id}/portfolio`)
+Dependencies: `apps.api.app.db.models` (`BrokerAccount`, `BrokerPosition`,
+`Order`, `Fill` — reads only, no writes), `apps.api.app.api.dependencies.require_broker_access`,
+`apps.api.app.auth.permissions.Permission.VIEW_PORTFOLIO` (new this phase)
+Tests: `tests/portfolio/test_snapshot.py` (6 pure unit tests for
+`replay_symbol_fills()`'s average-cost-basis math, no DB),
+`tests/api/test_portfolio.py` (10 integration tests against real
+Postgres, reusing `tests/api/test_trades.py`'s fixtures via direct import)
+Important: `Permission.VIEW_PORTFOLIO` is deliberately separate from
+`Permission.SUBMIT_PAPER_TRADE` — this route is read-only, so it doesn't
+require trade-submission rights, only its own weaker permission plus the
+same `require_broker_access` grant check every broker-scoped route uses.
+Current marks travel as a JSON body on the GET (`{"marks": {symbol:
+price}}`, same shape as `TradeSubmissionRequest.marks`) since a query
+string can't cleanly carry an arbitrary symbol->price map. Realized P&L
+and `avg_cost` use average-cost basis (not FIFO/LIFO — this schema has no
+per-lot data to support that; see D022's alternatives), replayed from
+`orders`/`fills` in `filled_at` order; current open quantity comes from
+`BrokerPosition` (the execution layer's own authoritative current state,
+D014), not the fills replay, so a snapshot's position sizes always match
+what the execution layer itself believes it holds. A missing mark for a
+currently-held symbol is 400 `DATA_UNAVAILABLE:`, never a guessed price.
+
 ## Market data route
 
 Purpose: read-only `GET /market-data/{symbol}/quote`, the HTTP surface

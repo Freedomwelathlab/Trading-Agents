@@ -140,6 +140,19 @@ The Risk Engine is the load-bearing boundary in this diagram — everything
 above it can be wrong or down without capital risk; everything below it must
 still fail closed if the Risk Engine itself is unreachable.
 
+Phase 19 (D022) built a **read-only Portfolio reporting module**
+(`apps/api/app/portfolio/`, `GET /brokers/{broker_id}/portfolio`) — not
+the "Portfolio Manager" box in the diagram above. That box is a
+trade-path component sitting between the Risk Engine and the OMS,
+participating in the decision of whether/how a specific approved trade
+gets sized and routed; it doesn't exist yet, and nothing in Phase 19
+changes the trade path (`trades.py`'s Risk Engine -> OMS -> Broker
+Adapter flow is untouched). Phase 19's module instead answers "what does
+this broker currently hold and what's its P&L," computed from data the
+existing execution layer already persists, for any caller (a future UI,
+a human checking a broker's state) to read — it never intercepts, sizes,
+or routes a trade.
+
 ## Database
 
 Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,

@@ -334,6 +334,35 @@ Update this after meaningful implementation work — not for every commit.
   running server with no credentials configured: startup logged
   `history_provider=NOT_CONFIGURED`, `agent-trades` correctly 400s on
   D018's LLM-provider gate first.
+- Phase 19: first Portfolio module (2026-08-28, D022). Closes
+  `docs/MODULE_MAP.md`'s Portfolio gap. `apps/api/app/portfolio/` adds
+  `compute_portfolio_snapshot()` — deterministic, no LLM, no writes —
+  reading `broker_accounts`/`broker_positions` for current cash/quantity
+  and replaying `orders`/`fills` per symbol for average-cost-basis
+  `avg_cost`/realized P&L (`replay_symbol_fills()`, a pure function).
+  `GET /brokers/{broker_id}/portfolio` exposes it, gated by a new
+  `Permission.VIEW_PORTFOLIO` (deliberately separate from
+  `SUBMIT_PAPER_TRADE` — read-only reporting shouldn't require trade
+  rights) plus the usual `require_broker_access` grant check; current
+  marks travel as a JSON body (`{"marks": {...}}`) on the GET, same shape
+  as `TradeSubmissionRequest.marks`. A missing mark for a held position is
+  400 `DATA_UNAVAILABLE:`, never a guessed price. 16 new tests (6 pure
+  unit tests hand-verifying the average-cost replay across a
+  buy/buy/sell/sell sequence, 10 integration tests against real Postgres
+  reusing `tests/api/test_trades.py`'s fixtures), 169/169 total tests
+  passing, `ruff check .`/`mypy apps` clean (one pre-existing, unrelated
+  `B905` finding in `indicators.py` predates this phase). Verified live
+  against a real running server (`docker compose -p trading-os-phase19`,
+  remapped host ports to avoid a sibling worktree's port clash): a
+  no-trade broker reports starting cash and empty positions; a real
+  `AAPL` buy followed by a marked portfolio call returned the
+  hand-computed quantity/avg_cost/current_value/unrealized_pnl exactly;
+  omitting the mark for that held position correctly 400'd
+  `DATA_UNAVAILABLE:`. Explicit non-scope, not built: backtesting,
+  alerts, performance-attribution-over-time (all need persisted
+  historical snapshots — a bigger decision for a future phase), and
+  FIFO/LIFO cost basis (this schema has no per-lot data to support it —
+  see D022's alternatives).
 
 ## In Progress
 
@@ -345,10 +374,13 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 19+ (order not finalized): the rest of the parallel analyst layer
+Phase 20+ (order not finalized): the rest of the parallel analyst layer
 (fundamental/news/sentiment — each blocked on a real, wired data source),
-research debate, and Portfolio Manager per the governing spec's "Target"
-architecture. If a second analyst is ever added, revisit whether
+research debate, persisted historical portfolio snapshots (needed for
+backtesting/alerts/performance-attribution — explicitly deferred by
+Phase 19/D022), and FIFO/LIFO cost-basis reporting as a Portfolio module
+alternative to the current average-cost method. If a second analyst is
+ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
 parallelize against). Frontend v2 candidates (D020): `/admin/*` UI,

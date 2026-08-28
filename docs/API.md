@@ -137,6 +137,52 @@ analyst is configured, or its read fails/doesn't parse, the trade
 proceeds exactly as before Phase 16 with no context appended — this never
 produces a new error response, since the analyst is optional.
 
+## `GET /brokers/{broker_id}/portfolio`
+
+Read-only (D022). Requires `Permission.VIEW_PORTFOLIO` (a new, weaker
+permission than `SUBMIT_PAPER_TRADE` — a viewer doesn't need trade
+rights) plus the usual `require_broker_access` grant for this specific
+broker. Current marks travel as a JSON body on the GET
+(`PortfolioMarksRequest`), same `dict[symbol, price]` shape as
+`TradeSubmissionRequest.marks`:
+```json
+{"marks": {"AAPL": "120.00"}}
+```
+`marks` may be omitted entirely (defaults to `{}`) if the broker
+currently holds no open positions.
+
+Response (200, `PortfolioSnapshot`):
+```json
+{
+  "broker_id": "...",
+  "cash": "99000.00000000",
+  "positions": [
+    {
+      "symbol": "AAPL",
+      "quantity": "10.00000000",
+      "avg_cost": "100.00000000",
+      "current_value": "1200.00000000",
+      "unrealized_pnl": "200.0000000000000000",
+      "realized_pnl": "0"
+    }
+  ],
+  "total_equity": "100200.00000000",
+  "total_unrealized_pnl": "200.0000000000000000",
+  "total_realized_pnl": "0"
+}
+```
+`avg_cost`/`realized_pnl` use average-cost basis (not FIFO/LIFO —
+see docs/DECISIONS.md D022), replayed from that symbol's `orders`/`fills`
+history; `quantity` itself is the execution layer's current
+`broker_positions` row, not a replay total. `total_realized_pnl` includes
+every symbol ever traded on this broker, even ones with no position open
+right now (a closed-out symbol's realized P&L isn't lost).
+
+Error responses: 401 (no/invalid token), 403 (missing `VIEW_PORTFOLIO` or
+no `BrokerGrant` for this broker), 404 (unknown `broker_id`), 400
+`DATA_UNAVAILABLE:` if a currently-held symbol's mark is missing from the
+request body — never a guessed or stale price.
+
 ## `POST /admin/users`
 
 Requires `Authorization: Bearer <token>` from a user whose role grants

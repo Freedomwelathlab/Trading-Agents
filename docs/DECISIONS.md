@@ -1017,3 +1017,128 @@ end to end, a level of verification D019 couldn't reach at the time
 `history_provider=NOT_CONFIGURED`, and `POST /brokers/{id}/agent-trades`
 returned 400 `NOT_CONFIGURED` for the LLM provider (D018's gate, checked
 first) rather than any fabricated trade or indicator.
+
+---
+
+**D022 — First Portfolio module: deterministic snapshot from existing tables, average-cost-basis P&L, no new mutable state**
+Date: 2026-08-28
+Decision: `apps/api/app/portfolio/` (`models.py`, `errors.py`, `snapshot.py`)
+adds `PortfolioSnapshot`/`PortfolioPosition` (Pydantic, all money/quantity
+fields `Decimal`) and `compute_portfolio_snapshot(broker_id, session, *,
+marks, default_starting_cash=None)`. It reads only existing rows -
+`broker_accounts` (current cash), `broker_positions` (current
+quantities), and `orders`/`fills` joined and replayed per symbol for
+average cost and realized P&L - and writes nothing; this module has no
+migration, because it needs none. `GET /brokers/{broker_id}/portfolio`
+(`apps/api/app/api/routes/portfolio.py`) exposes it, current marks
+supplied as a JSON body (`{"marks": {symbol: price}}`, same shape as
+`TradeSubmissionRequest.marks`) since GET has no query-string-friendly
+way to carry an arbitrary symbol->price map. Realized/unrealized P&L use
+average-cost basis: `replay_symbol_fills()` (a pure function, no DB, no
+I/O) walks one symbol's fills in `filled_at` order, updating a single
+running `avg_cost` on every BUY (weighted average of existing basis and
+the new fill) and accumulating `realized_pnl += (fill_price - avg_cost) *
+quantity` on every SELL, `avg_cost` itself untouched by sells. Current
+open quantity is taken from `BrokerPosition` (the execution layer's
+already-authoritative current state, D014), not from the fills replay
+total, so a snapshot's position sizes always agree with what the
+execution layer itself believes it holds; `avg_cost` and `realized_pnl`
+have no other source of truth in this schema so they come from the
+replay. A missing mark for a currently-held symbol raises
+`MissingMarkError` -> 400 `DATA_UNAVAILABLE:`, identical discipline to
+`PaperBrokerAdapter.get_account_state()` (spec Sec57) - never a stale or
+guessed price. A new `Permission.VIEW_PORTFOLIO` ("portfolio:view") gates
+the route via `require_broker_access`, deliberately separate from
+`Permission.SUBMIT_PAPER_TRADE` - viewing a broker's positions/P&L is
+strictly weaker than moving money in it, and a read-only reporting role
+should not have to also hold trade rights.
+Reason: `docs/TOKEN_POLICY.md`'s mandatory-deterministic list explicitly
+names P&L, exposure, and position sizing - this had to be plain Python
+over existing rows, never an LLM read of the account state, and
+`docs/MODULE_MAP.md`'s Portfolio row already flagged this gap ("paper
+broker tracks cash/positions itself for now, no separate portfolio
+module"). Average-cost basis was chosen over FIFO/LIFO lot tracking
+because it's the only method this schema can compute without inventing
+data that was never recorded: `BrokerPosition`/`BrokerAccount` already
+hold one running quantity and one running cash balance per symbol/broker,
+no per-lot records exist anywhere (D006/D014), and FIFO/LIFO both require
+knowing which specific historical buy a given sell closes against -
+retrofitting that would mean either a schema change (out of this phase's
+scope) or silently assuming an ordering the data doesn't actually
+establish. A new `Permission` (rather than reusing `SUBMIT_PAPER_TRADE`)
+follows the coarse-but-intentional model D013/D016 already established
+for `ADMIN` - one permission per genuinely distinct capability, not
+per-resource, but capabilities that are actually different (view vs.
+trade) still get different permissions.
+Alternatives: (a) reuse `Permission.SUBMIT_PAPER_TRADE` to gate the
+portfolio route - rejected, it would force every read-only viewer to also
+be grantable trade rights, the opposite of least privilege for what
+should be the least-privileged operation in this API. (b) query params
+for `marks` (`?marks=AAPL:120,MSFT:50`) instead of a JSON body on GET -
+rejected, an ad-hoc delimiter-packed string is worse to validate and
+worse to extend than reusing the exact dict shape `TradeSubmissionRequest`
+already uses, and FastAPI's `Body()` on a GET works fine here (this
+endpoint has no other use for a request body to conflict with). (c) FIFO
+lot tracking via a new `fill_lots`-style table - deferred, real added
+value (matches how most brokers actually report cost basis) but a
+genuine schema change or migration, not something to slip into a report-only
+phase; flagged as explicit future work below. (d) treat a missing
+`broker_accounts` row as zero cash - rejected as a silent default that
+could misrepresent a real balance; `default_starting_cash` exists so a
+caller (the route, using the same `Settings.paper_broker_starting_cash`
+`load_paper_broker` uses) can supply the one value that's actually
+configured rather than this module inventing zero.
+Consequences: this is a read-only, real-time-only report - no
+backtesting, no alerts, no performance-attribution-over-time exist or are
+implied by this phase, and none should be assumed present. Those all need
+persisted historical snapshots (a table, a write path, a retention
+policy), which is a bigger decision deliberately left for a future phase
+rather than being built speculatively here. A caller that wants FIFO/LIFO
+cost basis, not average-cost, has no way to get it from this endpoint
+today - also explicit future work, tracked here rather than silently
+decided by omission.
+Status: Implemented, tested. `tests/portfolio/test_snapshot.py` (6 pure
+unit tests, no DB - hand-verified average-cost-basis scenarios including
+a multi-buy average, a partial sell that leaves `avg_cost` unchanged, a
+losing sell, and a mixed buy/sell/buy/sell sequence verified by hand:
+buy 10@100 then 10@110 -> avg 105; sell 5@120 -> realized +75; sell
+15@90 -> realized -225; total realized -150, final avg_cost 105).
+`tests/api/test_portfolio.py` (10 integration tests against real
+Postgres, reusing `tests/api/test_trades.py`'s fixtures by import per
+this project's established pattern rather than duplicating them): empty
+portfolio reports starting cash and zero P&L; a real position reports
+correct avg_cost/current_value/unrealized_pnl from a supplied mark; a
+missing mark for a held position is 400 `DATA_UNAVAILABLE`; a fully
+closed position leaves zero open positions but correctly retains its
+realized P&L; `VIEW_PORTFOLIO` alone cannot submit a trade (proves the
+permission split is real, not accidental); missing permission, missing
+grant, unknown broker (404), and no token (401) all behave exactly like
+the equivalent trades-endpoint cases. 169/169 total tests passing (159
+pre-existing/unrelated-work plus these 10), `ruff check .` clean on every
+file this phase touched (one pre-existing `B905` finding in
+`apps/api/app/marketdata/indicators.py` predates this phase - see D021's
+own comment there explaining why `strict=` is deliberately omitted - and
+is untouched by this change), `mypy apps` clean (56 source files).
+Verified live: brought up this worktree's own Postgres/Redis/API stack
+via `docker compose -p trading-os-phase19` with host ports remapped in a
+local, uncommitted `docker-compose.override.yml` (`!override` merge key)
+to avoid a port clash with a sibling worktree's already-running
+containers on 5432 - `docker compose up -d --build` to pick up this
+phase's code. Inserted a real user/role/broker/grant via direct SQL
+(bcrypt hash generated locally, same pattern as prior phases' live
+verification), logged in for a real JWT, and confirmed against the
+running server: a broker with no trades reports starting cash
+(`100000`) and empty positions; submitting a real `AAPL` buy through
+`POST /brokers/{id}/trades` then calling `GET
+.../portfolio` with `{"marks":{"AAPL":"120"}}` returned quantity `10`,
+avg_cost `100`, current_value `1200`, unrealized_pnl `200`, matching the
+hand-computed expectation exactly; calling the same endpoint with no
+marks while still holding that position returned 400
+`DATA_UNAVAILABLE: No mark supplied for open position 'AAPL'`; a request
+with no token returned 401; an unknown broker id returned 404. All
+inserted SQL rows were deleted afterward, `docker compose down -v`
+removed every container/volume/network this phase created, and the
+disposable `.venv19`/`.env`/`docker-compose.override.yml` were all
+removed - nothing from this phase's local verification setup was left on
+disk or in git status, and the sibling `trading-os-phase21` Postgres
+container on port 5432 was never touched.
