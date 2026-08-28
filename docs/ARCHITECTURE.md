@@ -153,6 +153,19 @@ existing execution layer already persists, for any caller (a future UI,
 a human checking a broker's state) to read — it never intercepts, sizes,
 or routes a trade.
 
+Phase 25 (D027) extended the same module with persisted, append-only
+snapshot history — `portfolio_snapshots`/`portfolio_snapshot_positions`,
+written only when a caller explicitly calls
+`POST /brokers/{broker_id}/portfolio/snapshots` (never automatically;
+no scheduler exists) and read back via
+`GET /brokers/{broker_id}/portfolio/history`. This is still the same
+read-only reporting module, not the trade-path "Portfolio Manager" box —
+it closes the gap D022 originally flagged (backtesting, alerting, and
+performance-attribution all need a real time series, not just a
+point-in-time read), but none of those consumers are built yet; Phase 25
+only adds the ability to write and read the history they'll eventually
+need.
+
 ## Database
 
 Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,

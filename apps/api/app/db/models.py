@@ -244,3 +244,66 @@ class Fill(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     fill_price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PortfolioSnapshotRow(Base):
+    """Append-only persisted history of a `compute_portfolio_snapshot()`
+    call (docs/DECISIONS.md D027) - like Order/Fill, never updated after
+    insert. Each row is only ever written from that function's real output
+    (same DATA_UNAVAILABLE-on-missing-mark discipline as the live
+    endpoint); nothing here is fabricated, interpolated, or written by a
+    scheduler (D027 explicitly scopes this to caller-triggered snapshots
+    only).
+
+    Named with a `Row` suffix (matching `OrderRow`/`FillRow`'s aliasing in
+    apps/api/app/portfolio/snapshot.py) to keep it distinct from the
+    Pydantic `PortfolioSnapshot` in apps/api/app/portfolio/models.py -
+    that class is the computed, in-memory value; this class is its
+    persisted-row counterpart, a different concern.
+    """
+
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (
+        Index("ix_portfolio_snapshots_broker_captured", "broker_id", "captured_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    broker_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brokers.id"), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    cash: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    total_equity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    total_unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    total_realized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+
+    positions: Mapped[list["PortfolioSnapshotPositionRow"]] = relationship(
+        order_by="PortfolioSnapshotPositionRow.symbol"
+    )
+
+
+class PortfolioSnapshotPositionRow(Base):
+    """One row per open position captured in a given `PortfolioSnapshotRow`
+    (docs/DECISIONS.md D027). A child table, not a JSON column on the
+    parent - see D027 for the full reasoning; in short, this makes
+    "show me AAPL's position history across every snapshot" a plain
+    indexed query (`ix_portfolio_snapshot_positions_symbol`) instead of a
+    JSON-path scan, matching every other per-symbol time series in this
+    schema (Order/Fill)."""
+
+    __tablename__ = "portfolio_snapshot_positions"
+    __table_args__ = (
+        Index("ix_portfolio_snapshot_positions_snapshot", "snapshot_id"),
+        Index("ix_portfolio_snapshot_positions_symbol", "symbol"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolio_snapshots.id"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    avg_cost: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    current_value: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
