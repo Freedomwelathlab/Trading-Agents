@@ -54,3 +54,24 @@ class BacktestResult(BaseModel):
     """One point per trading day in [start_date, end_date], computed via
     the real PaperBrokerAdapter's cash+marks math (D014) at that day's
     close - never interpolated or estimated between days."""
+
+    portfolio_modified_trades: int = 0
+    """How many risk-approved signals the trade-path Portfolio Manager
+    (D029) resized during this run. Counts MODIFY decisions, not fills: a
+    modified quantity is re-gated by the Risk Engine before it fills, and
+    the subset that the re-gate then blocked is reported separately as
+    `portfolio_modify_risk_blocked_trades`. 0 when no portfolio limits were
+    supplied to the engine - which is NOT the same as 'the Portfolio
+    Manager approved everything'; see docs/DECISIONS.md D035."""
+
+    portfolio_modify_risk_blocked_trades: int = 0
+    """The subset of `portfolio_modified_trades` whose resized quantity was
+    then REJECTED by the Risk Engine's mandatory re-evaluation, so no fill
+    happened at all. Reported separately so a modify that filled and a
+    modify that was subsequently blocked are never conflated."""
+
+    portfolio_rejected_trades: int = 0
+    """How many risk-approved signals the Portfolio Manager rejected
+    outright (no fill). Distinct from a Risk Engine rejection, which this
+    result does not count at all - the two gates are separate and an audit
+    reader must be able to tell which one stopped a trade (D029)."""
