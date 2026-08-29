@@ -2645,3 +2645,164 @@ containers on ports 5432/6379, the uvicorn process on port 8000, and the
 Next.js dev server on port 3005 — was confirmed still up and untouched
 after cleanup; nothing from this pass was left running.
 Status: Implemented and verified as above.
+
+---
+
+**D037 - Backtest frontend: a dashboard panel that renders the real BacktestResult, including the D035 Portfolio Manager counters, and refuses to draw a curve the backend did not produce**
+Date: 2026-08-29
+Decision: `apps/web/` now renders `POST /backtests`, closing the gap D035's
+own "Not verified live" section recorded verbatim ("No frontend work was
+done (`apps/web/` still does not render the backtest response at all, let
+alone the new counters)"). Three additions, no backend change of any kind:
+`apps/web/app/api/backtests/route.ts` (a route-handler proxy),
+`apps/web/components/BacktestPanel.tsx` (form + result rendering), and one
+line wiring the panel into `app/dashboard/page.tsx`.
+
+Reason, on the judgment calls this phase asked for:
+- Why a dashboard panel rather than a new `/backtest` route: every other
+  authenticated feature in this app is a section on `/dashboard`, and the
+  panel needs nothing a dedicated route would give it - no path params, no
+  server-side data fetch, no separate `proxy.ts` matcher entry (the
+  existing `/dashboard/:path*` gate already covers it). A new route would
+  have been a second place to keep the auth gate correct for no gain.
+- Why the route handler takes no `brokerId` segment, unlike its siblings:
+  the backend endpoint is deliberately not broker-scoped (D025) because a
+  backtest builds its own disposable in-memory paper broker. Inventing a
+  broker id in the URL to look consistent with `/api/trades/[brokerId]`
+  would have implied a broker association the backend does not have and
+  the run does not use.
+- Why the equity chart is hand-rolled inline SVG: the same reason
+  `PortfolioHistoryChart.tsx` is (D031) - a single-series line does not
+  justify a new npm dependency, and this phase's scope was explicitly
+  no-new-dependency. `buildBacktestPoints()` mirrors that component's
+  `buildPoints()` deliberately, including its flat-series guard (a span of
+  0 is drawn as a centred horizontal line rather than dividing by zero),
+  so the two stay comparable when either changes. A backtest that never
+  traded really does produce a flat curve; that is a result, not an error.
+- Why the x axis is by index rather than by calendar date: the curve
+  carries one point per *trading* day (D025), so a calendar-scaled axis
+  would draw gaps for weekends and holidays and imply the simulation
+  covered days it did not. Same reasoning as D031's index axis, different
+  cause.
+- Why all three D035 counters are always rendered, including at zero: the
+  counters are the only audit surface a backtest can honestly offer
+  (D035's rejected alternative (d) - no per-trade portfolio decision is
+  persisted, by construction), and hiding a zero would make "the Portfolio
+  Manager changed nothing" indistinguishable from "the panel decided this
+  was not worth showing". A caption states plainly that all-zero counters
+  do NOT by themselves mean every trade was approved - the exact caveat
+  D035's own docstring makes on `portfolio_modified_trades`.
+- Why the three counters are never summed into one "blocked" number: D035
+  rejected that collapse for the response model and the same reasoning
+  applies to its display; a MODIFY that filled smaller and a MODIFY whose
+  re-gate then blocked it are different outcomes. The panel also states
+  that Risk Engine rejections are counted by none of the three, so a reader
+  cannot mistake a quiet Portfolio Manager for a quiet Risk Engine (D029).
+- Why `win_rate_pct` is shown as "n/a (no completed round trips)" when
+  `num_trades` is 0: the backend returns `Decimal(0)` there and documents
+  it as deliberately-not-fabricated, but a bare "0" in a UI reads as "0% of
+  your trades won", which is a claim about trades that do not exist.
+  Rendering the backend's own meaning is not the same as rendering its
+  literal digit.
+- Why `formatDetail()` exists: FastAPI returns `detail` as a string for the
+  hand-raised sentinels but as a list of objects for a 422. Rendering the
+  latter directly produces "[object Object]", which would hide a real
+  validation error behind a rendering bug. It is flattened to `loc: msg`
+  pairs and never replaced with a friendlier invented message.
+- Why the form defaults `end_date` to today (UTC): it is the only value the
+  endpoint accepts (D025), so defaulting to anything else would ship a form
+  whose out-of-the-box submission is guaranteed to fail. The field stays
+  editable and a wrong value still surfaces the backend's real
+  `UNSUPPORTED_DATE_RANGE:` - the default is a convenience, not a
+  client-side validation that second-guesses the backend.
+Alternatives: (a) validate `end_date == today` client-side and block
+submission - rejected: it would duplicate a backend rule in a second place
+that can drift, and would hide the real sentinel from the user. (b) Add a
+charting library - rejected, out of scope and unnecessary for one line.
+(c) Render a zeroed or placeholder result when the backend returns
+`NOT_CONFIGURED:` so the layout "looks complete" - rejected outright; that
+is precisely the fabrication TRADING_SAFETY forbids, and a test pins that
+neither the curve nor the counters appear on any error. (d) Collapse the
+counters into a single "Portfolio Manager intervened: yes/no" badge -
+rejected, see above.
+Consequences: the D035 gap is closed - a user can now see, in the UI, when
+the Portfolio Manager (not just the Risk Engine) intervened during a run.
+No backend file was touched, so no backend test count changes. The frontend
+suite grows from 69 to 89 tests. `docs/API.md` needed no edit: the endpoint
+contract is unchanged and was already documented there in full.
+Numbering note: this worktree (`phase-31-backtest-frontend`) branched from
+`main` at D036 and claims **D037**, developed in parallel with sibling
+phases 32 and 33. It follows the same convention D030/D031/D032 and D035
+established for concurrent worktrees colliding on a D-number: the number
+claimed at authoring time stands, and a decision is never renumbered after
+the fact even if a lower number turns out to be free at merge.
+Status: Implemented, tested: 20 new tests in
+`apps/web/test/BacktestPanel.test.tsx` - the posted request shape (exactly
+the four documented fields, with `end_date` defaulted to today UTC), a real
+equity curve rendering one vertex per trading day with all five headline
+metrics, the D035 counters rendering non-zero values without collapsing
+them, the counters rendering at zero alongside the "zero is not approval"
+caveat, `win_rate_pct` shown as n/a for zero round trips, a flat curve
+drawn flat rather than dividing by zero, and every real error sentinel on
+its own: 400 `NOT_CONFIGURED:`, 400 `UNSUPPORTED_DATE_RANGE:`, 400
+`DATA_UNAVAILABLE:`, 502 `DATA_UNAVAILABLE:`, a 422 list-shaped detail
+rendered legibly instead of "[object Object]", the 401 -> login redirect,
+and a network failure - each asserting that no curve and no counters are
+drawn. Plus unit tests for `buildBacktestPoints()`, `formatDetail()` and
+the UTC date helpers. **89/89 frontend tests passing** (69 pre-existing +
+20 new), `npm run build` clean with zero TypeScript errors and
+`/api/backtests` registered as a real route. `npx eslint .` reports 2
+errors and 1 warning, all pre-existing in `components/SessionStatus.tsx`
+and `lib/session.ts` - files this phase did not touch; the three files it
+added are clean.
+Verified live: this worktree's own `docker compose -p tradingos-phase31`
+stack with host ports remapped to 5451/6391/8031 via a throwaway override
+file (the tracked `docker-compose.yml` was never edited; the `!override`
+YAML tag was needed because Compose appends `ports` sequences rather than
+replacing them), chosen to avoid both the sibling phase worktrees and the
+user's own default-port dev stack on 5432/6379/8000, which was left running
+and untouched throughout. Real Alembic `0001`->`0009` against a fresh
+database, a directly-inserted test user with a real bcrypt hash, and
+`npm run dev` on port 3031 pointed at the containerized API via
+`API_BASE_URL`. In a real browser: logged in through the real login form
+(real `POST /auth/login`, real httpOnly cookie, real redirect to
+`/dashboard`), saw the Backtest panel render with `end_date` correctly
+defaulted to today UTC, and submitted a real backtest - the full chain of
+real React handler -> real Next route handler reading the real httpOnly
+cookie -> real containerized FastAPI returned
+`HTTP 400: NOT_CONFIGURED: no history provider.`, which the panel rendered
+verbatim with no equity curve and no counters drawn. A second real
+submission with the dates inverted rendered
+`HTTP 422: body: Value error, end_date must be after start_date` - proving
+`formatDetail()`'s list handling against the real FastAPI response shape,
+not a fixture. `POST /api/backtests` with no cookie returned a real 401
+`Not authenticated` from the route handler without ever reaching the
+backend. The same three outcomes were independently confirmed by curl
+directly against the containerized API on port 8031 (401 without a token,
+400 `NOT_CONFIGURED:` with a real token, 422 for the inverted range).
+Honest note on how the button was clicked: the Browser pane in this
+environment could not composite frames, so `computer{action:"screenshot"}`
+timed out and coordinate clicking was unavailable. The two form submissions
+above were therefore triggered by dispatching a real click on the real
+`Run backtest` button (and real `input` events on the real date fields)
+from the page console, which runs the component's genuine React submit
+handler and its genuine `fetch` - every layer below the synthetic click was
+the real one. This is a limitation of the automation harness, not a stub in
+the app.
+Not verified live: the success path. Exactly as D025 and D035 recorded, no
+usable market-data vendor credentials were readable in this session, so the
+containerized API honestly reported `NOT_CONFIGURED` and no real equity
+curve, real metrics, or real non-zero Portfolio Manager counters could be
+produced to render. The success-path rendering - the curve, the five
+headline metrics, and all three D035 counters - is covered by component
+tests against a mocked backend response whose values are the ones
+documented in `docs/API.md` and hand-derived in D035's own unit tests, NOT
+by a live run. The `UNSUPPORTED_DATE_RANGE:` and `DATA_UNAVAILABLE:`
+sentinels are likewise test-covered only: both are raised downstream of the
+`NOT_CONFIGURED` guard in `backtests.py`, so with no history provider
+configured they are unreachable live by construction.
+Cleanup: the `tradingos-phase31` containers, their volume, the throwaway
+`docker-compose.phase31.yml`, the test-only `.env`, and the `next dev`
+process on port 3031 were all removed after the run. The user's own
+default-port stack was confirmed still running and untouched afterward.
+Status: Implemented and verified as above.

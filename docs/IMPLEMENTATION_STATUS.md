@@ -732,6 +732,41 @@ Update this after meaningful implementation work — not for every commit.
   runs above used an injected fake `HistoryProvider`'s synthetic closes —
   unlike D025, which was verified against real Longbridge history. See D035.
 
+- **Phase 31 — backtest frontend (2026-08-29, D037).** Closes the gap D035
+  recorded verbatim in its own "Not verified live" note: `apps/web/` did not
+  render the backtest response at all, let alone the new Portfolio Manager
+  counters. Adds `app/api/backtests/route.ts` (the same route-handler-proxy
+  + httpOnly-cookie pattern every other authenticated feature uses, minus a
+  `brokerId` segment because `POST /backtests` is deliberately not
+  broker-scoped per D025), `components/BacktestPanel.tsx`, and one line
+  wiring the panel into `/dashboard`. Renders the real `BacktestResult`:
+  a hand-rolled inline-SVG equity curve in the same style as
+  `PortfolioHistoryChart.tsx` (no new npm dependency, one vertex per real
+  trading day, index x-axis, flat curves drawn flat), the five headline
+  metrics, and all three D035 counters — `portfolio_modified_trades`,
+  `portfolio_modify_risk_blocked_trades`, `portfolio_rejected_trades` —
+  never collapsed into one number, always shown even at zero, with a caption
+  stating that Risk Engine rejections are a separate gate counted by none of
+  them and that all-zero does not by itself mean everything was approved.
+  Every real error sentinel is surfaced verbatim and no error path ever
+  draws a curve or counters. **No backend change was needed or made.**
+  **89/89 frontend tests passing** (69 pre-existing + 20 new in
+  `test/BacktestPanel.test.tsx`), `npm run build` clean with zero TypeScript
+  errors. **Verified live** against this worktree's own Docker stack (ports
+  remapped to 5451/6391/8031; torn down afterwards) with `npm run dev` on
+  3031: real Alembic `0001`->`0009`, a seeded user, a real browser login,
+  and real submissions through the real UI rendering
+  `HTTP 400: NOT_CONFIGURED: no history provider.` and
+  `HTTP 422: body: Value error, end_date must be after start_date`, plus a
+  real 401 from the route handler with no cookie.
+  **Not verified live:** the success path — no market-data vendor
+  credentials were readable in this session (the same limitation D025/D035
+  recorded), so no real equity curve, real metrics, or real non-zero
+  counters could be produced. Success-path rendering, and the
+  `UNSUPPORTED_DATE_RANGE:`/`DATA_UNAVAILABLE:` sentinels (both unreachable
+  live behind the `NOT_CONFIGURED` guard), are covered by component tests
+  against mocked responses only. See D037.
+
 ## In Progress
 
 Nothing currently mid-implementation.
@@ -923,12 +958,14 @@ and 403/401 on all three routes) and `GET /auth/session` (6, DB-backed —
 real expiry/issued_at bounds, no token material in the response, and 401
 for a missing, malformed, expired, or deactivated-user token).
 
-Frontend (`apps/web`, Vitest + React Testing Library): **61 tests**, all
-passing — 34 pre-existing plus 27 added in Phase 28 across
-`test/PortfolioHistoryChart.test.tsx`, `test/AdminListings.test.tsx`, and
-`test/SessionStatus.test.tsx`, covering success, empty results, real
-error sentinels, 403, 404, the 401→login redirect, and network failure
-for every new component.
+Frontend (`apps/web`, Vitest + React Testing Library): **89 tests**, all
+passing. 61 through Phase 28 — 34 pre-existing plus 27 added in Phase 28
+across `test/PortfolioHistoryChart.test.tsx`, `test/AdminListings.test.tsx`,
+and `test/SessionStatus.test.tsx`; 8 more from Phase 29's broker discovery
+(`test/BrokerDiscovery.test.tsx`), bringing the pre-Phase-31 total to 69;
+and 20 added in Phase 31 (`test/BacktestPanel.test.tsx`, D037). Between
+them they cover success, empty results, real error sentinels, 403, 404,
+422, the 401→login redirect, and network failure for every component.
 
 ## Known Issues
 

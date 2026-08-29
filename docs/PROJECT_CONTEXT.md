@@ -187,6 +187,26 @@ work rather than solved by fabricating dates on real prices. Live-verified
 against real Longbridge data: a real `AAPL.US` backtest produced a
 genuine equity curve with one real, risk-gated trade.
 
+Phase 31 (D037) puts a **frontend on that endpoint**, closing the gap
+D035 recorded honestly at the time ("`apps/web/` still does not render
+the backtest response at all, let alone the new counters").
+`components/BacktestPanel.tsx` on `/dashboard`, behind
+`app/api/backtests/route.ts` — the same route-handler-proxy +
+httpOnly-cookie pattern every other authenticated feature uses, minus a
+`brokerId` segment because the endpoint is deliberately not broker-scoped
+(D025). It renders the real `BacktestResult`: a hand-rolled inline-SVG
+equity curve in `PortfolioHistoryChart.tsx`'s style (no new npm
+dependency, one vertex per real trading day), the headline metrics, and
+all three of D035's Portfolio Manager counters — kept distinct, always
+shown even at zero, captioned to say that Risk Engine rejections are a
+separate gate counted by none of them. Every real error sentinel is
+surfaced verbatim and no error path ever draws a curve. No backend change
+was needed. Live-verified only as far as this environment honestly
+allows: with no market-data vendor credentials readable, the real chain
+(browser -> route handler -> containerized API) rendered a real
+`NOT_CONFIGURED: no history provider.` and a real 422; the success path
+is component-test-covered against mocked responses, not a live run.
+
 Phase 26 (D029) builds the trade-path **Portfolio Manager** — the box
 every prior phase's docs kept flagging as missing. `apps/api/app/
 portfolio_manager/` is a pure `decide(proposal, portfolio, limits) ->
@@ -213,10 +233,11 @@ Phase 29+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57) and
 research debate. Order not finalized. Both the trade-path Portfolio
 Manager (Phase 26/D029) and automatic/scheduled portfolio snapshotting
-(Phase 27/D030) are now done — remaining follow-ons: `apps/web/` does not
-yet render the Portfolio Manager's verdict (it shows the risk verdict
-only), `backtesting/` calls `evaluate_trade()` directly so backtests do
-not model portfolio-level constraints, the scheduler's interval is
+(Phase 27/D030) are now done — remaining follow-ons: the trade forms in
+`apps/web/` do not yet render the Portfolio Manager's verdict for a live
+trade (they show the risk verdict only; the *backtest* panel does show its
+aggregate counters since Phase 31/D037, and `backtesting/` has gated on the
+Portfolio Manager since Phase 30/D035), the scheduler's interval is
 plain wall-clock (not market-hours-aware), and each API worker process
 runs its own independent scheduler loop (so >1 worker would multiply
 snapshot rows). Also pending: re-verify D018/D019's
