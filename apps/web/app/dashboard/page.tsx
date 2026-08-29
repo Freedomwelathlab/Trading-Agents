@@ -6,6 +6,7 @@ import TradeForm from "@/components/TradeForm";
 import AgentTradeForm from "@/components/AgentTradeForm";
 import PortfolioView from "@/components/PortfolioView";
 import PortfolioHistoryChart from "@/components/PortfolioHistoryChart";
+import BacktestPanel from "@/components/BacktestPanel";
 import SessionStatus from "@/components/SessionStatus";
 import LogoutButton from "@/components/LogoutButton";
 
@@ -39,6 +40,9 @@ export default function DashboardPage() {
       <AgentTradeForm />
       <PortfolioView />
       <PortfolioHistoryChart />
+      {/* Not broker-scoped, unlike everything above it: a backtest builds
+          its own throwaway paper broker and writes nothing (D025). */}
+      <BacktestPanel />
     </main>
   );
 }
