@@ -63,3 +63,27 @@ class BrokerGrantResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     broker_id: uuid.UUID
+
+
+class ListUsersResponse(BaseModel):
+    """Paginated listing envelope, same `{items, limit, offset}` shape the
+    portfolio history endpoint uses (D027) - see docs/DECISIONS.md D030.
+    Reuses CreateUserResponse per row rather than defining a second user
+    DTO, so a listed user can never accidentally expose a field the
+    create/update responses deliberately omit (password, hash)."""
+
+    users: list[CreateUserResponse]
+    limit: int
+    offset: int
+
+
+class ListRolesResponse(BaseModel):
+    roles: list[CreateRoleResponse]
+    limit: int
+    offset: int
+
+
+class ListBrokerGrantsResponse(BaseModel):
+    grants: list[BrokerGrantResponse]
+    limit: int
+    offset: int

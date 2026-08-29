@@ -36,11 +36,22 @@ def create_access_token(user_id: uuid.UUID, settings: Settings) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def decode_access_token(token: str, settings: Settings) -> uuid.UUID:
+def decode_access_token_claims(token: str, settings: Settings) -> dict:
+    """Full verified claim set (`sub`/`iat`/`exp`). Signature and expiry are
+    verified exactly as in decode_access_token - this is the same check,
+    just without discarding everything but the subject. Used by
+    GET /auth/session (D031) to report a real expiry to the UI; it never
+    returns or echoes the token itself."""
     try:
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        return dict(
+            jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        )
     except jwt.PyJWTError as exc:
         raise InvalidTokenError(str(exc)) from exc
+
+
+def decode_access_token(token: str, settings: Settings) -> uuid.UUID:
+    payload = decode_access_token_claims(token, settings)
 
     subject = payload.get("sub")
     if subject is None:
