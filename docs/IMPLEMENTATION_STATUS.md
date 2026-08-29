@@ -768,27 +768,37 @@ optimization.
 
 ## Tests
 
-Each of Phase 26 and Phase 27 was built in its own parallel worktree
-against the same 208-test baseline and independently confirmed a real
-`pytest tests/ -q` collected count within its own worktree: **234** for
-Phase 26 (208 baseline + 26 new — 13 pure unit tests for the trade-path
-Portfolio Manager in `tests/portfolio_manager/test_manager.py`, 5 for its
-OMS wiring in `tests/oms/test_service_portfolio_manager.py` including one
-proving a Portfolio-Manager-resized quantity is itself re-gated by the
-Risk Engine, 4 real-Postgres persistence tests for the `orders.portfolio_*`
-audit columns in `tests/db/test_portfolio_decision_persistence.py`, and 4
-real-Postgres HTTP integration tests in
-`tests/api/test_trades_portfolio_manager.py`), and **228** for Phase 27
-(208 baseline + 20 new — 8 unit in `tests/portfolio/test_scheduler.py`, 12
-DB-backed integration in `tests/api/test_snapshot_scheduler.py` covering
-scheduled-snapshot capture, each typed skip reason, and the running
-asyncio task writing a real row on its timer). Neither number is the real
-post-merge total — that requires a full `pytest tests/ -q` run against
-main once both worktrees (and any sibling phases merged alongside them)
-are combined, since the two additions are disjoint test files with no
-overlap. This section will be corrected with that real merged count as
-part of the standard full-suite verification pass that follows every
-merge in this project (see the Phase 23/24/25 precedent below).
+Each of Phase 26, Phase 27, and Phase 28 was built in its own parallel
+worktree against the same 208-test baseline and independently confirmed a
+real `pytest tests/ -q` collected count within its own worktree: **234**
+for Phase 26 (208 baseline + 26 new — 13 pure unit tests for the
+trade-path Portfolio Manager in `tests/portfolio_manager/test_manager.py`,
+5 for its OMS wiring in `tests/oms/test_service_portfolio_manager.py`
+including one proving a Portfolio-Manager-resized quantity is itself
+re-gated by the Risk Engine, 4 real-Postgres persistence tests for the
+`orders.portfolio_*` audit columns in
+`tests/db/test_portfolio_decision_persistence.py`, and 4 real-Postgres
+HTTP integration tests in `tests/api/test_trades_portfolio_manager.py`),
+**228** for Phase 27 (208 baseline + 20 new — 8 unit in
+`tests/portfolio/test_scheduler.py`, 12 DB-backed integration in
+`tests/api/test_snapshot_scheduler.py` covering scheduled-snapshot
+capture, each typed skip reason, and the running asyncio task writing a
+real row on its timer), and **226** for Phase 28 (frontend-heavy;
+`GET /auth/session` and the admin listing endpoints added their own
+backend test files independently of the other two worktrees). None of
+those three numbers was the real post-merge total, since each worktree
+only saw its own disjoint additions layered on the shared 208 baseline,
+not the other two phases' new tests combined.
+
+That real merged total has since been confirmed: **272 tests, all
+passing**, by a full from-scratch backend verification of the fully-merged
+main branch (fresh venv, `ruff check .`, `mypy apps`, real Postgres/Redis
+via `docker compose`, `alembic upgrade head` through migration 0009 —
+`orders.portfolio_*` from Phase 26 — and `pytest tests/ -q`) run
+2026-08-29 after Phases 26/27/28 were merged. `ruff` and `mypy` were both
+clean and no cross-phase integration bug was found this time — see
+docs/DECISIONS.md D033 for the full verification record and D028 for the
+precedent this pass follows.
 
 208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real

@@ -2282,3 +2282,54 @@ renumbered to **D032** at merge time since D031 was reassigned to this
 same worktree's admin-listings decision above, which itself moved from
 D030 to D031 because sibling Phase 27 also claimed D030.
 Status: Implemented and verified as above.
+
+---
+
+**D033 — Full post-merge backend verification (Phases 26/27/28): clean run, real merged test count established**
+Date: 2026-08-29
+Decision: Ran a from-scratch backend verification of the fully-merged
+main branch at `c1b06fa` (Phases 26 portfolio-manager, 27
+scheduled-snapshots, and 28 frontend-v3 all merged), following the exact
+D028 precedent: fresh venv, `pip install -e ".[dev]"`, `ruff check .`,
+`mypy apps`, real Postgres/Redis via `docker compose up -d postgres
+redis`, `alembic upgrade head`, then `pytest tests/ -q` — rather than
+trusting any of the three phases' own independent worktree counts (234
+for Phase 26, 228 for Phase 27, 226 for Phase 28), none of which reflects
+the other two phases' additions layered on top.
+Verified live: `ruff check .` reported "All checks passed!" with zero
+findings. `mypy apps` reported "Success: no issues found in 69 source
+files" with zero findings. `alembic upgrade head` applied all nine
+migrations in sequence against a real freshly-created Postgres 16
+(timescaledb image) database with no manual intervention, including
+migration 0009 (`orders.portfolio_*` — the Phase 26 trade-path Portfolio
+Manager audit columns, D029) landing cleanly on top of 0001-0008.
+`pytest tests/ -q` collected and ran the entire suite against that same
+real Postgres/Redis pair: **272 tests, all passing**, 3 warnings (two
+pre-existing `InsecureKeyLengthWarning`s from a short test-only JWT
+secret in `tests/auth/test_security.py`, one `StarletteDeprecationWarning`
+from `fastapi.testclient`'s `httpx` usage — neither new nor actionable),
+zero failures, zero errors, in a single run.
+Reason: unlike D028, this pass found no real cross-phase integration bug
+— ruff, mypy, migrations, and the full test suite were all clean on the
+first run with no code changes required. This is itself the useful
+result to record: it confirms Phases 26/27/28 compose correctly on `main`
+with no interaction defects between the trade-path Portfolio Manager's
+`orders.portfolio_*` audit columns (D029), the scheduled-snapshot
+background task (D030), and the new admin-listing/session-expiry surface
+(D031/D032), and it replaces the three phases' self-reported per-worktree
+placeholder counts in docs/IMPLEMENTATION_STATUS.md with one real number
+collected from the actual merged codebase.
+Alternatives: none considered — this is a verification pass, not a
+design decision; the only question was whether to trust the per-worktree
+counts (rejected, per D028's own reasoning: a worktree's own count can
+never reflect what changes once it's combined with sibling phases) versus
+re-deriving the true count from a clean-room run against real
+infrastructure, which is what was done.
+Consequences: docs/IMPLEMENTATION_STATUS.md's Tests section now states
+272 as the confirmed post-Phase-26/27/28-merge total, with the prior
+234/228/226 per-worktree figures kept alongside it for provenance but
+explicitly marked as not the merged total. The verification venv
+(`.venv_verify`), the test-only `.env` copied from `.env.example`, and
+the `postgres`/`redis` docker containers and their volume were all
+removed after the run; nothing from this pass was left running.
+Status: Implemented and verified as above.
