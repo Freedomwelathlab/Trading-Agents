@@ -1885,3 +1885,117 @@ the Phase 23/24/25 merge to this run's actual collected total. Docker
 containers/volumes, the test-only `.env`, and the verification venv were
 all removed afterward; nothing from this pass was left running.
 Status: Implemented and verified as above.
+
+---
+
+**D030 — Admin listing endpoints: close D013's no-listing scope cut, read-only and paginated on the same limit/offset convention as D027**
+Date: 2026-08-29
+Decision: Added `GET /admin/users`, `GET /admin/roles`, and
+`GET /admin/broker-grants` to `apps/api/app/api/routes/admin.py`. All
+three are read-only, carry no new permission (they inherit the router's
+existing `require_permission(Permission.ADMIN)` dependency, so they are
+gated exactly as every write route in that file already is), and
+paginate with `limit` (default 50, max 500) / `offset` (default 0) —
+byte-for-byte the same convention and the same default/ceiling values as
+Phase 25/D027's `GET /brokers/{id}/portfolio/history`, so this codebase
+has one pagination story rather than two. Each listing has a fixed,
+total sort so `offset` paging is deterministic: users by `email`, roles
+by `name`, grants by `(user_id, broker_id)`. Rows reuse the existing
+`CreateUserResponse`/`CreateRoleResponse`/`BrokerGrantResponse` DTOs
+rather than defining parallel "list row" models.
+Reason: D013 deliberately shipped no listing endpoints, and D023/D026
+both re-flagged the consequence: the admin UI could create a user, a
+role, or a grant, but `PATCH /admin/users/{id}` and
+`DELETE /admin/broker-grants/{grant_id}` need an id the operator had no
+way to discover through the product — the only route to one was a direct
+DB query. That made the D016 update/deactivate surface effectively
+unusable for anyone not holding a psql prompt. Reusing the existing
+response DTOs is the security-relevant half of the decision: a separate
+list-row model is where a `hashed_password` field eventually gets added
+by accident, whereas `CreateUserResponse` is already the model that
+deliberately has no such field (see its docstring).
+Alternatives considered: a single `GET /admin` aggregate returning all
+three collections — rejected, it would force an unbounded response or a
+three-way pagination scheme, and the frontend refreshes the three lists
+independently anyway. Filter/search params (`?email=`, `?user_id=`) —
+rejected for this pass as scope creep: a caller pages rather than
+queries, and adding filters later is additive and non-breaking, whereas
+shipping a half-designed query grammar now is not. Cursor pagination —
+rejected, it would diverge from D027's offset convention for a dataset
+whose realistic size is dozens of rows.
+Consequences: `admin:manage` now reads as well as writes; a compromised
+admin token can enumerate every email in the system, which it could
+already do indirectly via the 409-on-duplicate-email path, so this
+widens convenience rather than the trust boundary. Still deliberately
+absent: listing endpoints for brokers, orders, or fills (nothing in this
+phase needs them), and any way to delete a user or role (unchanged from
+D016). Developed in a worktree in parallel with sibling phases 26 and
+27, which is why this entry takes D030 rather than D029 — the numbers
+were partitioned up front so parallel branches could not collide on one.
+Verified: 12 new integration tests in `tests/api/test_admin_listings.py`
+against real Postgres (real seeded rows appear; no password/hash field
+on any row; two single-row pages reassemble into the two-row page in
+order; `limit=501` and `offset=-1` are both 422; 403 for a non-admin and
+401 for no token, on all three routes), plus real curl calls against the
+running stack.
+Status: Implemented and verified as above.
+
+---
+
+**D031 — Session expiry UX: a read-only GET /auth/session for expiry metadata, and a shared 401 -> login redirect, rather than a client-side countdown or a refresh-token mechanism**
+Date: 2026-08-29
+Decision: Two parts. (1) Backend: a new `GET /auth/session`
+(`apps/api/app/auth/routes/session.py`) returning `user_id`, `email`,
+`issued_at`, `expires_at`, and a server-computed `expires_in_seconds` —
+never the token, never a renewed token, and 401 (not a described-but-
+dead session) for an expired token or a deactivated user.
+`decode_access_token` was refactored onto a new
+`decode_access_token_claims` so the full verified claim set is available
+without duplicating the JWT verification. (2) Frontend: a shared
+`apps/web/lib/session.ts` whose `handleExpiredSession(status)` is called
+at the single `if (!res.ok)` branch of every authenticated component, so
+a 401 from any route handler navigates to `/login?reason=session-expired`
+where a real explanation renders, instead of leaving a bare
+"HTTP 401" beside a form that can never work again. A `SessionStatus`
+component polls the new endpoint once a minute and warns below five
+minutes remaining.
+Reason: the JWT lives in an httpOnly cookie by design (D020), so client
+JS cannot read its expiry — there was no truthful way to warn a user
+before their session died. The only alternative available to the UI was
+a local countdown started at login, which is a fabricated number the
+moment the tab is backgrounded, the machine suspends, the clock skews,
+or the cookie was set in another tab. Spec §57's no-fabrication rule
+applies to a session clock as much as to a price. `SessionStatus`
+therefore re-fetches rather than ticking a local timer down between
+polls, and shows the server's own arithmetic.
+Alternatives considered: a refresh-token / sliding-expiry mechanism —
+rejected, that is a real auth-model change (token rotation, revocation
+list, replay handling) that D010's fixed-lifetime single access token
+does not have, and it is not what "expiry UX" was asked for; the
+endpoint deliberately reports on a session and cannot extend one.
+Reading `exp` from the cookie client-side — impossible, it is httpOnly,
+which is the whole reason this endpoint exists. Setting a second,
+non-httpOnly "expires_at" cookie at login — rejected, it duplicates
+authoritative state into a place any script can rewrite, and it goes
+stale the moment the backend rejects the token early (a deactivated
+user, D016). Middleware-only handling — rejected, `proxy.ts` catches a
+*missing* cookie on navigation, but a present-but-dead cookie only fails
+at the route handler, mid-page, which is exactly the case that produced
+the raw 401.
+Consequences: every authenticated component now has one extra line at
+its error branch and one shared import; the redirect is a full document
+navigation, deliberately, so all client state tied to a dead session is
+discarded. The session route handler also clears the dead cookie on a
+401 so the next page load is a clean unauthenticated one.
+`GET /auth/session` adds one lightweight authenticated request per
+minute per open tab.
+Verified: 6 new backend integration tests (`tests/api/test_session.py` —
+real expiry/issued_at bounds against the configured token lifetime, no
+token material anywhere in the response, 401 for missing/malformed/
+expired/deactivated-user) and 6 new Vitest tests in
+`apps/web/test/SessionStatus.test.tsx`, plus a 401-redirect test in
+each of the two other new frontend test files, plus a live
+end-to-end run: signed in through the real UI, deactivated that user
+directly in Postgres, and the next admin-page load redirected to
+`/login?reason=session-expired` showing the real message.
+Status: Implemented and verified as above.

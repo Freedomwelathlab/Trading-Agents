@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { handleExpiredSession } from "@/lib/session";
 
 type AgentTradeResponse = {
   order_id?: string;
@@ -54,6 +55,10 @@ export default function AgentTradeForm() {
       const data = (await res.json().catch(() => null)) as AgentTradeResponse | null;
       setStatus(res.status);
       if (!res.ok) {
+        // A 401 means the httpOnly session cookie is gone or dead;
+        // redirect to login with a real reason rather than rendering
+        // a bare HTTP 401 next to a form that can no longer work (D031).
+        if (handleExpiredSession(res.status)) return;
         // Real backend sentinels only — NOT_CONFIGURED: (no LLM provider or
         // market data vendor wired) and AGENT_OUTPUT_INVALID: (the agent's
         // response didn't parse) are rendered exactly as the backend sent

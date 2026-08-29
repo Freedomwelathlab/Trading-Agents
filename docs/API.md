@@ -25,6 +25,36 @@ doesn't distinguish which, and the route deliberately takes the same time
 either way (see `login.py`'s `_DUMMY_HASH`) to avoid leaking which emails
 are registered.
 
+## `GET /auth/session`
+
+Requires `Authorization: Bearer <token>` — any active user, no special
+permission. Reports on the presented token; it never returns, renews, or
+extends it. Added in D031 because the frontend keeps the JWT in an
+httpOnly cookie (D020) that browser JS cannot read, so the UI has no
+other truthful source for a session's remaining time.
+
+Response (200, `SessionResponse`):
+```json
+{
+  "user_id": "...",
+  "email": "...",
+  "issued_at": "2026-08-29T02:47:01Z",
+  "expires_at": "2026-08-29T03:17:01Z",
+  "expires_in_seconds": 1798
+}
+```
+
+`expires_in_seconds` is computed server-side against the server's clock
+and floored at 0, so a client with a skewed clock can't disagree with
+what the API will actually accept.
+
+401 for a missing, malformed, or already-expired token, and for a token
+whose user has since been deactivated — the same `get_current_user`
+fail-closed path every other authenticated route uses (D016), so this
+endpoint never reports time remaining on a session the API would reject.
+There is no refresh/renewal endpoint; a token's lifetime is fixed at
+issue (D010).
+
 ## `POST /brokers/{broker_id}/trades`
 
 Requires `Authorization: Bearer <token>` from `/auth/login` — 401 if
@@ -371,9 +401,49 @@ Requires `admin:manage`. 204 on success, 404 if the grant doesn't exist.
 Revoking takes effect immediately — a subsequent trade attempt on that
 broker by that user gets 403.
 
+## `GET /admin/users`
+
+Requires `admin:manage` (D030). Query params: `limit` (default 50, max
+500 — 422 outside that range), `offset` (default 0, 422 if negative).
+Ordered by `email` ascending, which makes `offset` paging deterministic
+(`users` has no created_at column).
+
+Response (200, `ListUsersResponse`):
+```json
+{
+  "users": [ /* CreateUserResponse rows */ ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
+Each row is exactly the `CreateUserResponse` shape the create/update
+routes return — never a password or password hash.
+
+## `GET /admin/roles`
+
+Requires `admin:manage` (D030). Same `limit`/`offset` contract as above,
+ordered by `name` ascending. Response (200, `ListRolesResponse`):
+`{"roles": [ /* CreateRoleResponse rows */ ], "limit": 50, "offset": 0}`.
+`permissions` is returned in full — this is the only way to see what a
+role currently grants without a direct DB query.
+
+## `GET /admin/broker-grants`
+
+Requires `admin:manage` (D030). Same `limit`/`offset` contract, ordered
+by `(user_id, broker_id)` — that pair is unique, so the sort is total.
+Response (200, `ListBrokerGrantsResponse`): `{"grants": [ /*
+BrokerGrantResponse rows */ ], "limit": 50, "offset": 0}`. Each row's
+`id` is the handle `DELETE /admin/broker-grants/{grant_id}` needs.
+
+All three listings return an empty list (200, not an error) when the page
+is past the end of the data. None of them take filter or search
+parameters — a caller pages, it does not query (D030).
+
 No delete endpoints for users/roles (D016 — would orphan FKs, deactivate/
-clear-permissions instead), and no listing endpoints anywhere (D013 —
-deliberate scope cut, not an oversight).
+clear-permissions instead). D013's original "no listing endpoints
+anywhere" scope cut was closed by D030 above; there is still no listing
+endpoint for brokers, orders, or fills.
 
 ## `GET /market-data/{symbol}/quote`
 
