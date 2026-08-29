@@ -417,6 +417,31 @@ backtest set `require_stop_price=False` (the strategy's exit is its SELL
 signal, not a stop price) but otherwise reuse `Settings`' real risk
 limits unchanged.
 
+## Broker discovery routes
+
+Purpose: let an authenticated user find out which brokers they may
+actually use, instead of needing a `broker_id` handed to them
+out-of-band (D034).
+Main files: `apps/api/app/api/schemas_brokers.py` (`BrokerResponse` — an
+explicit five-field allow-list, never the ORM row, so a credential-shaped
+column added to `brokers` later cannot silently start being returned;
+`ListBrokersResponse`), `apps/api/app/api/routes/brokers.py`
+(`GET /brokers`, `GET /brokers/{broker_id}`)
+Dependencies: `apps.api.app.auth.dependencies` (`get_current_user` only —
+no permission), `apps.api.app.db.models` (`Broker`, `BrokerGrant`)
+Tests: `tests/api/test_brokers.py` (11 integration tests against real
+Postgres, centred on the scoping rule: two users with disjoint grants
+each see only their own)
+Important: **grants define what is discoverable** — the listing joins
+`broker_grants` on the calling user, so it can never advertise a broker
+whose trade/portfolio routes would then 403. Zero grants means an empty
+list, not a 403. The detail route re-implements the 404-then-403 check
+rather than depending on `require_broker_access`, which additionally
+demands a `Permission` none of these routes should require. Frontend
+counterpart: `apps/web/components/BrokerDiscovery.tsx` +
+`apps/web/lib/brokerSelection.ts` (pre-fills a broker id into the
+broker-scoped forms; a convenience, never an authorization).
+
 ## Market data route
 
 Purpose: read-only `GET /market-data/{symbol}/quote`, the HTTP surface

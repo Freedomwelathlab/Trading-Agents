@@ -225,13 +225,19 @@ reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now
 warranted (deliberately not built in Phase 16 — one analyst has nothing
 to parallelize against). Frontend candidates remaining after Phase
-20/D023, Phase 24/D026 and Phase 28/D031/D032 (admin UI, agent-trades
-UI, the portfolio view, a historical performance chart, a
-users/roles/grants listing UI, and session expiry UX are now all built):
-broker discovery (no such endpoint exists yet) and Playwright e2e
-coverage. Playwright was deliberately skipped in Phase 28 because it
-needs a new tool dependency, and remains open pending explicit
-permission to add one.
+20/D023, Phase 24/D026, Phase 28/D031/D032 and Phase 29/D034 (admin UI,
+agent-trades UI, the portfolio view, a historical performance chart, a
+users/roles/grants listing UI, session expiry UX, and broker discovery
+are now all built): Playwright e2e coverage. Playwright was deliberately
+skipped in Phase 28 because it needs a new tool dependency, and remains
+open pending explicit permission to add one.
+
+Phase 29 (D034) added broker discovery: `GET /brokers` and
+`GET /brokers/{broker_id}`, authentication-only and scoped to the
+calling user's own `BrokerGrant` rows (grants define what is
+discoverable), plus a `BrokerDiscovery` UI that pre-fills a real granted
+broker id into the trade/portfolio forms. Pre-filling authorizes
+nothing — `require_broker_access` still re-checks every request.
 
 `apps/web/` (D020, Phase 17; extended Phase 20/D023, Phase 24/D026) is
 the frontend — login, `/health` display, quote lookup, paper-trade

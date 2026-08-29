@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
+import { subscribeToBrokerSelection } from "@/lib/brokerSelection";
 
 type HistoryPosition = {
   symbol: string;
@@ -167,6 +168,11 @@ function EquityChart({ snapshots }: { snapshots: HistoryEntry[] }) {
  */
 export default function PortfolioHistoryChart() {
   const [brokerId, setBrokerId] = useState("");
+
+  // D034: the broker discovery list can push a real, granted broker id
+  // here so the user never has to paste a UUID. Pre-filling authorizes
+  // nothing - the backend re-checks the grant on submit.
+  useEffect(() => subscribeToBrokerSelection(setBrokerId), []);
   const [limit, setLimit] = useState("50");
   const [offset, setOffset] = useState("0");
 
