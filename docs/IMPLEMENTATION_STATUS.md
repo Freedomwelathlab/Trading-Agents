@@ -859,6 +859,26 @@ clean and no cross-phase integration bug was found this time — see
 docs/DECISIONS.md D033 for the full verification record and D028 for the
 precedent this pass follows.
 
+That 272/283 figure has itself since been superseded by a further
+from-scratch verification confirming the true post-Phase-29/30-merge
+total: **288 tests, all passing**, run 2026-08-29 against `main` at
+`d7069e0` (Phases 29 broker-discovery and 30 backtest-Portfolio-Manager-
+gating both merged), following the same D028/D033 precedent — fresh venv,
+`ruff check .` (clean), `mypy apps` (clean, 71 source files), a
+separately-project-named `docker compose` Postgres/Redis pair,
+`alembic upgrade head` through migration 0009 (still the current head —
+neither phase added a migration), and `pytest tests/ -q` against that real
+database. This does not simply add Phase 29's independently-reported 283
+to Phase 30's independently-reported 277 (off its own 272 baseline plus 5
+new disjoint tests for the backtest-engine Portfolio Manager gating,
+D035): 283 already **is** the correct merged Phase-26-through-29 total per
+the paragraph above, and Phase 30 layered its own 5 new tests on top of
+that same 283, giving 288 as the real collected count — confirmed live,
+not computed. Zero failures, zero errors, 3 pre-existing warnings (same
+two `InsecureKeyLengthWarning`s and one `StarletteDeprecationWarning` as
+every prior run — neither new nor actionable). See docs/DECISIONS.md D036
+for the full verification record.
+
 208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real
 Postgres/Redis via docker-compose, `alembic upgrade head` through 0008,

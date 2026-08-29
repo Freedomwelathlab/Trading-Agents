@@ -2578,3 +2578,70 @@ the new counters). The docker containers, their volume, the throwaway
 compose override, the throwaway seed/live-check scripts, the test-only
 `.env` and the verification venv were all removed afterward.
 Status: Implemented and verified as above.
+
+---
+
+**D036 — Full post-merge backend verification (Phases 29/30): clean run, real merged test count established at 288**
+
+Date: 2026-08-29
+Decision: Ran a from-scratch backend verification of the fully-merged
+main branch at `d7069e0` (Phase 29 broker-discovery and Phase 30
+backtest-Portfolio-Manager-gating both merged), following the exact
+D028/D033 precedent: fresh venv, `pip install -e ".[dev]"`, `ruff check .`,
+`mypy apps`, real Postgres/Redis via a separately-project-named
+`docker compose -p tradingos-verify29-30` stack on remapped host ports
+(5555/6390, chosen to avoid the user's own default-port dev stack on
+5432/6379 that was left running throughout for their manual testing),
+`alembic upgrade head` against that database, then `pytest tests/ -q` —
+rather than trusting either phase's own independent worktree count (283
+for Phase 29, 277 for Phase 30 off a 272 baseline plus 5 new tests), since
+neither reflects the other phase's additions layered on top.
+Verified live: `ruff check .` reported "All checks passed!" with zero
+findings. `mypy apps` reported "Success: no issues found in 71 source
+files" with zero findings. `alembic upgrade head` applied all nine
+migrations in sequence against a real freshly-created Postgres 16
+(timescaledb image) database with no manual intervention — migration
+0009 is still the current head, since neither Phase 29 nor Phase 30 added
+a new migration. `pytest tests/ -q` collected and ran the entire suite
+against that same real Postgres/Redis pair: **288 tests, all passing**, 3
+warnings (the same two pre-existing `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass —
+neither new nor actionable), zero failures, zero errors, in a clean run.
+One transient failure did surface on the first attempt
+(`test_missing_jwt_secret_key_fails_closed`), but it was an artifact of
+this verification's own shell exporting `JWT_SECRET_KEY` and other
+config values as OS environment variables ahead of the run, which leaked
+into that one test's `Settings(_env_file=None)` construction (env vars
+are read regardless of `_env_file`); re-running with only `DATABASE_URL`
+and `REDIS_URL` set — letting every other test manage its own settings
+via `monkeypatch`, as the suite is designed to — reproduced the clean
+288-pass result with no code changes required. This is not a
+cross-phase integration bug and nothing in `apps/` was touched.
+Reason: this pass found no real cross-phase integration bug between
+Phase 29's caller-scoped `GET /brokers` discovery endpoint and Phase 30's
+inline RISK -> PORTFOLIO -> BROKER replication in the backtest replay
+loop — ruff, mypy, migrations, and the full test suite were all clean
+once the verification's own environment leakage was corrected. This
+confirms the two phases compose correctly on `main` and replaces both
+phases' self-reported per-worktree placeholder counts (283 and 277) in
+docs/IMPLEMENTATION_STATUS.md with the one real number collected from
+the actual merged codebase: 288.
+Alternatives: none considered — this is a verification pass, not a
+design decision; the only question was whether to trust either
+worktree's own count (rejected, per D028/D033's own reasoning: a
+worktree's own count can never reflect what changes once combined with a
+sibling phase) versus re-deriving the true count from a clean-room run
+against real infrastructure, which is what was done.
+Consequences: docs/IMPLEMENTATION_STATUS.md's Tests section now states
+288 as the confirmed post-Phase-29/30-merge total, with the prior
+272/283/277 figures kept alongside it for provenance but explicitly
+marked as not the merged total. The verification venv
+(`.venv_verify2930`), the test-only `.env.verify2930`, the throwaway
+`docker-compose.verify2930.yml`, and the `tradingos-verify29-30`-project
+docker containers and their (unnamed, ephemeral) volumes were all removed
+after the run. The user's own separately-running dev stack — the
+default-project-name `trading-os-postgres-1` and `trading-os-redis-1`
+containers on ports 5432/6379, the uvicorn process on port 8000, and the
+Next.js dev server on port 3005 — was confirmed still up and untouched
+after cleanup; nothing from this pass was left running.
+Status: Implemented and verified as above.
