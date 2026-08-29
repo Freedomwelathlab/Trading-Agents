@@ -433,6 +433,42 @@ Update this after meaningful implementation work — not for every commit.
   pass). `AGENT_OUTPUT_INVALID:` (502) was exercised only via a mocked
   component test, not a real misbehaving provider. See D023 for full
   detail.
+- **Phase 24 — frontend portfolio view (D026).** Builds the "portfolio
+  view" v2/v3 candidate D020/D023 both deferred, against Phase 19/D022's
+  `GET /brokers/{broker_id}/portfolio`. `PortfolioView`
+  (`components/PortfolioView.tsx`) on `/dashboard` takes a broker UUID
+  plus a `SYMBOL=price` marks string and renders the real
+  `PortfolioSnapshot` — `cash`, a table of every position's
+  `symbol`/`quantity`/`avg_cost`/`current_value`/`unrealized_pnl`/
+  `realized_pnl`, and the three totals — a single real-time snapshot,
+  deliberately no historical chart (needs Phase 25's persisted
+  snapshots). Backed by `app/api/portfolio/[brokerId]/route.ts`, exposed
+  to the browser as `POST` but internally issuing the real backend call
+  as a `GET` carrying `marks` as a JSON body, per D022's contract. Node's
+  `fetch` (undici) cannot send a body on GET at all — `lib/backend.ts`
+  gained `backendGetWithBody()`, which uses Node's core `http`/`https`
+  module directly for this one call instead. `npm run build` succeeds
+  with zero TypeScript errors. `npm test`: 34/34 passing (28 pre-existing
+  + 6 new in `test/PortfolioView.test.tsx`: a real rendered snapshot, an
+  empty-positions render, the 400 `DATA_UNAVAILABLE:` sentinel for a
+  missing mark, a 403, a 404, and network failure). Verified live against
+  a real running backend in this worktree (`docker compose up -d
+  --build`, host ports temporarily remapped to avoid colliding with
+  sibling Phase 23/25 worktrees, restored afterward): ran real Alembic
+  migrations against a fresh database, bootstrapped two users via direct
+  SQL (one with `portfolio:view` + a broker grant, one with the grant but
+  no `portfolio:view`), submitted a real trade that filled
+  (`fill_price: "100"`, `fill_quantity: "10"`), then through `npm run dev`
+  + curl against the frontend's own `/api/portfolio/[brokerId]` route —
+  a real 200 rendering that exact filled position and its computed
+  totals from a supplied mark of `120`, a real 400
+  `DATA_UNAVAILABLE: No mark supplied for open position 'AAPL.US'; cannot
+  value account.` when the mark was omitted, a real 404 for an unknown
+  broker, a real 401 with no session cookie, and a real 403
+  `Missing required permission: portfolio:view` from the second seeded
+  user. See D026 for full detail.
+
+---
 - **Phase 25 — persisted portfolio snapshots (2026-08-28, D027).** Closes
   the "persisted historical portfolio snapshots" item Phase 19/D022
   explicitly deferred. Two new append-only tables (migration
@@ -484,9 +520,11 @@ started (see D027's Consequences for why). If a second analyst is
 ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
-parallelize against). Frontend v2 candidates remaining after Phase 20/D023
-(`/admin/*` UI and agent-trades UI are now built): broker discovery (no
-such endpoint exists yet), session refresh/expiry UX, Playwright if a
+parallelize against). Frontend candidates remaining after Phase 20/D023
+and Phase 24/D026 (`/admin/*` UI, agent-trades UI, and the portfolio view
+are now built): a historical performance chart on the portfolio view
+(blocked on Phase 25's persisted snapshots), broker discovery (no such
+endpoint exists yet), session refresh/expiry UX, Playwright if a
 protectable flow emerges, and a users/roles/grants listing UI (blocked on
 D013's deliberate no-listing-endpoints scope cut). Re-verify D018/D019's LLM-completion path
 once OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is

@@ -188,7 +188,7 @@ Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,
 `broker_accounts`/`broker_positions` are mutable current-state — the two
 serve different purposes and are not duplicates of each other (D014).
 
-## Frontend (Phase 17/D020, extended Phase 20/D023)
+## Frontend (Phase 17/D020, extended Phase 20/D023, Phase 24/D026)
 
 `apps/web/` is a Next.js 16 (App Router) + TypeScript + Tailwind v4 app.
 It never calls the backend directly from the browser — every backend
@@ -207,10 +207,12 @@ flowchart LR
     dashpage --> quoteroute["/api/quote/[symbol]"]
     dashpage --> traderoute["/api/trades/[brokerId]"]
     dashpage --> agentroute["/api/agent-trades/[brokerId]"]
+    dashpage --> portfolioroute["/api/portfolio/[brokerId]\n(POST from browser)"]
     healthroute --> backendhealth["backend GET /health"]
     quoteroute -->|Bearer from cookie| backendquote["backend GET /market-data/.../quote"]
     traderoute -->|Bearer from cookie| backendtrade["backend POST /brokers/.../trades"]
     agentroute -->|Bearer from cookie| backendagent["backend POST /brokers/.../agent-trades"]
+    portfolioroute -->|Bearer from cookie,\nGET-with-body via node:http| backendportfolio["backend GET /brokers/.../portfolio"]
 
     browser --> adminpage["/admin page\n(proxy.ts requires cookie,\nnot permission)"]
     adminpage --> usersroute["/api/admin/users(/[userId])"]
@@ -235,7 +237,12 @@ frontend has no way to know whether the current user actually holds
 `admin:manage` short of asking the backend, so it doesn't guess — the
 nav link is always visible to any authenticated user, and the real
 `admin:manage` check happens once, on the backend, on every `/admin/*`
-call (D023).
+call (D023). `/api/portfolio/[brokerId]` (D026) is exposed to the
+browser as a `POST` like every other proxied route, but internally calls
+the backend as a real `GET` carrying `marks` as a JSON body — D022's
+actual contract — since Node's built-in `fetch` (undici) cannot send a
+body on GET/HEAD at all; that one call goes through `node:http`/
+`node:https` directly instead of `fetch`.
 
 ## Deployment
 

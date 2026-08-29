@@ -2,8 +2,9 @@
 
 Phase 17 first frontend slice: login, backend health status, quote
 lookup, and paper-trade submission — extended in Phase 20 with an admin
-UI (users/roles/broker-grants) and an agent-trades UI. Next.js 16 (App
-Router), TypeScript, Tailwind v4. See `docs/DECISIONS.md` D020/D023 and
+UI (users/roles/broker-grants) and an agent-trades UI, and in Phase 24
+with a real-time portfolio view. Next.js 16 (App Router), TypeScript,
+Tailwind v4. See `docs/DECISIONS.md` D020/D023/D026 and
 `docs/CODE_MAP.md`'s "Frontend" section in the repo root for the full
 design rationale.
 
@@ -60,13 +61,15 @@ this repo, not a suggestion. `npm run start` serves the production build.
 npm run test
 ```
 
-Vitest + React Testing Library (jsdom environment). 28 tests total.
-Covers the quote lookup, trade submission, agent-trade, and every admin
-form's success and error-rendering paths, including the exact
-`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:`/`AGENT_OUTPUT_INVALID:` sentinel
-strings, a rejected trade's `block_reason`, and a non-admin's real 403 —
-never a generic "error occurred" message. See D020 for why Vitest/RTL was
-chosen over Playwright for this phase.
+Vitest + React Testing Library (jsdom environment). 34 tests total.
+Covers the quote lookup, trade submission, agent-trade, every admin
+form's, and the portfolio view's success and error-rendering paths,
+including the exact
+`NOT_CONFIGURED:`/`NO_DATA_AVAILABLE:`/`AGENT_OUTPUT_INVALID:`/
+`DATA_UNAVAILABLE:` sentinel strings, a rejected trade's `block_reason`,
+a non-admin's real 403, and a 404 for an unknown broker — never a
+generic "error occurred" message. See D020 for why Vitest/RTL was chosen
+over Playwright for this phase.
 
 ## Auth model
 
@@ -74,10 +77,31 @@ The JWT returned by `POST /auth/login` is stored in an httpOnly cookie
 set by `/api/auth/login`, a Next.js route handler — never in
 `localStorage` or any other browser-readable store. Every other
 authenticated call (`/api/quote/[symbol]`, `/api/trades/[brokerId]`,
-`/api/agent-trades/[brokerId]`, `/api/admin/**`) is also a route handler
-that reads the cookie server-side and attaches
-`Authorization: Bearer <token>` before calling the backend. See D020 for
-the full tradeoff against a localStorage-based v1.
+`/api/agent-trades/[brokerId]`, `/api/admin/**`,
+`/api/portfolio/[brokerId]`) is also a route handler that reads the
+cookie server-side and attaches `Authorization: Bearer <token>` before
+calling the backend. See D020 for the full tradeoff against a
+localStorage-based v1.
+
+## Portfolio view
+
+`/dashboard` includes a real-time portfolio view: enter a broker UUID and
+optionally `SYMBOL=price, SYMBOL2=price2` marks for that broker's
+currently-held symbols, and it renders the backend's real
+`PortfolioSnapshot` — cash, a table of every position's
+symbol/quantity/avg_cost/current_value/unrealized_pnl/realized_pnl, and
+the three totals (total_equity/total_unrealized_pnl/total_realized_pnl).
+A single point-in-time snapshot only — no historical performance chart
+(that needs persisted portfolio snapshots, a separate later scope). A
+missing mark for a held position renders the backend's real 400
+`DATA_UNAVAILABLE:` detail; missing `VIEW_PORTFOLIO` permission or no
+broker grant renders a real 403; an unknown broker renders a real 404 —
+never a fabricated or placeholder portfolio for any of these. The
+`/api/portfolio/[brokerId]` route handler is exposed to the browser as a
+`POST` but internally issues the actual backend call as a `GET` carrying
+`marks` as a JSON body, per the backend's documented contract (D022) —
+see D026 for why that couldn't use this app's usual `fetch`-based proxy
+pattern (Node's built-in `fetch` rejects a body on GET/HEAD outright).
 
 ## Admin UI
 

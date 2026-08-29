@@ -512,14 +512,18 @@ starts. Currently just READMEs. See root `NOTICE`.
 
 Purpose: Phase 17 (D020) first frontend slice — login, health status,
 quote lookup, paper-trade submission — extended in Phase 20 (D023) with
-an admin UI and an agent-trades UI, each rendering the backend's real
-response, never fabricated data.
+an admin UI and an agent-trades UI, and in Phase 24 (D026) with a
+real-time portfolio view, each rendering the backend's real response,
+never fabricated data.
 Root: `apps/web/` — Next.js 16 (App Router), TypeScript, Tailwind v4.
 
 `apps/web/lib/backend.ts` — server-only helpers: `backendBaseUrl()`
 (reads `API_BASE_URL`, defaults to `http://localhost:8000`), `backendUrl(path)`,
-and the shared `AUTH_COOKIE_NAME` constant. Never imported from a client
-component.
+the shared `AUTH_COOKIE_NAME` constant, and `backendGetWithBody(path,
+headers, body)` (D026) — issues a real GET request carrying a JSON body
+via Node's core `http`/`https` module, since Node's built-in `fetch`
+(undici) throws on any GET/HEAD with a body; used only by the portfolio
+route handler below. Never imported from a client component.
 
 `apps/web/proxy.ts` — Next.js 16 proxy convention (replaces the
 deprecated `middleware.ts`). `proxy(request)` redirects `/dashboard/*` to
@@ -565,6 +569,13 @@ proxies `PATCH /admin/roles/{role_id}`.
 (D023), proxies `DELETE /admin/broker-grants/{grant_id}`; re-returns a
 204 as `new NextResponse(null, { status: 204 })` since a 204 must carry
 no JSON body.
+`apps/web/app/api/portfolio/[brokerId]/route.ts` — `POST` (D026), reads
+the JWT from the cookie, then calls `backendGetWithBody()` to issue the
+real backend call as a `GET /brokers/{broker_id}/portfolio` carrying
+`{"marks": {...}}` as a JSON body (D022's contract), passing through the
+full `PortfolioSnapshot` body and status unmodified, including 400
+`DATA_UNAVAILABLE:` for a missing mark, 403 for missing
+`VIEW_PORTFOLIO`/no broker grant, and 404 for an unknown broker.
 
 `apps/web/app/login/page.tsx` — client component, email/password form
 posting to `/api/auth/login`; on success routes to `/dashboard`; renders
@@ -611,6 +622,15 @@ change description and/or replace permissions, posts to
 `/api/admin/broker-grants`) and `DeleteBrokerGrantForm` (grant ID, posts
 `DELETE` to `/api/admin/broker-grants/[grantId]`, renders a real 204
 confirmation or a real error, e.g. 404 for an unknown grant).
+`apps/web/components/PortfolioView.tsx` (D026) — broker ID + a
+`SYMBOL=price, SYMBOL2=price2` marks field parsed client-side, posts to
+`/api/portfolio/[brokerId]`, renders the full `PortfolioSnapshot`
+(`cash`, a positions table with every
+`symbol`/`quantity`/`avg_cost`/`current_value`/`unrealized_pnl`/
+`realized_pnl`, and the three totals) or the real
+`DATA_UNAVAILABLE:`/403/404 detail on failure. Composed onto
+`/dashboard` alongside the existing components. Real-time snapshot
+only — no historical chart (needs Phase 25's persisted snapshots).
 
 Tests: `apps/web/test/QuoteLookup.test.tsx` (4 tests — success render,
 503 NOT_CONFIGURED detail rendered verbatim, 404 NO_DATA_AVAILABLE
@@ -624,7 +644,11 @@ network failure), `apps/web/test/UsersAdmin.test.tsx` (6 tests, D023),
 `apps/web/test/RolesAdmin.test.tsx` (4 tests, D023),
 `apps/web/test/BrokerGrantsAdmin.test.tsx` (6 tests, D023) — the admin
 tests cover success, a real 403 (non-admin caller), a real 404/409 where
-applicable, and network failure. Vitest + React Testing Library + jsdom
+applicable, and network failure. `apps/web/test/PortfolioView.test.tsx`
+(6 tests, D026) — a real rendered snapshot (cash, a full position row,
+all three totals), an empty-positions render, the real 400
+`DATA_UNAVAILABLE:` sentinel for a missing mark, a real 403, a real 404,
+and network failure. Vitest + React Testing Library + jsdom
 (`apps/web/vitest.config.ts`, `apps/web/test/setup.ts`), chosen over
 Playwright for this phase's scope — see D020.
 
@@ -639,8 +663,10 @@ generic Next.js error page. `API_BASE_URL` (server-side env var, see
 ## Not yet present
 
 The parallel analyst layer, research debate, Portfolio Manager. Frontend
-v2 remaining after Phase 20/D023 (`/admin/*` UI and agent-trades UI are
-now built — see `docs/PROJECT_CONTEXT.md`'s Planned Work): broker
+candidates remaining after Phase 20/D023 and Phase 24/D026 (`/admin/*`
+UI, agent-trades UI, and the portfolio view are now built — see
+`docs/PROJECT_CONTEXT.md`'s Planned Work): a historical performance chart
+on the portfolio view (blocked on Phase 25's persisted snapshots), broker
 discovery UI, session refresh/expiry UX, Playwright e2e, a
 users/roles/grants listing UI. Do not import from paths that don't exist
 yet.
