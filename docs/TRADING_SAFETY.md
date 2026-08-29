@@ -24,6 +24,14 @@ Broker Adapter
 An LLM never sits below the Risk Engine in this chain. No shortcut, no
 "trusted agent" exception.
 
+The "Portfolio Decision" step exists as of Phase 26 (D029):
+`apps/api/app/portfolio_manager/`, deterministic and LLM-free like the
+Risk Engine above it. It can only ever shrink or stop a trade the Risk
+Engine already approved, and when it shrinks one, the resized proposal
+goes back through the Risk Engine before any broker call — so nothing
+below the Risk Engine in this chain, not even this system's own sizing
+logic, can hand a broker a quantity the Risk Engine has not approved.
+
 ## The LLM must never bypass
 
 Position limits · risk limits · exposure limits · buying power · stop

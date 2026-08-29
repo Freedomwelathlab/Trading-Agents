@@ -500,6 +500,71 @@ Update this after meaningful implementation work — not for every commit.
   rows, the Docker stack, the local venv, and `.env` were removed
   afterward.
 
+- **Phase 26 — trade-path Portfolio Manager (2026-08-29, D029).** Builds the
+  "Portfolio Manager" box in docs/ARCHITECTURE.md's Target diagram / the
+  "Portfolio Decision" step in docs/TRADING_SAFETY.md's pipeline — the
+  component D022 and D027 both explicitly flagged as *not* what
+  `apps/api/app/portfolio/` is. New package
+  `apps/api/app/portfolio_manager/` (`models.py`, `manager.py`): a pure
+  `decide(proposal, portfolio, limits) -> PortfolioDecision` with no LLM,
+  no network call and no I/O, mirroring the Risk Engine's own zero-I/O
+  discipline. Wired into `submit_trade()`
+  (`apps/api/app/oms/service.py`) AFTER `evaluate_trade()` approves a
+  proposal and BEFORE the broker call — `apps/api/app/risk/engine.py`
+  itself is unmodified. Two structural properties, each with a dedicated
+  test: a risk-rejected proposal never reaches the Portfolio Manager
+  (it is a second gate, not a bypass), and a MODIFY-resized proposal is
+  re-run through `evaluate_trade()` before any broker call, so no
+  quantity this system produces reaches a broker ungated. Three
+  constraints, all computable from data the repo actually stores:
+  `symbol_concentration` (post-trade value of one symbol vs equity,
+  default 25% — the aggregate-position gap no per-trade check sees),
+  `cash_reserve` (post-trade cash vs equity, default 5%), and
+  `max_open_positions` (distinct held symbols, default 20, labelled as a
+  count, not as diversification). Spec §18's correlation, sector
+  concentration, portfolio volatility, expected return and drawdown are
+  NOT implemented — no sector column on `assets` and no persisted
+  per-symbol return series exist, and approximating them would be
+  fabrication (see D029). `REQUEST_MORE_RESEARCH` exists in the enum for
+  spec fidelity but is never emitted; a test pins that. A failing check
+  only blocks when the trade *worsens* that measure, so a de-risking sell
+  is never refused because of the breach it relieves. Audit record per
+  spec §18: migration `0009_orders_portfolio_decision.py` adds four
+  nullable `orders` columns (`portfolio_action`,
+  `portfolio_binding_constraint`, `portfolio_detail`,
+  `portfolio_requested_quantity`); `orders.quantity` is now the quantity
+  actually acted on, so a resize shows as `quantity !=
+  portfolio_requested_quantity` rather than a rewritten proposal, and a
+  null `portfolio_action` means "never ran", never "approved".
+  `TradeSubmissionResponse` surfaces the same four fields, which makes
+  `approved: true` + `status: "rejected"` a real combination (risk passed,
+  portfolio didn't). 26 new tests — 13 pure unit
+  (`tests/portfolio_manager/test_manager.py`), 5 OMS-wiring
+  (`tests/oms/test_service_portfolio_manager.py`), 4 real-Postgres
+  persistence (`tests/db/test_portfolio_decision_persistence.py`), 4
+  real-Postgres HTTP (`tests/api/test_trades_portfolio_manager.py`) —
+  for 234/234 total passing, `ruff check .`/`mypy apps` clean (66 source
+  files). Verified live against a real Docker Compose stack in this
+  worktree (host ports remapped to 5435/6382/8002 via a throwaway
+  override so it could run alongside sibling Phase 27/28 worktrees; the
+  tracked `docker-compose.yml` was never edited), with real Alembic
+  migrations `0001`→`0009` against a fresh database: real curl requests
+  to the containerized API produced, on one broker, two `approve` fills,
+  a real `modify` cutting a 98-share buy to 51 with
+  `binding_constraint: symbol_concentration`, a real `reject` at the
+  exact 25% cap (`approved: true`, `block_reason: null`), and a
+  de-risking sell correctly approved anyway — with Postgres confirming
+  the resized row (`quantity 51`, `portfolio_requested_quantity 98`), 250
+  shares held and 75,000 cash, i.e. the resized trade's arithmetic and
+  not the requested one. Not verified live: no market-data vendor or LLM
+  provider was configured, so all prices were caller-supplied and the
+  agent-trades route (which shares the same `_execute_trade()` path) was
+  exercised only against a fake `LLMProvider`; `apps/web/` was not run or
+  updated and still renders only the risk verdict; `apps/api/app/
+  backtesting/` calls `evaluate_trade()` directly, so backtests do not
+  model portfolio constraints. Docker containers/volumes, the compose
+  override, the test-only `.env` and the venv were removed afterward.
+
 ## In Progress
 
 Nothing currently mid-implementation.
@@ -565,7 +630,19 @@ optimization.
 
 ## Tests
 
-208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
+234 tests, all passing - 208 as of the Phase 23/24/25 merge verification
+below, plus Phase 26's 26 new tests (D029): 13 pure unit tests for the
+trade-path Portfolio Manager (`tests/portfolio_manager/test_manager.py`),
+5 for its wiring into the OMS (`tests/oms/test_service_portfolio_manager.py`,
+including one proving a Portfolio-Manager-resized quantity is itself
+re-gated by the Risk Engine), 4 real-Postgres persistence tests for the
+`orders.portfolio_*` audit columns
+(`tests/db/test_portfolio_decision_persistence.py`), and 4 real-Postgres
+HTTP integration tests (`tests/api/test_trades_portfolio_manager.py`).
+That total is a real `pytest tests/ -q` collected count against a real
+Postgres migrated through `0009`, not an arithmetic estimate.
+
+The 208 baseline was confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real
 Postgres/Redis via docker-compose, `alembic upgrade head` through 0008,
 `pytest tests/ -q`) after the Phase 23/24/25 merge, correcting this

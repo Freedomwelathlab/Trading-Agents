@@ -1885,3 +1885,149 @@ the Phase 23/24/25 merge to this run's actual collected total. Docker
 containers/volumes, the test-only `.env`, and the verification venv were
 all removed afterward; nothing from this pass was left running.
 Status: Implemented and verified as above.
+
+---
+
+**D029 — Trade-path Portfolio Manager: a deterministic, no-LLM allocation gate between the Risk Engine and the broker**
+Date: 2026-08-29
+Decision: Built `apps/api/app/portfolio_manager/` — the "Portfolio Manager"
+box in docs/ARCHITECTURE.md's Target diagram and the "Portfolio Decision"
+step in docs/TRADING_SAFETY.md's pipeline. It is a pure function,
+`decide(proposal, portfolio, limits) -> PortfolioDecision`, with no LLM, no
+network call and no I/O, mirroring `apps/api/app/risk/engine.py`'s own
+zero-I/O discipline. It is deliberately NOT the read-only reporting module
+`apps/api/app/portfolio/` (D022/D027), which never touches the trade path;
+the two are separate packages with separate purposes and no shared code.
+
+Placement: `submit_trade()` (`apps/api/app/oms/service.py`) now calls it
+AFTER `evaluate_trade()` has approved a proposal and BEFORE the broker
+call. Two properties are load-bearing and both have dedicated tests:
+(1) a risk-rejected proposal short-circuits and the Portfolio Manager never
+sees it — it is a second, narrower gate, never a way around the first;
+(2) when it returns MODIFY, the resized proposal is passed back through
+`evaluate_trade()` before any broker call, so no quantity this system
+produces — from an LLM, a human, or the Portfolio Manager itself — reaches
+a broker without the deterministic Risk Engine having approved that exact
+quantity. `apps/api/app/risk/engine.py` was not modified at all.
+
+Scope: spec §18 lists ten considerations (positions, cash, exposure,
+correlation, sector concentration, portfolio volatility, expected risk,
+expected return, drawdown, diversification) and four outcomes (APPROVE,
+REJECT, MODIFY, REQUEST_MORE_RESEARCH). This implementation covers exactly
+the three constraints computable from data this repo actually stores, and
+names each honestly:
+
+- `SYMBOL_CONCENTRATION` — post-trade market value of one symbol as a
+  share of equity (default 25%).
+- `CASH_RESERVE` — post-trade cash as a share of equity (default 5%).
+- `MAX_OPEN_POSITIONS` — count of distinct held symbols (default 20),
+  labelled as a position count, not as a diversification measure.
+
+Correlation, sector concentration, portfolio volatility, expected return
+and drawdown are NOT implemented: `assets` carries no sector or
+classification column, and no persisted price series exists that a
+covariance or a volatility could be computed from (D027's snapshots are
+portfolio-level, not per-symbol return series, and are written only on an
+explicit API call — there is no scheduler). Approximating any of them from
+data that does not exist would be fabrication (docs/TRADING_SAFETY.md), so
+they are deferred rather than guessed. `REQUEST_MORE_RESEARCH` exists in
+the `PortfolioAction` enum for spec fidelity but is never emitted —
+"this needs more research" is inherently a discretionary judgement, and
+this component is deliberately deterministic; a test pins that promise.
+Reason: the concrete gap this closes is real and no existing component
+covers it. The Risk Engine's `max_position_pct_of_equity` measures ONE
+order's notional; a series of individually compliant orders can therefore
+accumulate an aggregate position no per-trade check ever sees. Likewise
+`INSUFFICIENT_BUYING_POWER` only asks whether cash covers one notional at
+all, never whether a reserve survives across all of them. Those are
+portfolio-construction questions, structurally outside a per-trade gate —
+which is exactly why the spec has a separate component for them and why
+this logic must not be pushed into `evaluate_trade()`.
+A second, subtler rule: a failing check only BLOCKS when the trade
+worsens that measure (`PortfolioCheck.worsened_by_trade`). A portfolio
+that is already over-concentrated must not have the de-risking sell that
+relieves it refused because of the very breach it relieves. Failing-but-
+not-binding checks are still recorded in the audit trail, so the state is
+visible rather than silently ignored.
+Alternatives: (a) put the portfolio checks inside `evaluate_trade()` —
+rejected outright: docs/TRADING_SAFETY.md makes the Risk Engine the
+load-bearing boundary, and growing it into a portfolio-construction engine
+would blur the one component whose job is to be small, pure, and
+independently auditable. (b) Run the Portfolio Manager BEFORE the Risk
+Engine — rejected: spec §18 says it receives the Trade Proposal *plus the
+Risk Report*, and both the Target diagram and the TRADING_SAFETY pipeline
+put it below the Risk Engine. Running it first would also mean a proposal
+the Risk Engine would have killed still consumed portfolio reasoning.
+(c) Have the Portfolio Manager write the resized order straight to the
+broker — rejected as the whole point of (2) above. (d) Make it an LLM
+(the upstream TradingAgents project's Portfolio Manager is one, per
+../ARCHITECTURE-DISCOVERY-REPORT.md) — rejected: spec §62 and
+docs/TRADING_SAFETY.md both say position sizing is never an LLM's output.
+(e) Approximate correlation with a naive same-prefix symbol heuristic, or
+volatility from the handful of `portfolio_snapshots` rows — rejected as
+fabricated risk numbers dressed as real ones. (f) Add a market-data
+dependency to fetch return series inside the component — rejected: it
+would break the zero-I/O property that makes this testable and makes it
+work when every vendor is down. (g) Fail closed when no portfolio state is
+supplied — rejected: skipping this component cannot make a trade *less*
+safe (the Risk Engine already gated it, and this component can only shrink
+or stop a trade), so `portfolio=None` simply restores pre-D029 behaviour
+for the pure unit-test callers. The HTTP trade path always supplies it.
+Audit record: spec §18 requires a complete one. `PortfolioDecision` carries
+every constraint evaluated (pass or fail, with projected value, limit, and
+whether the trade worsened it), and migration `0009` adds four nullable
+columns to `orders`: `portfolio_action`, `portfolio_binding_constraint`,
+`portfolio_detail`, `portfolio_requested_quantity`. `orders.quantity` now
+records the quantity actually acted on, so a resize is visible as
+`quantity != portfolio_requested_quantity` rather than as a silently
+rewritten proposal. A null `portfolio_action` means "no Portfolio Manager
+ran" (risk-rejected first, or no state supplied) and must never be read as
+approval — documented on the column and pinned by a test.
+Consequences: `TradeSubmissionResponse` gains four fields, so
+`approved: true` with `status: "rejected"` is now a real and meaningful
+combination (the Risk Engine passed it, the Portfolio Manager did not) —
+documented on the `approved` field. `apps/web/` was not updated to render
+the new fields; the frontend still shows the risk verdict only, which is
+an honest gap, not a claim. `apps/api/app/backtesting/` calls
+`evaluate_trade()` directly rather than `submit_trade()`, so backtests are
+unchanged by this phase and do NOT model portfolio-level constraints —
+also an honest gap worth closing later.
+26 new tests, 234/234 total passing, `ruff check .` and `mypy apps` both
+clean (66 source files). Breakdown: 13 pure unit tests
+(`tests/portfolio_manager/test_manager.py`), 5 OMS-wiring tests
+(`tests/oms/test_service_portfolio_manager.py`, including one that proves
+the MODIFY re-gate actually catches something — the resized quantity trips
+the D024 duplicate-order check that the original quantity did not, which
+is the one risk check that is genuinely not monotone in quantity), 4
+real-Postgres persistence tests
+(`tests/db/test_portfolio_decision_persistence.py`), and 4 real-Postgres
+HTTP integration tests (`tests/api/test_trades_portfolio_manager.py`).
+Verified live, not only in tests: brought up this worktree's own docker
+stack (`docker compose -p trading-os-phase26` with host ports remapped to
+5435/6382/8002 via a throwaway override file, to avoid colliding with
+sibling Phase 27/28 worktrees; the tracked `docker-compose.yml` was never
+edited), ran real Alembic migrations `0001`→`0009` against a fresh
+database, seeded a role/user/paper-broker/grant, and drove the real
+containerized API over HTTP with curl. Observed, in order, on one real
+broker: two approved buys (100 and 99 shares at 100, `portfolio_action:
+"approve"`); a third 98-share buy returning `portfolio_action: "modify"`,
+`portfolio_binding_constraint: "symbol_concentration"`,
+`portfolio_requested_quantity: "98"`, `fill_quantity: "51"` with the
+detail `Quantity reduced from 98 to 51 to satisfy symbol_concentration.`;
+then a 1-share buy at the exact 25% cap returning `status: "rejected"`,
+`approved: true`, `block_reason: null`, `portfolio_action: "reject"`; then
+a 50-share de-risking SELL correctly approved despite the position sitting
+at the cap. Confirmed in Postgres directly that the modify row persisted as
+`quantity 51.00000000` / `portfolio_requested_quantity 98.00000000`, that
+`broker_positions` held 250 shares and `broker_accounts` 75,000 cash
+(exactly the resized trade's arithmetic, not the requested one), and that
+the risk-rejected rows carry a null `portfolio_action`.
+Not verified live: no real market-data vendor or LLM provider was wired in
+this environment, so every live price above was caller-supplied; the
+agent-trades route shares `_execute_trade()` and therefore the identical
+Portfolio Manager path, but was exercised only through its existing
+fake-`LLMProvider` tests, not against a real LLM. `apps/web/` was not run
+at all this phase. Docker containers, volumes, the throwaway compose
+override, the test-only `.env` and the verification venv were all removed
+afterward.
+Status: Implemented and verified as above.
