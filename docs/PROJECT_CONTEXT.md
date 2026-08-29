@@ -370,10 +370,15 @@ what this repo's docs can verify.)
   within a 5s window, compared only against FILLED orders (a REJECTED
   order's identical retry is deliberately not itself flagged), the
   recent-orders query supplied to the still-pure `evaluate_trade()` as
-  plain data by the caller. Still open: an explicit emergency-stop
-  *source* (currently just a boolean parameter on
-  `evaluate_trade`/`submit_trade` — where it reads from in production is
-  undecided).
+  plain data by the caller. Emergency-stop source: decided and implemented
+  (D039, Phase 33) — an append-only `emergency_stop_events` table is the
+  authoritative state, flipped live over `POST /admin/emergency-stop` /
+  `.../deactivate` (both `admin:manage`, both requiring a recorded reason)
+  and readable by any authenticated user via `GET /admin/emergency-stop`.
+  The trade route reads the current row per submission and passes the
+  boolean down; `evaluate_trade()` is unchanged and still zero-I/O.
+  `EMERGENCY_STOP_ACTIVE` in `Settings` remains only as the bootstrap
+  default used while no flip has ever been persisted.
 - Order/fill persistence: done (D006). HTTP endpoint: done (D009).
   Authentication: done (D010). Authorization: done (D011) — requires the
   `trade:submit:paper` permission. Per-broker access grants: done (D012).

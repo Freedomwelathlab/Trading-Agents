@@ -732,6 +732,39 @@ Update this after meaningful implementation work — not for every commit.
   runs above used an injected fake `HistoryProvider`'s synthetic closes —
   unlike D025, which was verified against real Longbridge history. See D035.
 
+- **Phase 32 — Portfolio Manager verdict in the web UI (2026-08-29, D038).**
+  Closes D029's own "Consequences" gap: `apps/web/`'s trade forms showed
+  the Risk Engine's verdict only, never the Portfolio Manager's, even
+  though `approved: true` + `status: "rejected"` (a portfolio rejection)
+  is a real, easily-misread response combination. New
+  `components/PortfolioVerdict.tsx` renders alongside — never replacing —
+  the existing risk verdict in both `TradeForm.tsx` and
+  `AgentTradeForm.tsx`: a `modify` shows the binding constraint, the
+  backend's detail string, and both quantities (requested vs. actually
+  filled); a `reject` renders visually and textually distinct from a risk
+  rejection (different color/label/icon, so the two rejection sources are
+  never conflated); `approve` or a `null` action (Portfolio Manager never
+  ran, e.g. risk-rejected first) render no extra panel at all — a null
+  action is never shown as if it approved anything. Also fixed a
+  pre-existing bug found in passing: the risk block's color was keyed on
+  `status`, so a portfolio rejection was painted the Risk Engine's amber;
+  it is now keyed on `approved`, so amber always means the Risk Engine
+  said no. **No backend change.** **79/79 frontend tests passing** (69
+  pre-existing + 10 new, 5 per form: approve/modify/reject/null-action/
+  older-shaped-response), `npm run build` clean with zero TypeScript
+  errors. **Verified live** against this worktree's own Docker stack
+  (ports remapped to 5438/6388/8008; torn down afterwards; the user's own
+  dev stack and sibling phase31/33 worktrees confirmed untouched): four
+  real trade submissions on one real broker (approve, a real modify via a
+  tightened `PORTFOLIO_MAX_SYMBOL_PCT_OF_EQUITY`, a real portfolio reject,
+  and a real risk-engine reject) fed verbatim into the real components,
+  confirming each renders the correct panel/color. **Not verified live:**
+  a full click-through of the running dev server itself — the browser
+  tool in this environment could not load its JS chunks, so React never
+  hydrated; the real-payload-into-real-component check above substitutes
+  for it. No market-data vendor or LLM was wired, so `AgentTradeForm` was
+  exercised only through its own tests. See D038.
+
 - **Phase 31 — backtest frontend (2026-08-29, D037).** Closes the gap D035
   recorded verbatim in its own "Not verified live" note: `apps/web/` did not
   render the backtest response at all, let alone the new Portfolio Manager
@@ -766,6 +799,41 @@ Update this after meaningful implementation work — not for every commit.
   `UNSUPPORTED_DATE_RANGE:`/`DATA_UNAVAILABLE:` sentinels (both unreachable
   live behind the `NOT_CONFIGURED` guard), are covered by component tests
   against mocked responses only. See D037.
+
+- **Phase 33 — persisted, audited, live-flippable emergency stop
+  (2026-08-29, D039).** Closes PROJECT_CONTEXT.md's long-standing
+  "emergency-stop *source* is undecided" open item. Spec §46's kill switch
+  was an `.env` value that required a restart to flip — the exact thing its
+  own docstring said it must not require. It is now an append-only
+  `emergency_stop_events` table (migration `0010`): one row per flip with
+  `active`, a required `reason`, the acting `actor_user_id`, and
+  `created_at`; the current state is the highest-`id` row, so state and
+  audit trail are the same object. Three endpoints in
+  `apps/api/app/api/routes/emergency_stop.py`:
+  `POST /admin/emergency-stop` and `POST /admin/emergency-stop/deactivate`
+  (both `admin:manage`, both requiring a non-blank reason) and
+  `GET /admin/emergency-stop` (authentication only — knowing you are halted
+  is not privileged, same scoping argument as D034). **The Risk Engine is
+  unchanged and still zero-I/O:** `evaluate_trade()` still takes
+  `emergency_stop_active: bool` as a plain parameter, and the DB read
+  happens one layer up in `_execute_trade()` (shared by the human and agent
+  trade routes, a single read site), with the new persistence deliberately
+  in a new `apps/api/app/safety/` package rather than inside `risk/` — a
+  test asserts that boundary structurally.
+  `Settings.emergency_stop_active` survives only as the bootstrap default
+  used while the table is empty; once a row exists it is never consulted.
+  **304/304 pytest tests passing** (288 post-Phase-29/30-merge baseline +
+  16 new in `tests/api/test_emergency_stop.py`), `ruff check .` and
+  `mypy apps` clean (74 source files). **Verified live** against this
+  worktree's own Docker Postgres/Redis (ports remapped to 55433/56380 to
+  avoid the user's own dev stack; torn down afterwards): real
+  `alembic upgrade head` `0001`→`0010`, then against a real `uvicorn`
+  process — a real trade filled, the stop activated over HTTP with a real
+  reason, the next real trade rejected with `emergency_stop_active` in the
+  same process with no restart, then the **process killed and restarted**
+  with a byte-identical `.env` (md5-checked) and the state confirmed still
+  active and still blocking real trades, then deactivated and a real trade
+  filled again. See D039.
 
 ## In Progress
 
@@ -913,6 +981,15 @@ not computed. Zero failures, zero errors, 3 pre-existing warnings (same
 two `InsecureKeyLengthWarning`s and one `StarletteDeprecationWarning` as
 every prior run — neither new nor actionable). See docs/DECISIONS.md D036
 for the full verification record.
+
+Phase 33 (D039, this worktree) adds 16 new tests in
+`tests/api/test_emergency_stop.py` on top of that confirmed 288 baseline,
+for **304 collected and passing** in this worktree against a real Postgres.
+As with every parallel-worktree count before it, 304 is this worktree's own
+number: sibling phase-31/32 worktrees are adding their own disjoint tests
+concurrently, so the true post-merge total must be re-derived from a
+clean-room run against merged `main`, per the D028/D033/D036 precedent.
+
 
 208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real

@@ -2918,3 +2918,134 @@ Docker containers, volumes, the throwaway compose override, the test-only
 `.env`, `apps/web/.env.local` and the throwaway render harness were all
 removed afterward.
 Status: Implemented and verified as above.
+
+---
+
+**D039 — Emergency stop becomes a persisted, audited, live-flippable control: an append-only `emergency_stop_events` table read one layer above the (still pure) Risk Engine**
+
+Date: 2026-08-29
+Decision: Closed PROJECT_CONTEXT.md's long-standing "an explicit
+emergency-stop *source* ... is undecided" open item. Until this phase the
+kill switch was `Settings.emergency_stop_active`, an `.env` value — so
+halting the platform meant editing a file and restarting the app, which
+is exactly what the setting's own docstring said it should not require.
+Spec §46's emergency stop is now:
+
+1. A new table, `emergency_stop_events` (migration `0010`), **append-only**:
+   one row per flip, carrying `active`, a required `reason`, the
+   `actor_user_id` who flipped it, and `created_at`. The CURRENT state is
+   the `active` value of the highest-`id` row. Nothing is ever updated in
+   place, so the state and its audit trail are the same object and cannot
+   drift apart — the same append-only discipline as Order/Fill (D006) and
+   the portfolio snapshots (D027). Chosen over a single-row config table
+   plus a separate audit log: two tables can disagree about what actually
+   happened, one cannot.
+   `id` is a monotonic `BigInteger` identity rather than this schema's
+   usual random `uuid4` PK, deliberately — "latest row wins" has to be a
+   total order, and two flips inside one clock tick would make `created_at`
+   alone ambiguous. This is the only table whose ordering is load-bearing
+   for a safety control, so it is the only one that gets a sequence.
+2. Three endpoints: `POST /admin/emergency-stop` (activate) and
+   `POST /admin/emergency-stop/deactivate`, both gated by `admin:manage`
+   like every other admin write (no new finer-grained permission — D013's
+   one-coarse-admin-permission reasoning still holds); and
+   `GET /admin/emergency-stop` (status), which requires **authentication
+   only**. Separate routers are used because they carry different
+   dependencies. The status scoping follows D034's broker-discovery
+   argument directly: a trader whose orders are all being rejected is
+   entitled to see *that the system is halted, by whom, and why* without
+   holding `admin:manage` — knowing you are blocked is not privileged
+   information, only flipping the switch is. Deactivate is a separate URL
+   rather than a boolean field on one route, so "turn the safety control
+   OFF" can never be the accidental result of a defaulted or malformed
+   body. `reason` is required, non-blank after stripping, on BOTH
+   directions — a kill switch that can be turned back off with no recorded
+   justification is not an audited control.
+3. The Risk Engine is UNCHANGED. `evaluate_trade()` still takes
+   `emergency_stop_active: bool` as a plain parameter and still returns
+   `BlockReason.EMERGENCY_STOP_ACTIVE`; `apps/api/app/risk/` performs no
+   I/O and imports nothing from the new module. The database read happens
+   one layer up, in `_execute_trade()` (shared by the human and agent trade
+   routes, so both get identical treatment from a single read site), and
+   is handed down as data — the same discipline D024 used for the
+   recent-orders query and D029 for the Portfolio Manager. The new
+   persistence code deliberately lives in a new `apps/api/app/safety/`
+   package, not inside `risk/`, so that boundary is structural rather than
+   a convention someone can quietly erode. A test asserts it
+   (`test_the_risk_engine_stays_free_of_the_persistence_layer`).
+4. `Settings.emergency_stop_active` survives as a documented **bootstrap
+   default only**: it is consulted if and only if the table is still
+   empty, i.e. the switch has never been flipped on this database. Once
+   any row exists, `Settings` is never read again on the trade path — which
+   is the whole point, since otherwise a redeploy could silently reassert
+   a stale `.env` value over a live operational halt. The status response
+   reports `source` as `"settings_default"` or `"database"` verbatim, so
+   which one is in force is always visible rather than inferred, and the
+   provenance fields are `null` in the fallback case rather than invented.
+   The startup log line was renamed to `emergency_stop_settings_default`
+   for the same reason — the old `emergency_stop_active` key would now
+   read as a claim about current state that it cannot make.
+5. The state is read from the database on EVERY trade submission, never
+   cached in the process. That is one indexed single-row read (served by
+   the PK index) on a path that already runs several queries, and it buys
+   the property that matters: a flip takes effect on the next trade in
+   every worker, with no restart and no cache-invalidation channel to get
+   wrong. Caching was rejected outright — a stale-cache emergency stop is
+   a failure mode that fails OPEN.
+
+Verified live: `ruff check .` — "All checks passed!". `mypy apps` —
+"Success: no issues found in 74 source files". Full suite against real
+Postgres (own `docker compose -p tradingos-phase33` stack on remapped host
+ports 55433/56380, chosen so it could not touch the user's own dev stack
+on 5432/6379/8000/3005, which was left running and untouched throughout):
+**304 passed, 0 failed** — the 288 established by D036 plus 16 new tests
+in `tests/api/test_emergency_stop.py`. `alembic upgrade head` applied
+`0001`→`0010` cleanly against that database.
+Then an end-to-end run against a real `uvicorn` process on port 58001,
+with `Settings.emergency_stop_active` left FALSE the entire time: a real
+trade filled; `POST /admin/emergency-stop` with reason "Phase 33 live
+verification halt" returned `active=true, source=database` with the acting
+user's id; `GET /admin/emergency-stop` reflected it; the next real trade
+submission — same process, no restart — came back
+`status=rejected, block_reason=emergency_stop_active`; a blank reason was
+rejected 422. The uvicorn process was then **killed and restarted** with a
+byte-identical `.env` (md5 checked before and after) and the new process's
+own startup log confirming `emergency_stop_settings_default: false`: the
+status endpoint still reported `active=true` with the original reason,
+actor and timestamp, and a real trade was still rejected with
+`emergency_stop_active`. Deactivating with a reason then let a real trade
+fill again. The `emergency_stop_events` table was inspected directly in
+Postgres and held exactly the two expected rows with correct actor,
+reason, and timestamps.
+Alternatives: (a) an in-memory process flag flipped over HTTP — rejected,
+it fails D014's "everything that matters survives a restart" bar and is
+incoherent under multiple workers, where flipping the stop would halt one
+process out of N; (b) a single mutable `system_config` row updated in
+place with a separate audit table — rejected per (1) above; (c) Redis —
+rejected, the platform's durable state of record is Postgres, and putting
+a safety control in the one store that is explicitly a cache inverts the
+durability requirement; (d) having `evaluate_trade()` read the state
+itself — rejected outright, non-negotiable: the Risk Engine's zero-I/O
+purity is what makes it work when everything else is down; (e) letting
+`Settings=true` override a persisted `active=false` (a "belt and braces"
+OR of the two) — rejected, because it would make a persisted deactivation
+un-actionable without the `.env` edit-and-restart this phase exists to
+remove, and an operator who cannot turn the halt back off will eventually
+be tempted to bypass the control entirely.
+Consequences: `docs/API.md` documents the three endpoints;
+`docs/PROJECT_CONTEXT.md`'s emergency-stop open item is removed;
+`docs/TRADING_SAFETY.md` moves the emergency stop out of "not yet
+enforced" into "currently enforced in code". `Settings.emergency_stop_active`
+keeps its name and its `.env` key for compatibility, but its docstring now
+states plainly that it is a bootstrap default with no effect once a row
+exists. There is still no listing endpoint for the flip history (the rows
+are queryable directly, and a paginated `GET /admin/emergency-stop/history`
+is the obvious next increment); the stop is also not yet checked anywhere
+outside the trade path (e.g. the portfolio snapshot scheduler does not
+consult it — it places no orders, so there is nothing there to halt).
+Numbering: this worktree branched from `main` at D036 and claims **D039**
+rather than the next free D037, because sibling phase-31 and phase-32
+worktrees are running concurrently and are claiming D037/D038 — the same
+parallel-worktree convention D035 recorded, leaving headroom rather than
+risking a collision at merge time.
+Status: Implemented and verified as above.

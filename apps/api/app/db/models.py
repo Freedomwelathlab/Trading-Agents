@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -259,6 +260,42 @@ class Fill(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     fill_price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class EmergencyStopEvent(Base):
+    """Append-only history of every emergency-stop flip (docs/DECISIONS.md
+    D039). The CURRENT state of the kill switch is the `active` value of
+    the highest-`id` row; there is no row that gets updated in place, so
+    the state and its audit trail are the same object and cannot drift
+    apart.
+
+    Empty table means "never flipped", in which case the caller falls back
+    to `Settings.emergency_stop_active` as the documented default (D039) -
+    it is a bootstrap default, not an override: once any row exists,
+    `Settings` is no longer consulted.
+
+    `id` is a monotonic BigInteger identity rather than this schema's usual
+    random `uuid4` PK, deliberately: "latest row wins" has to be a total,
+    unambiguous order, and two flips within the same clock tick would make
+    `created_at` alone ambiguous. This is the one table whose ordering is
+    load-bearing for a safety control, so it gets a sequence.
+
+    `reason` is NOT NULL on activation by API contract (the request schema
+    requires it) and is also required on deactivation - a kill switch that
+    can be turned off with no recorded justification is not an audited
+    control. `actor_user_id` is the authenticated caller who flipped it,
+    FK'd to users like orders.submitted_by_user_id.
+    """
+
+    __tablename__ = "emergency_stop_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class PortfolioSnapshotRow(Base):

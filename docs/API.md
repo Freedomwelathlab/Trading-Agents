@@ -498,6 +498,55 @@ anywhere" scope cut was closed by D031 above; D034's `GET /brokers`
 there is still no admin-wide broker listing, and none for orders or
 fills.
 
+## `POST /admin/emergency-stop`
+
+Requires `admin:manage` (D039). Halts all trading platform-wide. Request
+(`EmergencyStopRequest`): `{"reason": "..."}` — required, 1–500 chars and
+non-blank after stripping (422 otherwise); there is no way to flip this
+control without recording why.
+
+Response (200, `EmergencyStopStatusResponse`):
+```json
+{
+  "active": true,
+  "source": "database",
+  "reason": "vendor feed went stale",
+  "actor_user_id": "…",
+  "changed_at": "2026-08-29T11:37:22.042596Z"
+}
+```
+
+Takes effect on the very next trade submission in every worker process —
+no restart, no `.env` edit, no redeploy. Every trade then returns
+`status: "rejected"` with `block_reason: "emergency_stop_active"`, exactly
+as the `EMERGENCY_STOP_ACTIVE` block reason has always behaved; only the
+source of the flag changed (D039). Each call appends a row to the
+append-only `emergency_stop_events` table, including a repeat activation —
+the table is a log of attempts to change the control, not a state cell.
+
+## `POST /admin/emergency-stop/deactivate`
+
+Requires `admin:manage` (D039). Resumes trading. Same request and response
+shapes as above; `reason` is required here too. A separate URL rather than
+a boolean on the activate route, so disabling a safety control can never
+be the accidental result of a defaulted body.
+
+## `GET /admin/emergency-stop`
+
+Requires `Authorization: Bearer <token>` — any active user, no special
+permission (D039, same scoping argument as D034's `GET /brokers`: knowing
+you are blocked is not privileged information, only flipping the switch
+is). Returns the same `EmergencyStopStatusResponse` shape, read from the
+database, so it always reflects what the next trade will be evaluated
+against.
+
+`source` is `"database"` once any flip has ever been persisted, and
+`"settings_default"` while the table is still empty and
+`Settings.emergency_stop_active` (the `EMERGENCY_STOP_ACTIVE` env var) is
+acting as the bootstrap default. In the `settings_default` case `reason`,
+`actor_user_id`, and `changed_at` are `null` — not invented. Once a row
+exists, the env var is never consulted again.
+
 ## `GET /brokers`
 
 Requires `Authorization: Bearer <token>` — any active user, no special

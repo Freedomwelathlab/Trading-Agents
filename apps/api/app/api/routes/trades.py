@@ -40,6 +40,15 @@ the Risk Engine before it reaches the broker - see
 apps/api/app/oms/service.py's docstring. Its portfolio view is built from
 the same broker positions and the same `marks` dict the risk engine's
 AccountState came from, so no second, possibly-divergent valuation exists.
+
+D039 makes the emergency stop a persisted, live-flippable control:
+`_execute_trade()` reads its current state from `emergency_stop_events`
+(apps/api/app/safety/emergency_stop.py) on every submission and passes the
+resulting boolean down. `Settings.emergency_stop_active` remains only as
+the bootstrap default used while no flip has ever been recorded. The Risk
+Engine's signature and behavior are unchanged - it still receives a plain
+boolean and still returns BlockReason.EMERGENCY_STOP_ACTIVE; only the
+source of that boolean moved.
 """
 
 import uuid
@@ -79,6 +88,7 @@ from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_
 from apps.api.app.portfolio_manager.manager import portfolio_state_from_positions
 from apps.api.app.portfolio_manager.models import PortfolioLimits
 from apps.api.app.risk.models import RiskLimits, TradeProposal
+from apps.api.app.safety.emergency_stop import is_emergency_stop_active
 
 router = APIRouter(prefix="/brokers/{broker_id}/trades", tags=["trades"])
 agent_router = APIRouter(prefix="/brokers/{broker_id}/agent-trades", tags=["trades", "agents"])
@@ -155,6 +165,17 @@ async def _execute_trade(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"DATA_UNAVAILABLE: {exc}") from None
 
+    # D039: the emergency stop's authoritative state is a persisted row,
+    # read here (one layer above the Risk Engine) and handed down as a
+    # plain boolean - the engine stays zero-I/O, exactly as with
+    # recent_orders below. Read per submission, never cached, so an
+    # admin's flip takes effect on the next trade with no restart.
+    # settings.emergency_stop_active is only the bootstrap default used
+    # while no flip has ever been persisted.
+    emergency_stop_active = await is_emergency_stop_active(
+        session, settings_default=settings.emergency_stop_active
+    )
+
     # D024: a targeted, indexed read of this broker+symbol's recent FILLED
     # orders, handed to the (still pure) risk engine as plain data - never
     # a DB access the engine makes itself.
@@ -172,7 +193,7 @@ async def _execute_trade(
         account,
         limits,
         broker_adapter,
-        emergency_stop_active=settings.emergency_stop_active,
+        emergency_stop_active=emergency_stop_active,
         submitted_by_user_id=submitted_by_user_id,
         recent_orders=recent_orders,
         portfolio=portfolio,

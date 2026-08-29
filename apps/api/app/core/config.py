@@ -33,8 +33,15 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     emergency_stop_active: bool = False
-    """Global kill switch, flippable without a redeploy. Checked on every
-    trade submission (spec §46's 'emergency stop' control)."""
+    """BOOTSTRAP DEFAULT ONLY as of Phase 33 (docs/DECISIONS.md D039).
+
+    The authoritative state of spec §46's emergency stop is a persisted
+    row in `emergency_stop_events`, read on every trade submission by
+    apps/api/app/safety/emergency_stop.py and flipped live through
+    POST /admin/emergency-stop - no `.env` edit, no restart. This setting
+    is consulted if and only if that table is still empty, i.e. the switch
+    has never been flipped on this database; once one row exists, changing
+    this value has no effect on the trade path."""
 
     paper_broker_starting_cash: Decimal = Decimal(100_000)
     """Starting cash for a paper broker the first time an order references

@@ -2,8 +2,9 @@
 in any response - CreateUserResponse deliberately has no such field."""
 
 import uuid
+from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CreateUserRequest(BaseModel):
@@ -87,3 +88,37 @@ class ListBrokerGrantsResponse(BaseModel):
     grants: list[BrokerGrantResponse]
     limit: int
     offset: int
+
+
+class EmergencyStopRequest(BaseModel):
+    """`reason` is required and non-blank on BOTH activate and deactivate
+    (docs/DECISIONS.md D039). Turning the kill switch back on for the whole
+    platform with no recorded justification would make the audit trail
+    useless exactly where it matters most, so the schema - not a convention
+    - enforces it. Trailing/leading whitespace is stripped and the result
+    must still be non-empty, so `"   "` is a 422, not a blank audit row."""
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("reason must not be blank")
+        return stripped
+
+
+class EmergencyStopStatusResponse(BaseModel):
+    """`source` is "database" once any flip has been persisted and
+    "settings_default" while the table is still empty and
+    Settings.emergency_stop_active is acting as the bootstrap default -
+    reported verbatim so a caller can always tell which one is in force
+    (D039). The provenance fields are None in the settings_default case
+    rather than invented."""
+
+    active: bool
+    source: str
+    reason: str | None = None
+    actor_user_id: uuid.UUID | None = None
+    changed_at: datetime | None = None

@@ -68,8 +68,17 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
   `trading_mode=live` and `live_trading_enabled` is not `true`.
 - `apps/api/app/core/logging.py` — structlog processor redacts any log field
   whose key matches a secret/password/token/key pattern.
+- `apps/api/app/safety/emergency_stop.py` + `emergency_stop_events` —
+  spec §46's emergency stop (D039). The authoritative state is a persisted,
+  append-only, audited row, flipped live by an `admin:manage` holder over
+  `POST /admin/emergency-stop` (a reason is required) with no restart or
+  `.env` edit. The trade route reads it on every submission and hands the
+  boolean to the Risk Engine, which stays zero-I/O and rejects every trade
+  with `EMERGENCY_STOP_ACTIVE` while it is on. `EMERGENCY_STOP_ACTIVE` in
+  `.env` is now only the bootstrap default used before the first-ever flip;
+  it does not override a persisted row.
 
 ## Not yet enforced (because not yet built)
 
-Risk engine, OMS, broker adapter, emergency stop, audit/decision-chain
+Broker adapter beyond the paper simulator, and the full audit/decision-chain
 tables. Do not write code that assumes any of these exist.
