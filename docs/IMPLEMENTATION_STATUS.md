@@ -565,6 +565,70 @@ Update this after meaningful implementation work — not for every commit.
   model portfolio constraints. Docker containers/volumes, the compose
   override, the test-only `.env` and the venv were removed afterward.
 
+- **Phase 27 — automatic/scheduled portfolio snapshots (2026-08-29, D030).**
+  Closes the "automatic/scheduled portfolio snapshotting" item Phase
+  25/D027 explicitly deferred, and adds the first background component in
+  the system. `apps/api/app/portfolio/scheduler.py`: a
+  `PortfolioSnapshotScheduler` (plain `asyncio` task + `asyncio.sleep`, no
+  new dependency) started from the FastAPI lifespan, running one cycle
+  immediately and then every `PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS`
+  (new setting, default 3600). Gated by
+  `PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED` (new setting, **default false** -
+  see D030 for the fail-closed reasoning); with the defaults, nothing is
+  constructed and runtime behavior is unchanged from Phase 25. A cycle
+  reads the brokers that have a `broker_accounts` row, and for each one
+  fetches a real quote for every nonzero-position symbol through the
+  *existing* `MarketDataRouter` (D015/D017) - the scheduler has no caller
+  to supply `marks`, and it never invents, defaults, or carries one
+  forward. If any held symbol has no real quote, that broker is skipped
+  for that cycle: nothing is written, and a typed
+  `ScheduledSnapshotOutcome` (`CAPTURED` /
+  `SKIPPED_MARKET_DATA_UNAVAILABLE` /
+  `SKIPPED_MARKET_DATA_NOT_CONFIGURED` / `SKIPPED_NO_BROKER_ACCOUNT` /
+  `SKIPPED_INCOMPLETE_VALUATION`) is returned and logged at warning level
+  with the unpriced symbols and the vendor's own sentinel text. A
+  cash-only broker (no open positions) needs no marks and is captured
+  normally even with market data entirely NOT_CONFIGURED. When it does
+  capture, it runs the identical `compute_portfolio_snapshot()` and the
+  identical write path the manual `POST .../portfolio/snapshots` uses -
+  that write was extracted this phase into
+  `apps/api/app/portfolio/persistence.py`
+  (`persist_portfolio_snapshot()`), with the route's response-shaping
+  pulled into a `_to_history_entry()` helper, so the two paths cannot
+  drift; a scheduler-written row reads back through
+  `GET .../portfolio/history` indistinguishably from a manual one. No new
+  table and no migration were needed. 20 new tests (8 unit in
+  `tests/portfolio/test_scheduler.py` - mark resolution through a real
+  `MarketDataRouter` with a fake only at the vendor boundary, plus the
+  interval and default-off guards; 12 DB-backed integration in
+  `tests/api/test_snapshot_scheduler.py`, reusing
+  `tests/api/test_trades.py`'s fixtures, covering capture, each skip
+  reason, "one unpriceable symbol blocks the whole snapshot", a full
+  mixed cycle, and the running task actually writing a row on its timer).
+  228/228 total tests passing, `ruff check .`/`mypy apps` both clean
+  (65 source files). Verified live against a real uvicorn process and a
+  real Postgres in this worktree with the scheduler enabled at a 10s
+  interval: two seeded brokers, both given real positions through the
+  real trade endpoint. The flat (bought-then-sold) broker was
+  snapshotted automatically every cycle, and `.../portfolio/history`
+  returned four genuine scheduler-written rows (cash `100100.00000000`,
+  realized P&L `100.00000000`, `captured_at`s ~10s apart) computed from
+  the real fills; the broker still holding `AAPL.US` was skipped on every
+  single cycle with `status: "skipped_market_data_not_configured"` and
+  `unpriced_symbols: ["AAPL.US"]`, its history staying empty - the
+  no-fabrication guarantee observed live rather than only asserted in
+  tests. **Not verified live:** the router-supplied-mark *capture* path
+  against a real vendor - no Longbridge credentials exist in this
+  environment, so the market-data layer genuinely reported
+  NOT_CONFIGURED and the live run exercised the refusal path, not the
+  success path; that path is covered only by the integration tests
+  (real router, fake at the vendor boundary). Graceful lifespan shutdown
+  (`scheduler.stop()`) was covered by tests but not in the live run,
+  which ended in a forced kill. Docker containers/volumes, a temporary
+  port-remapping compose override (needed to run alongside concurrent
+  phase-26/phase-28 stacks), the test-only `.env`, and the verification
+  venv were all removed afterward.
+
 ## In Progress
 
 Nothing currently mid-implementation.
@@ -579,9 +643,12 @@ Phase 20+ (order not finalized): the rest of the parallel analyst layer
 (fundamental/news/sentiment — each blocked on a real, wired data source),
 research debate, and FIFO/LIFO cost-basis reporting as a Portfolio module
 alternative to the current average-cost method. Automatic/scheduled
-portfolio snapshotting (cron/background-job capture, on top of Phase
-25/D027's manual-only `POST .../snapshots`) - explicit future work, not
-started (see D027's Consequences for why). If a second analyst is
+portfolio snapshotting is now DONE (Phase 27/D030) - remaining follow-ons
+there: market-hours awareness (the interval is plain wall-clock, so an
+enabled scheduler records unchanged after-hours rows or logs repeated
+skips), and multi-worker safety (each API worker process runs its own
+independent loop, so >1 worker would multiply rows - see D030's
+Consequences). If a second analyst is
 ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
@@ -630,19 +697,29 @@ optimization.
 
 ## Tests
 
-234 tests, all passing - 208 as of the Phase 23/24/25 merge verification
-below, plus Phase 26's 26 new tests (D029): 13 pure unit tests for the
-trade-path Portfolio Manager (`tests/portfolio_manager/test_manager.py`),
-5 for its wiring into the OMS (`tests/oms/test_service_portfolio_manager.py`,
-including one proving a Portfolio-Manager-resized quantity is itself
-re-gated by the Risk Engine), 4 real-Postgres persistence tests for the
-`orders.portfolio_*` audit columns
-(`tests/db/test_portfolio_decision_persistence.py`), and 4 real-Postgres
-HTTP integration tests (`tests/api/test_trades_portfolio_manager.py`).
-That total is a real `pytest tests/ -q` collected count against a real
-Postgres migrated through `0009`, not an arithmetic estimate.
+Each of Phase 26 and Phase 27 was built in its own parallel worktree
+against the same 208-test baseline and independently confirmed a real
+`pytest tests/ -q` collected count within its own worktree: **234** for
+Phase 26 (208 baseline + 26 new — 13 pure unit tests for the trade-path
+Portfolio Manager in `tests/portfolio_manager/test_manager.py`, 5 for its
+OMS wiring in `tests/oms/test_service_portfolio_manager.py` including one
+proving a Portfolio-Manager-resized quantity is itself re-gated by the
+Risk Engine, 4 real-Postgres persistence tests for the `orders.portfolio_*`
+audit columns in `tests/db/test_portfolio_decision_persistence.py`, and 4
+real-Postgres HTTP integration tests in
+`tests/api/test_trades_portfolio_manager.py`), and **228** for Phase 27
+(208 baseline + 20 new — 8 unit in `tests/portfolio/test_scheduler.py`, 12
+DB-backed integration in `tests/api/test_snapshot_scheduler.py` covering
+scheduled-snapshot capture, each typed skip reason, and the running
+asyncio task writing a real row on its timer). Neither number is the real
+post-merge total — that requires a full `pytest tests/ -q` run against
+main once both worktrees (and any sibling phases merged alongside them)
+are combined, since the two additions are disjoint test files with no
+overlap. This section will be corrected with that real merged count as
+part of the standard full-suite verification pass that follows every
+merge in this project (see the Phase 23/24/25 precedent below).
 
-The 208 baseline was confirmed 2026-08-29 by a full from-scratch
+208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real
 Postgres/Redis via docker-compose, `alembic upgrade head` through 0008,
 `pytest tests/ -q`) after the Phase 23/24/25 merge, correcting this

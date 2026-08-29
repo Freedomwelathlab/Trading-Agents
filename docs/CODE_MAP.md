@@ -297,8 +297,9 @@ persisted append-only snapshot history (D027) — closes
 read/compute path (`GET /brokers/{broker_id}/portfolio`) makes no writes
 and needs no new tables; the snapshot-history path
 (`POST .../portfolio/snapshots`, `GET .../portfolio/history`) adds two
-new append-only tables and writes only when explicitly asked to — no
-scheduler.
+new append-only tables. Phase 27 (D030) added a second, opt-in write
+trigger: a background scheduler that sources its own real marks from
+`MarketDataRouter` instead of a request body.
 Main files: `apps/api/app/portfolio/models.py` (`PortfolioSnapshot`,
 `PortfolioPosition` — Pydantic, all `Decimal`), `apps/api/app/portfolio/errors.py`
 (`MissingMarkError`, `BrokerAccountNotFoundError`), `apps/api/app/portfolio/snapshot.py`
@@ -306,7 +307,17 @@ Main files: `apps/api/app/portfolio/models.py` (`PortfolioSnapshot`,
 pure function, no DB/I/O, directly unit-testable), `apps/api/app/api/routes/portfolio.py`
 (`router`: `GET /brokers/{broker_id}/portfolio`,
 `POST /brokers/{broker_id}/portfolio/snapshots`,
-`GET /brokers/{broker_id}/portfolio/history`)
+`GET /brokers/{broker_id}/portfolio/history`),
+`apps/api/app/portfolio/persistence.py` (`persist_portfolio_snapshot()` —
+the single append-only write path shared by the manual POST route and the
+scheduler, extracted in D030 so the two cannot drift),
+`apps/api/app/portfolio/scheduler.py` (D030 — `PortfolioSnapshotScheduler`
+(asyncio task, started/stopped by the lifespan in
+`apps/api/app/main.py`), `run_snapshot_cycle()`,
+`capture_scheduled_snapshot()`, `resolve_marks()`,
+`eligible_broker_ids()`, `open_position_symbols()`, and the typed
+`ScheduledSnapshotOutcome`/`ScheduledSnapshotStatus`/`SnapshotCycleResult`
+results)
 Dependencies: `apps.api.app.db.models` (`BrokerAccount`, `BrokerPosition`,
 `Order`, `Fill` — read-only for the GET; `PortfolioSnapshotRow`/
 `PortfolioSnapshotPositionRow` — written by the POST, read by the history
@@ -318,7 +329,14 @@ Tests: `tests/portfolio/test_snapshot.py` (6 pure unit tests for
 `replay_symbol_fills()`'s average-cost-basis math, no DB),
 `tests/api/test_portfolio.py` (23 integration tests against real
 Postgres, reusing `tests/api/test_trades.py`'s fixtures via direct import
-— 15 pre-D027 covering the GET, 8 new covering the POST/history routes)
+— 15 pre-D027 covering the GET, 8 new covering the POST/history routes),
+`tests/portfolio/test_scheduler.py` (8 unit tests — mark resolution
+through a real `MarketDataRouter` with a fake only at the vendor
+boundary, the interval guards, and the scheduler-disabled-by-default
+guard), `tests/api/test_snapshot_scheduler.py` (12 integration tests
+against real Postgres — capture, each typed skip reason, "one unpriceable
+symbol blocks the whole snapshot", a mixed multi-broker cycle, and the
+running asyncio task writing a real row on its timer)
 Important: `Permission.VIEW_PORTFOLIO` is deliberately separate from
 `Permission.SUBMIT_PAPER_TRADE` — this module is read-only with respect
 to capital/orders (persisting a snapshot doesn't change that — see D027),
@@ -341,6 +359,22 @@ is a child table of `PortfolioSnapshotRow`, not a JSON column — see
 D027's Reason for the full reasoning (queryability of per-symbol history,
 e.g. "AAPL's position history," and consistency with how Order/Fill
 already model this schema's other per-symbol time series).
+
+Phase 27 (D030) note: the scheduler is the first background component in
+this codebase. It is **disabled by default**
+(`PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED=false`,
+`PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS=3600`); with the defaults nothing is
+constructed in the lifespan at all. Because it has no HTTP caller to
+supply `marks`, it fetches every held symbol's mark from the existing
+`MarketDataRouter` and — this is the load-bearing part — writes
+**nothing** for a broker whose holdings it cannot fully price, returning a
+typed `ScheduledSnapshotOutcome` and logging
+`portfolio_snapshot_skipped` at warning level with the exact unpriced
+symbols. It never substitutes avg_cost, zero, a prior mark, or
+`Settings.paper_broker_starting_cash` (the last of which the read-only
+GET route does fall back to — deliberately not mirrored here; see D030).
+A broker with no open positions needs no marks and is captured normally
+even when market data is NOT_CONFIGURED.
 
 ## Backtesting module + route
 

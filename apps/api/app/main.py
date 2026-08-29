@@ -14,11 +14,13 @@ from apps.api.app.api.routes.trades import router as trades_router
 from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
+from apps.api.app.db.base import get_session_factory
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_history_provider,
     build_longbridge_provider,
 )
 from apps.api.app.marketdata.router import MarketDataRouter
+from apps.api.app.portfolio.scheduler import PortfolioSnapshotScheduler
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -42,6 +44,22 @@ async def lifespan(app: FastAPI):
     # nothing to parallelize against (see D019's "future work" note).
     app.state.technical_analyst = build_technical_analyst(llm_provider)
 
+    # Phase 27 (D030): automatic portfolio snapshots. Opt-in and off by
+    # default - when disabled, nothing is constructed and no task runs, so
+    # the app behaves exactly as it did through Phase 25/D027's
+    # manual-only capture. The scheduler is handed the same
+    # MarketDataRouter built above (possibly None / NOT_CONFIGURED); it
+    # never sources a price any other way.
+    app.state.portfolio_snapshot_scheduler = None
+    if settings.portfolio_snapshot_scheduler_enabled:
+        scheduler = PortfolioSnapshotScheduler(
+            get_session_factory(),
+            market_data_router=app.state.market_data_router,
+            interval_seconds=settings.portfolio_snapshot_interval_seconds,
+        )
+        scheduler.start()
+        app.state.portfolio_snapshot_scheduler = scheduler
+
     logger.info(
         "trading_os_startup",
         trading_mode=settings.trading_mode.value,
@@ -51,8 +69,16 @@ async def lifespan(app: FastAPI):
         history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",
         technical_analyst="configured" if app.state.technical_analyst else "NOT_CONFIGURED",
+        portfolio_snapshot_scheduler=(
+            f"enabled:{settings.portfolio_snapshot_interval_seconds}s"
+            if settings.portfolio_snapshot_scheduler_enabled
+            else "DISABLED"
+        ),
     )
     yield
+
+    if app.state.portfolio_snapshot_scheduler is not None:
+        await app.state.portfolio_snapshot_scheduler.stop()
 
 
 app = FastAPI(title="Trading OS API", version="0.1.0", lifespan=lifespan)
