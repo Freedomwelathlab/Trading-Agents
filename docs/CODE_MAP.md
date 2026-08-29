@@ -61,10 +61,13 @@ Tests: `tests/test_health.py`
 
 Purpose: schema history.
 Location: `migrations/` (Alembic, async env)
-Current head: `0006_broker_state` (`0001` users/roles/assets/brokers,
-`0002` orders/fills, `0003` adds `orders.submitted_by_user_id`, `0004` adds
-`roles.permissions`, `0005` adds `broker_grants`, `0006` adds
-`broker_accounts`/`broker_positions`)
+Current head: `0009_orders_portfolio_decision` (`0001` users/roles/assets/
+brokers, `0002` orders/fills, `0003` adds `orders.submitted_by_user_id`,
+`0004` adds `roles.permissions`, `0005` adds `broker_grants`, `0006` adds
+`broker_accounts`/`broker_positions`, `0007` adds the composite
+`orders(broker_id, symbol, submitted_at)` index for the duplicate-order
+query, `0008` adds `portfolio_snapshots`/`portfolio_snapshot_positions`,
+`0009` adds the four nullable `orders.portfolio_*` audit columns — D029)
 Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
 comment history in `0001_initial.py` if adding a new enum column.
@@ -129,10 +132,22 @@ Purpose: the one sanctioned path from a `TradeProposal` to a `BrokerAdapter`
 call — application code must go through `submit_trade()`, never call a
 broker adapter directly, or the risk gate becomes optional by accident.
 Main file: `apps/api/app/oms/service.py`
-Interface: `submit_trade(proposal, account, limits, broker, *, emergency_stop_active=False, now=None) -> OMSResult`
-Dependencies: `apps.api.app.risk.engine`, `apps.api.app.execution.broker`
+Interface: `submit_trade(proposal, account, limits, broker, *, emergency_stop_active=False, now=None, recent_orders=None, portfolio=None, portfolio_limits=None) -> OMSResult`
+Dependencies: `apps.api.app.risk.engine`,
+`apps.api.app.portfolio_manager.manager` (D029),
+`apps.api.app.execution.broker`
 Tests: `tests/oms/test_service.py` — includes a spy broker adapter proving a
-rejected proposal never reaches `submit_order()`.
+rejected proposal never reaches `submit_order()`;
+`tests/oms/test_service_portfolio_manager.py` (5 tests, D029) covers the
+Portfolio Manager's placement in this path.
+
+Since D029 `submit_trade()` also runs the trade-path Portfolio Manager
+between the risk gate and the broker call. `portfolio`/`portfolio_limits`
+are optional: omitting them skips it entirely and restores pre-D029
+behaviour (safe, because it can only ever shrink or stop a trade the Risk
+Engine already approved). `OMSResult` gained `portfolio_decision` and
+`effective_quantity` — the latter is the quantity actually submitted to
+the broker, which differs from `proposal.quantity` on a MODIFY.
 
 `apps/api/app/oms/persistence.py`'s `submit_trade_and_record()` wraps
 `submit_trade()` with append-only Order/Fill persistence — see the Database
@@ -237,6 +252,42 @@ DB engine the same way D007's bug did. See `tests/api/test_trades.py`'s
 `api_client()` helper for the pattern (manually driving
 `app.router.lifespan_context(app)` since `AsyncClient` doesn't do that
 automatically the way `TestClient` does).
+
+## Portfolio Manager (trade path)
+
+Purpose: spec §18's Portfolio Manager — the portfolio-level construction
+gate between the Risk Engine and the OMS's broker call (D029). Decides
+APPROVE / MODIFY (shrink) / REJECT for a proposal the Risk Engine has
+already approved, using portfolio-wide state a per-trade check cannot see.
+**Not** the same thing as the `apps/api/app/portfolio/` reporting module
+below — different package, different purpose, no shared code.
+Main files: `apps/api/app/portfolio_manager/models.py` (`PortfolioAction`,
+`PortfolioConstraint`, `PortfolioHolding`, `PortfolioState`,
+`PortfolioLimits`, `PortfolioCheck`, `PortfolioDecision` — Pydantic, all
+`Decimal`), `apps/api/app/portfolio_manager/manager.py`
+(`decide()`, `portfolio_state_from_positions()`)
+Interface: `decide(proposal, portfolio, limits) -> PortfolioDecision`
+Dependencies: `apps.api.app.risk.models` (`TradeProposal`, `Side`) only.
+**No LLM, no network call, no I/O** — same discipline as
+`apps/api/app/risk/engine.py`, and enforced by the same absence of any
+client import.
+Tests: `tests/portfolio_manager/test_manager.py` (13 pure unit tests),
+`tests/oms/test_service_portfolio_manager.py` (5, wiring),
+`tests/db/test_portfolio_decision_persistence.py` (4, real Postgres),
+`tests/api/test_trades_portfolio_manager.py` (4, real Postgres over HTTP)
+Important: a MODIFY produces a *new* proposal that `submit_trade()` sends
+back through `evaluate_trade()` before any broker call — the Portfolio
+Manager can never hand a quantity to a broker that the Risk Engine has not
+approved. Constraints are `symbol_concentration`, `cash_reserve` and
+`max_open_positions` (limits from `Settings.portfolio_*`); spec §18's
+correlation/sector/volatility/return/drawdown items are deliberately
+unimplemented for want of sector data and a persisted return series (D029).
+`REQUEST_MORE_RESEARCH` exists in the enum but is never emitted. A failing
+check only blocks when the trade *worsens* that measure, so a de-risking
+sell is never refused because of a pre-existing breach. Decisions persist
+to `orders.portfolio_action` / `portfolio_binding_constraint` /
+`portfolio_detail` / `portfolio_requested_quantity` (migration `0009`);
+null there means "never ran", never "approved".
 
 ## Portfolio module + route
 

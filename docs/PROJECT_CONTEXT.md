@@ -35,8 +35,9 @@ implemented.
 
 Data → Analysts (one exists: TechnicalAnalyst) → Research debate (not built)
 → Trader proposal (TraderAgent exists) → **Risk Engine (deterministic,
-non-LLM, implemented)** → Portfolio (not built) → OMS (implemented) → Broker
-adapter (paper only, implemented).
+non-LLM, implemented)** → Portfolio Manager (deterministic, non-LLM,
+implemented — Phase 26/D029) → OMS (implemented) → Broker adapter (paper
+only, implemented).
 
 ## Safety Rules
 
@@ -57,9 +58,10 @@ tests.
 
 ## Current Status
 
-Phases 1-23 complete (19-22 built in parallel worktrees, merged
+Phases 1-26 complete (19-22 built in parallel worktrees, merged
 2026-08-28; phase 23 built in its own worktree alongside sibling
-phase-24/25 work): repo skeleton, deterministic risk engine, paper broker
+phase-24/25 work; phase 26 in its own worktree alongside sibling
+phase-27/28 work): repo skeleton, deterministic risk engine, paper broker
 + OMS, order/fill persistence, market-data routing, HTTP trade
 submission, authentication, role-based authorization, per-broker access
 grants, a minimal admin API (now including update/deactivate), persisted
@@ -166,14 +168,36 @@ work rather than solved by fabricating dates on real prices. Live-verified
 against real Longbridge data: a real `AAPL.US` backtest produced a
 genuine equity curve with one real, risk-gated trade.
 
+Phase 26 (D029) builds the trade-path **Portfolio Manager** — the box
+every prior phase's docs kept flagging as missing. `apps/api/app/
+portfolio_manager/` is a pure `decide(proposal, portfolio, limits) ->
+PortfolioDecision` (no LLM, no network, no I/O), run inside
+`oms/service.py`'s `submit_trade()` after the Risk Engine approves a
+proposal and before the broker call. It can APPROVE, shrink (MODIFY), or
+REJECT, enforcing per-symbol concentration vs equity, a cash-reserve
+floor, and a distinct-open-positions cap — the aggregate-portfolio
+questions a per-trade risk check structurally cannot see. Spec §18's
+correlation, sector concentration, volatility, expected return and
+drawdown are deliberately not implemented: no sector column and no
+persisted per-symbol return series exist, and approximating them would be
+fabrication. A MODIFY's resized proposal is re-run through the Risk
+Engine before any broker call, so no quantity this system produces —
+including one it produced itself — reaches a broker ungated;
+`apps/api/app/risk/engine.py` was not modified. Every decision persists
+to `orders.portfolio_*` (migration `0009`) as spec §18's audit record.
+This is a different package from the read-only reporting `portfolio/`
+module (D022/D027) and shares no code with it.
+
 ## Planned Work
 
-Phase 26+: the rest of the parallel analyst layer (fundamental/news/
+Phase 27+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57),
-research debate, automatic/scheduled portfolio snapshotting (on top of
-Phase 25/D027's manual-only capture), and the trade-path Portfolio
-Manager per the governing spec's "Target" architecture. Order not
-finalized. Also pending: re-verify D018/D019's
+research debate, and automatic/scheduled portfolio snapshotting (on top
+of Phase 25/D027's manual-only capture). Order not finalized. Also open
+from Phase 26: `apps/web/` does not yet render the Portfolio Manager's
+verdict (it shows the risk verdict only), and `backtesting/` calls
+`evaluate_trade()` directly so backtests do not model portfolio-level
+constraints. Also pending: re-verify D018/D019's
 live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now

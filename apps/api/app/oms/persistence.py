@@ -29,6 +29,7 @@ from apps.api.app.db.models import Order as OrderRow
 from apps.api.app.db.models import OrderStatus
 from apps.api.app.execution.broker import BrokerAdapter
 from apps.api.app.oms.service import OMSResult, OMSStatus, submit_trade
+from apps.api.app.portfolio_manager.models import PortfolioLimits, PortfolioState
 from apps.api.app.risk.models import AccountState, RecentOrder, RiskLimits, TradeProposal
 
 
@@ -84,6 +85,8 @@ async def submit_trade_and_record(
     now: datetime | None = None,
     submitted_by_user_id: uuid.UUID | None = None,
     recent_orders: list[RecentOrder] | None = None,
+    portfolio: PortfolioState | None = None,
+    portfolio_limits: PortfolioLimits | None = None,
 ) -> OMSResult:
     result = submit_trade(
         proposal,
@@ -93,20 +96,35 @@ async def submit_trade_and_record(
         emergency_stop_active=emergency_stop_active,
         now=now,
         recent_orders=recent_orders,
+        portfolio=portfolio,
+        portfolio_limits=portfolio_limits,
     )
 
     status = OrderStatus.FILLED if result.status is OMSStatus.FILLED else OrderStatus.REJECTED
     block_reason = result.risk_decision.reason.value if result.risk_decision.reason else None
+    pd = result.portfolio_decision
+    # `quantity` records what was actually acted on, so a Portfolio-Manager
+    # resize is visible as quantity != portfolio_requested_quantity rather
+    # than as a silently rewritten proposal (D029).
+    acted_quantity = (
+        result.effective_quantity if result.effective_quantity is not None else proposal.quantity
+    )
     order_row = OrderRow(
         broker_id=broker_id,
         symbol=proposal.symbol,
         side=proposal.side,
-        quantity=proposal.quantity,
+        quantity=acted_quantity,
         estimated_price=proposal.estimated_price,
         stop_price=proposal.stop_price,
         status=status,
         risk_block_reason=block_reason,
         risk_detail=result.risk_decision.detail,
+        portfolio_action=pd.action.value if pd else None,
+        portfolio_binding_constraint=(
+            pd.binding_constraint.value if pd and pd.binding_constraint else None
+        ),
+        portfolio_detail=pd.detail if pd else None,
+        portfolio_requested_quantity=pd.requested_quantity if pd else None,
         submitted_by_user_id=submitted_by_user_id,
     )
     session.add(order_row)

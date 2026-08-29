@@ -1,6 +1,6 @@
 # Architecture
 
-## Current (Phase 1-22)
+## Current (Phase 1-26)
 
 ```mermaid
 flowchart LR
@@ -37,8 +37,11 @@ flowchart LR
     loadbroker --> persist[OMS submit_trade_and_record]
     persist --> oms[submit_trade]
     oms --> risk[Risk Engine\nevaluate_trade]
-    risk -->|approved| broker[PaperBrokerAdapter\nin-memory, this request only]
+    risk -->|approved| pm["Portfolio Manager\ndecide() - pure, no LLM (D029)"]
     risk -->|blocked| rejected[RiskDecision: rejected]
+    pm -->|approve| broker[PaperBrokerAdapter\nin-memory, this request only]
+    pm -->|modify: resized proposal| risk
+    pm -->|reject| pmrejected[PortfolioDecision: reject\napproved by risk, stopped here]
     broker --> fill[Fill]
     persist --> orders[(orders / fills\nappend-only)]
     broker --> savebroker[save_paper_broker]
@@ -140,14 +143,37 @@ The Risk Engine is the load-bearing boundary in this diagram — everything
 above it can be wrong or down without capital risk; everything below it must
 still fail closed if the Risk Engine itself is unreachable.
 
+Phase 26 (D029) built the **"Portfolio Manager" box above** —
+`apps/api/app/portfolio_manager/`, a pure `decide(proposal, portfolio,
+limits) -> PortfolioDecision` with no LLM, no network call and no I/O,
+holding exactly the discipline `risk/engine.py` holds. It runs inside
+`oms/service.py`'s `submit_trade()`, after `evaluate_trade()` has approved
+a proposal and before the broker call, and can APPROVE, shrink (MODIFY),
+or REJECT. Two properties are load-bearing: a risk-rejected proposal
+never reaches it (it is a second, narrower gate, never a bypass), and a
+MODIFY-resized proposal goes back through `evaluate_trade()` before any
+broker call — so no quantity this system produces, including one it
+produced itself, reaches a broker ungated. It enforces three constraints
+computable from data this repo stores (per-symbol concentration vs
+equity, a cash reserve floor, and a distinct-open-positions cap);
+spec §18's correlation, sector concentration, volatility, expected return
+and drawdown are deliberately absent because no sector data and no
+persisted per-symbol return series exist to compute them from. Every
+decision is persisted per-order in `orders.portfolio_*` (migration 0009)
+and surfaced on `TradeSubmissionResponse`, which is why `approved: true`
+with `status: "rejected"` is now meaningful: the Risk Engine passed the
+trade and the Portfolio Manager stopped it. See D029.
+
 Phase 19 (D022) built a **read-only Portfolio reporting module**
 (`apps/api/app/portfolio/`, `GET /brokers/{broker_id}/portfolio`) — not
-the "Portfolio Manager" box in the diagram above. That box is a
-trade-path component sitting between the Risk Engine and the OMS,
-participating in the decision of whether/how a specific approved trade
-gets sized and routed; it doesn't exist yet, and nothing in Phase 19
-changes the trade path (`trades.py`'s Risk Engine -> OMS -> Broker
-Adapter flow is untouched). Phase 19's module instead answers "what does
+the "Portfolio Manager" box in the diagram above, and not the same thing
+as the Phase 26 package described just above (the two share no code and
+serve different purposes). That box is a trade-path component sitting
+between the Risk Engine and the OMS, participating in the decision of
+whether/how a specific approved trade gets sized and routed; it did not
+exist at the time of Phase 19, and nothing in Phase 19 changed the trade
+path (`trades.py`'s Risk Engine -> OMS -> Broker Adapter flow was
+untouched). Phase 19's module instead answers "what does
 this broker currently hold and what's its P&L," computed from data the
 existing execution layer already persists, for any caller (a future UI,
 a human checking a broker's state) to read — it never intercepts, sizes,
@@ -161,7 +187,10 @@ through the same Risk Engine and paper-broker fill math the diagram's
 trade path uses, but does so entirely outside that path: a fresh,
 in-memory `PaperBrokerAdapter` is constructed per backtest run and
 discarded, never wired to `oms`/`execution/persistence.py`'s real
-broker-state tables. It exists to answer "how would this strategy have
+broker-state tables. It calls `evaluate_trade()` directly rather than
+`submit_trade()`, so as of Phase 26 it also does not model the Portfolio
+Manager's portfolio-level constraints — an honest gap, not an omission
+by design. It exists to answer "how would this strategy have
 performed, and did the Risk Engine gate it sensibly, over real history" —
 a research/validation tool, structurally incapable of moving real
 capital or a real broker's position.
@@ -183,7 +212,12 @@ need.
 
 Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,
 `brokers` (`0001`), `orders`, `fills` (`0002`), `broker_grants` (`0005`),
-`broker_accounts`, `broker_positions` (`0006`). Money columns already use
+`broker_accounts`, `broker_positions` (`0006`),
+`portfolio_snapshots`, `portfolio_snapshot_positions` (`0008`), plus
+`orders.portfolio_action` / `portfolio_binding_constraint` /
+`portfolio_detail` / `portfolio_requested_quantity` (`0009`, D029 — all
+nullable; a null `portfolio_action` means the Portfolio Manager never
+ran, never that it approved). Money columns already use
 `NUMERIC`, never float. `orders`/`fills` are append-only audit history;
 `broker_accounts`/`broker_positions` are mutable current-state — the two
 serve different purposes and are not duplicates of each other (D014).

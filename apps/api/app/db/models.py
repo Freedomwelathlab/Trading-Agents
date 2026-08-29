@@ -218,6 +218,21 @@ class Order(Base):
     """The RiskDecision.reason.value that caused a rejection, if any. Null
     when status is FILLED."""
     risk_detail: Mapped[str | None] = mapped_column(String(500))
+    portfolio_action: Mapped[str | None] = mapped_column(String(32))
+    """The PortfolioAction.value the trade-path Portfolio Manager returned
+    (D029, migration 0009). Null means no Portfolio Manager ran for this
+    order - either the Risk Engine rejected it first, or the caller supplied
+    no portfolio state. Never read null as 'the portfolio approved it'."""
+    portfolio_binding_constraint: Mapped[str | None] = mapped_column(String(64))
+    """The PortfolioConstraint.value that forced a MODIFY or a REJECT. Null
+    on APPROVE, and null when no Portfolio Manager ran."""
+    portfolio_detail: Mapped[str | None] = mapped_column(String(500))
+    portfolio_requested_quantity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    """The quantity the risk-approved proposal carried BEFORE the Portfolio
+    Manager saw it. `quantity` above is always the quantity actually acted
+    on, so these two differ exactly when portfolio_action is 'modify' -
+    which is what makes a resize visible in the audit trail rather than
+    silently rewriting history (spec Sec17/Sec18)."""
     submitted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     """Nullable because not every future order-creation path may have an
     authenticated human behind it (e.g. an automated agent) - but the

@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     """See docs/DECISIONS.md D024 for why 5s was chosen over a shorter or
     longer window."""
 
+    portfolio_max_symbol_pct_of_equity: Decimal = Decimal("0.25")
+    """Trade-path Portfolio Manager (D029): cap on any ONE symbol's
+    post-trade market value as a share of equity. Deliberately looser than
+    risk_max_position_pct_of_equity (0.10), because the two measure
+    different things: 0.10 caps a single order's notional, 0.25 caps the
+    aggregate position that repeated compliant orders can accumulate."""
+    portfolio_min_cash_reserve_pct_of_equity: Decimal = Decimal("0.05")
+    """Trade-path Portfolio Manager (D029): cash floor as a share of equity,
+    so the book is never fully invested. The Risk Engine's buying-power
+    check only asks whether cash covers one notional; this keeps a reserve
+    across all of them."""
+    portfolio_max_open_positions: int = 20
+    """Trade-path Portfolio Manager (D029): cap on distinct held symbols -
+    an honest position count, not a real diversification measure (this repo
+    stores no sector or correlation data to compute one from)."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None

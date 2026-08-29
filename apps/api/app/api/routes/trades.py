@@ -30,6 +30,16 @@ trade get identical protection) queries this broker+symbol's recent
 FILLED orders and hands them to the risk engine as data - never a check
 the engine performs its own I/O for. See docs/DECISIONS.md D024 for the
 duplicate definition and window.
+
+D029 adds the trade-path Portfolio Manager to `_execute_trade()` (again
+shared by both routes, so a human-submitted and an LLM-originated trade get
+identical portfolio-level treatment). It runs inside the OMS, after the
+Risk Engine has approved a proposal and before the broker call, and can
+APPROVE, shrink (MODIFY), or REJECT. A shrunk proposal is re-evaluated by
+the Risk Engine before it reaches the broker - see
+apps/api/app/oms/service.py's docstring. Its portfolio view is built from
+the same broker positions and the same `marks` dict the risk engine's
+AccountState came from, so no second, possibly-divergent valuation exists.
 """
 
 import uuid
@@ -66,6 +76,8 @@ from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
 from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
+from apps.api.app.portfolio_manager.manager import portfolio_state_from_positions
+from apps.api.app.portfolio_manager.models import PortfolioLimits
 from apps.api.app.risk.models import RiskLimits, TradeProposal
 
 router = APIRouter(prefix="/brokers/{broker_id}/trades", tags=["trades"])
@@ -125,6 +137,24 @@ async def _execute_trade(
         duplicate_order_window_seconds=settings.risk_duplicate_order_window_seconds,
     )
 
+    portfolio_limits = PortfolioLimits(
+        max_symbol_pct_of_equity=settings.portfolio_max_symbol_pct_of_equity,
+        min_cash_reserve_pct_of_equity=settings.portfolio_min_cash_reserve_pct_of_equity,
+        max_open_positions=settings.portfolio_max_open_positions,
+    )
+
+    # D029: the trade-path Portfolio Manager's view of the book, built from
+    # the same broker positions and the same marks the risk engine's
+    # AccountState came from - so the traded symbol is valued at exactly the
+    # price the proposal carries, which is what makes the projected
+    # post-trade concentration exact rather than a mixed-mark estimate.
+    try:
+        portfolio = portfolio_state_from_positions(
+            broker_adapter.positions, marks, broker_adapter.cash
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"DATA_UNAVAILABLE: {exc}") from None
+
     # D024: a targeted, indexed read of this broker+symbol's recent FILLED
     # orders, handed to the (still pure) risk engine as plain data - never
     # a DB access the engine makes itself.
@@ -145,18 +175,29 @@ async def _execute_trade(
         emergency_stop_active=settings.emergency_stop_active,
         submitted_by_user_id=submitted_by_user_id,
         recent_orders=recent_orders,
+        portfolio=portfolio,
+        portfolio_limits=portfolio_limits,
     )
 
     await save_paper_broker(session, broker_id, broker_adapter)
     await session.commit()
 
     assert result.order_id is not None  # always set by submit_trade_and_record
+    portfolio_decision = result.portfolio_decision
     return TradeSubmissionResponse(
         order_id=result.order_id,
         status=OrderStatus(result.status.value),
         approved=result.risk_decision.approved,
         block_reason=result.risk_decision.reason,
         detail=result.risk_decision.detail,
+        portfolio_action=portfolio_decision.action if portfolio_decision else None,
+        portfolio_binding_constraint=(
+            portfolio_decision.binding_constraint if portfolio_decision else None
+        ),
+        portfolio_detail=portfolio_decision.detail if portfolio_decision else None,
+        portfolio_requested_quantity=(
+            portfolio_decision.requested_quantity if portfolio_decision else None
+        ),
         fill_quantity=result.fill.quantity if result.fill else None,
         fill_price=result.fill.fill_price if result.fill else None,
     )

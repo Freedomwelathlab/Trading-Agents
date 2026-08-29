@@ -11,6 +11,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 from apps.api.app.db.models import OrderStatus
+from apps.api.app.portfolio_manager.models import PortfolioAction, PortfolioConstraint
 from apps.api.app.risk.models import BlockReason, Side
 
 
@@ -44,8 +45,21 @@ class TradeSubmissionResponse(BaseModel):
     order_id: uuid.UUID
     status: OrderStatus
     approved: bool
+    """The RISK Engine's verdict specifically. `approved: true` with
+    `status: rejected` is a real, meaningful combination as of D029: the
+    Risk Engine passed the trade and the Portfolio Manager then rejected
+    it - read `portfolio_action` to tell the two apart."""
     block_reason: BlockReason | None
     detail: str | None
+    portfolio_action: PortfolioAction | None
+    """The trade-path Portfolio Manager's verdict (D029). Null means it
+    never ran - the Risk Engine rejected the proposal first. Never read
+    null as approval."""
+    portfolio_binding_constraint: PortfolioConstraint | None
+    portfolio_detail: str | None
+    portfolio_requested_quantity: Decimal | None
+    """The quantity submitted to the Portfolio Manager. Differs from
+    fill_quantity exactly when portfolio_action is 'modify'."""
     fill_quantity: Decimal | None
     fill_price: Decimal | None
 
@@ -64,6 +78,9 @@ class AgentTradeRequest(BaseModel):
 class AgentTradeResponse(TradeSubmissionResponse):
     side: Side
     quantity: Decimal
+    """What the TraderAgent proposed - not necessarily what traded. The
+    Portfolio Manager may have shrunk it (D029); `fill_quantity` is what
+    actually reached the broker."""
     rationale: str
     """The agent's one-sentence explanation - informational only, never
     itself validated or acted on (docs/AGENT_POLICY.md)."""

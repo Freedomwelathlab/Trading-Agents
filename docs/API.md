@@ -72,13 +72,39 @@ was malformed/broker not found):
   "approved": true,
   "block_reason": null,
   "detail": null,
+  "portfolio_action": "approve",
+  "portfolio_binding_constraint": null,
+  "portfolio_detail": "No portfolio-level constraint is breached by this trade.",
+  "portfolio_requested_quantity": "10",
   "fill_quantity": "10",
   "fill_price": "100"
 }
 ```
-A rejected trade returns the same 200 shape with `status: "rejected"`,
-`approved: false`, `block_reason` set to one of `risk/models.py`'s
-`BlockReason` values, and both fill fields `null`.
+A risk-rejected trade returns the same 200 shape with `status:
+"rejected"`, `approved: false`, `block_reason` set to one of
+`risk/models.py`'s `BlockReason` values, both fill fields `null`, and
+every `portfolio_*` field `null` — the Portfolio Manager never ran,
+because the Risk Engine stopped the proposal first (D029). A null
+`portfolio_action` therefore means "never ran", never "approved".
+
+The four `portfolio_*` fields (D029) report the trade-path Portfolio
+Manager's own verdict, which is separate from `approved`:
+
+- `portfolio_action`: `"approve"`, `"modify"`, or `"reject"`
+  (`PortfolioAction` also declares `"request_more_research"` for spec §18
+  fidelity, but this deterministic implementation never emits it).
+- `portfolio_binding_constraint`: `"symbol_concentration"`,
+  `"cash_reserve"`, or `"max_open_positions"` on a modify/reject; null on
+  approve.
+- `portfolio_requested_quantity`: the quantity the Portfolio Manager was
+  given. On `"modify"` it is larger than `fill_quantity` — the trade was
+  shrunk to fit a portfolio-level limit, and the resized quantity was
+  re-checked by the Risk Engine before it reached the broker.
+
+Because of this, `approved: true` with `status: "rejected"` is a real and
+meaningful combination: the Risk Engine passed the trade and the
+Portfolio Manager stopped it. Read `portfolio_action` (not `approved`) to
+tell the two apart.
 
 Error responses: 401 if unauthenticated/token invalid; 403 if authenticated
 but missing the `trade:submit:paper` permission; 404 if `broker_id` doesn't
@@ -108,10 +134,18 @@ Response (200, `AgentTradeResponse` — `TradeSubmissionResponse` plus
 {
   "order_id": "...", "status": "filled", "approved": true,
   "block_reason": null, "detail": null,
+  "portfolio_action": "approve", "portfolio_binding_constraint": null,
+  "portfolio_detail": "No portfolio-level constraint is breached by this trade.",
+  "portfolio_requested_quantity": "1",
   "fill_quantity": "1", "fill_price": "123.45",
   "side": "buy", "quantity": "1", "rationale": "clean breakout above resistance"
 }
 ```
+This route shares `_execute_trade()` with the human-submitted route, so
+the Portfolio Manager (D029) applies identically here. Note that
+`quantity` is what the agent *proposed*: on `portfolio_action: "modify"`
+the Portfolio Manager shrank it, and `fill_quantity` is what actually
+traded.
 `rationale` is the agent's one-sentence explanation — informational only,
 never itself validated or acted on. If a `TechnicalAnalyst` is configured
 (D019) it reads the same live quote and, if a `HistoryProvider` is also
