@@ -990,6 +990,39 @@ number: sibling phase-31/32 worktrees are adding their own disjoint tests
 concurrently, so the true post-merge total must be re-derived from a
 clean-room run against merged `main`, per the D028/D033/D036 precedent.
 
+That re-derivation has since been done. A full from-scratch backend
+verification run 2026-08-29 against `main` at `05e6cc2` (Phases 31
+backtest-frontend, 32 portfolio-manager-UI, and 33 emergency-stop-admin
+all merged) confirmed the true post-merge total is **304 tests, all
+passing** — exactly Phase 33's own worktree count, because Phases 31 and
+32 were frontend-only and added no backend tests on top of the 288
+baseline. Following the same D028/D033/D036 precedent: fresh Python 3.13
+venv, `pip install -e ".[dev]"`, `ruff check .` (clean, "All checks
+passed!"), `mypy apps` (clean, "Success: no issues found in 74 source
+files" — 74 vs. D036's 71 reflects Phase 33's new `safety/` module),
+a separately-named throwaway Postgres/Redis pair on remapped host ports
+(the user's own default-port 5432/6379 dev stack, plus their uvicorn on
+8000 and Next.js dev server on 3005, was left completely untouched and
+confirmed still running before and after), `alembic upgrade head` — all
+ten migrations (0001 through Phase 33's new 0010
+`emergency_stop_events`) applied cleanly in sequence against a real
+Postgres 16 (timescaledb image) database with no manual intervention —
+and `pytest tests/ -q` against that same real database: 304 passed, 3
+pre-existing warnings (the same two `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass),
+zero failures, zero errors. One transient failure surfaced on the first
+attempt (`test_missing_jwt_secret_key_fails_closed`) — the same shell-
+environment-leakage artifact documented in D036, this time from this
+verification's own shell exporting `JWT_SECRET_KEY` ahead of the run;
+re-running with only `DATABASE_URL` and `REDIS_URL` set reproduced the
+clean 304-pass result with no code changes required. No real cross-phase
+integration bug was found between Phase 33's DB-read emergency-stop
+wiring (D039) and Phases 26-30's earlier trade-path work. Frontend
+(`apps/web`) test file count was independently confirmed unchanged at
+the 89-test / 12-file total reported after Phase 31 (D037): neither
+Phase 32 nor Phase 33 added a new `apps/web/test/*.test.tsx` file. See
+docs/DECISIONS.md D040 for the full verification record.
+
 
 208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real

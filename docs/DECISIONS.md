@@ -3049,3 +3049,83 @@ worktrees are running concurrently and are claiming D037/D038 — the same
 parallel-worktree convention D035 recorded, leaving headroom rather than
 risking a collision at merge time.
 Status: Implemented and verified as above.
+
+---
+
+**D040 — Full post-merge backend verification (Phases 31/32/33): clean run, real merged test count confirmed at 304**
+
+Date: 2026-08-29
+Decision: Ran a from-scratch backend verification of the fully-merged
+main branch at `05e6cc2` (Phase 31 backtest-frontend, Phase 32
+portfolio-manager-UI, and Phase 33 emergency-stop-admin all merged),
+following the exact D028/D033/D036 precedent: fresh Python 3.13 venv
+(`.venv_verify3133`, discarded after the run — 3.13 chosen over the
+system's 3.14 default for wheel-compatibility safety with `asyncpg` and
+other compiled deps), `pip install -e ".[dev]"`, `ruff check .`,
+`mypy apps`, real Postgres 16 (timescaledb image) and Redis 7 via
+standalone throwaway containers (`tradingos-verify3133-pg` on host port
+15532, `tradingos-verify3133-redis` on host port 16479 — a plain
+`docker compose -p tradingos-verify3133 up` was tried first but its
+port-remap override file merged rather than replaced the base compose
+file's port list and collided with the user's own port-6379 Redis, so
+the throwaway pair was instead started directly via `docker run` on the
+remapped ports with no compose project at all), `alembic upgrade head`
+against that database, then `pytest tests/ -q` with `DATABASE_URL` and
+`REDIS_URL` pointed at the throwaway pair. The user's own dev stack
+(`trading-os-postgres-1`/`trading-os-redis-1` on default ports
+5432/6379, a `--reload` uvicorn on port 8000, a Next.js dev server on
+port 3005, all using the real root `.env`) was left running and
+untouched throughout, and confirmed still healthy/listening both before
+and after this pass; no bare `docker compose down` was ever run and the
+real `.env` file was never read for `DATABASE_URL`/`REDIS_URL` (env vars
+take precedence over `.env` in pydantic-settings) or written to.
+Verified live: `ruff check .` reported "All checks passed!" with zero
+findings. `mypy apps` reported "Success: no issues found in 74 source
+files" (74 vs. D036's 71 — the three new files are Phase 33's
+`apps/api/app/safety/` module: `emergency_stop.py` and its
+`__init__.py`, plus the new admin router additions) with zero findings.
+`alembic upgrade head` applied all ten migrations in sequence — 0001
+through Phase 33's new `0010_emergency_stop_events` — against a real,
+freshly created database with no manual intervention; 0010 is now the
+head. `pytest tests/ -q` collected and ran the entire suite against
+that same real Postgres/Redis pair: **304 tests, all passing**, 3
+warnings (the same two pre-existing `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass —
+neither new nor actionable), zero failures, zero errors, in a clean run.
+One transient failure surfaced on the first attempt
+(`test_missing_jwt_secret_key_fails_closed`), the identical D036
+shell-environment-leakage artifact recurring: this verification's own
+shell had exported `JWT_SECRET_KEY` as an OS environment variable ahead
+of the run, which leaked into that one test's `Settings(_env_file=None)`
+construction (env vars are read regardless of `_env_file`); re-running
+with only `DATABASE_URL` and `REDIS_URL` set — letting every other test
+manage its own settings via fixtures/monkeypatch as the suite is
+designed to, and letting that one test fall back to the real root
+`.env`'s `jwt_secret_key` for a harmless, valid, non-empty secret value
+with no database/network implication — reproduced the clean 304-pass
+result with no code changes required. This is not a cross-phase
+integration bug and nothing in `apps/` was touched. Frontend
+(`apps/web`) was independently checked by file listing rather than a
+full `npm test` run, since this was a backend-verification pass: the 12
+`apps/web/test/*.test.tsx` files present are the same 12 that existed
+after Phase 31 (D037), confirming Phase 32 and Phase 33 added no new
+frontend test file and the previously reported 89-test frontend total
+still holds.
+Reason: this pass found no real cross-phase integration bug between
+Phase 33's persisted, DB-read emergency-stop control (D039) and Phases
+26 through 30's earlier trade-path, backtest, and portfolio-manager work
+— ruff, mypy, all ten migrations, and the full test suite were all clean
+once the verification's own environment leakage was corrected (the same
+class of leakage D036 already documented, now confirmed to recur and to
+have the same fix). This confirms Phase 33 composes correctly with the
+rest of `main`, and confirms Phase 33's own independently-reported
+304-in-worktree count already **was** the true post-merge total, because
+Phases 31 and 32 were frontend-only and added zero backend tests on top
+of D036's confirmed 288 baseline (288 + 16 new emergency-stop tests in
+`tests/api/test_emergency_stop.py` = 304, matching exactly).
+Alternatives: none considered — this is a verification pass, not a
+design decision; the only question was whether Phase 33's self-reported
+worktree count (304) coincidentally already equaled the true merged
+total or only appeared to, and a clean-room run was the only way to be
+sure rather than assume from the arithmetic alone.
+Status: Implemented and verified as above.
