@@ -227,17 +227,32 @@ to `orders.portfolio_*` (migration `0009`) as spec §18's audit record.
 This is a different package from the read-only reporting `portfolio/`
 module (D022/D027) and shares no code with it.
 
+Phase 32 (D038) closes the frontend half of D029's own recorded gap.
+`apps/web/components/PortfolioVerdict.tsx` is one shared panel rendered by
+both `TradeForm` and `AgentTradeForm`, additive to the existing risk-verdict
+block rather than a replacement: a MODIFY shows the binding constraint and
+both quantities (requested vs actually filled) so a resize is legible; a
+REJECT is violet and labelled "not the Risk Engine", deliberately distinct
+from a risk rejection's amber; an APPROVE adds nothing; and a null or
+missing `portfolio_action` renders as nothing at all — never as approval,
+since null means the Portfolio Manager never ran. The result block's colour
+is now keyed on `approved` (the risk verdict) rather than on `status`, so
+amber always means the Risk Engine said no and the D029 combination
+`approved: true` + `status: "rejected"` is no longer attributed to the
+wrong gate. No backend change was needed; the four fields already existed.
+
 ## Planned Work
 
 Phase 29+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57) and
 research debate. Order not finalized. Both the trade-path Portfolio
 Manager (Phase 26/D029) and automatic/scheduled portfolio snapshotting
-(Phase 27/D030) are now done — remaining follow-ons: the trade forms in
-`apps/web/` do not yet render the Portfolio Manager's verdict for a live
-trade (they show the risk verdict only; the *backtest* panel does show its
-aggregate counters since Phase 31/D037, and `backtesting/` has gated on the
-Portfolio Manager since Phase 30/D035), the scheduler's interval is
+(Phase 27/D030) are now done — remaining follow-ons: `backtesting/` has
+gated on the Portfolio Manager since Phase 30/D035, the backtest panel
+shows its aggregate counters since Phase 31/D037, and the trade forms in
+`apps/web/` now render the Portfolio Manager's verdict for a live trade
+too (Phase 32/D038, additive alongside the existing risk verdict). The
+scheduler's interval is
 plain wall-clock (not market-hours-aware), and each API worker process
 runs its own independent scheduler loop (so >1 worker would multiply
 snapshot rows). Also pending: re-verify D018/D019's

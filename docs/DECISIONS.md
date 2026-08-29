@@ -2806,3 +2806,115 @@ Cleanup: the `tradingos-phase31` containers, their volume, the throwaway
 process on port 3031 were all removed after the run. The user's own
 default-port stack was confirmed still running and untouched afterward.
 Status: Implemented and verified as above.
+
+---
+
+**D038 — Portfolio Manager verdict in the web UI: a shared, additive panel next to the Risk Engine's, and an absent Portfolio Manager rendered as absent**
+Date: 2026-08-29
+Numbering note: developed in parallel with sibling Phases 31 and 33 in
+separate worktrees. The last number merged to `main` was D036; Phase 31 is
+claiming D037, so this phase takes D038. Nothing here depends on either
+sibling.
+Decision: Closed the frontend gap D029 recorded against itself
+("`apps/web/` was not updated to render the new fields; the frontend still
+shows the risk verdict only, which is an honest gap, not a claim"). Added
+`apps/web/components/PortfolioVerdict.tsx` — one shared presentational
+component plus a `PortfolioVerdictFields` type — and rendered it from BOTH
+`TradeForm.tsx` and `AgentTradeForm.tsx`. The existing risk-verdict block
+was extended, never replaced: every field it already showed still shows,
+in the same place, and the Portfolio Manager's verdict appears as a
+separate panel BELOW it.
+
+One shared component rather than two copies, because the two forms consume
+the same four `portfolio_*` fields of the same DTO
+(`AgentTradeResponse` extends `TradeSubmissionResponse`), and a divergence
+between them would mean the same backend verdict reading differently
+depending on which form submitted the trade.
+
+Rendering rules, one per `portfolio_action` value:
+- `"modify"` — a blue "Resized by the Portfolio Manager" panel showing the
+  binding constraint, the backend's `portfolio_detail` verbatim, and BOTH
+  quantities (`portfolio_requested_quantity` vs the actual `fill_quantity`)
+  side by side. This is the case D029 called out as easily misread, and the
+  panel says in words that the Risk Engine approved the trade and then the
+  Portfolio Manager shrank it, and that the reduced quantity was re-gated.
+- `"reject"` — a violet panel, deliberately NOT the amber a risk rejection
+  uses, labelled "Rejected by the Portfolio Manager (not the Risk Engine)".
+  Different colour, different label, different icon: conflating the two
+  rejection sources is exactly the failure mode this phase exists to fix.
+- `"approve"` — nothing. The existing block already conveys the outcome and
+  a second "approved" badge would be noise.
+- `null`, or the fields absent entirely (an older-shaped response) —
+  nothing at all. A null action means the Portfolio Manager NEVER RAN
+  (risk-rejected first, or no portfolio state supplied); it is rendered as
+  absent, never as a success. The component fabricates no verdict the
+  backend did not send, and displays no sub-field the backend did not
+  return.
+
+A second, smaller change makes the colour honest: the result block's tone
+is now keyed on the RISK verdict (`approved`) rather than on `status`.
+Before, a `status: "rejected"` painted the block amber regardless of who
+rejected it — so a Portfolio-Manager rejection was rendered in the Risk
+Engine's own colour, attributing it to the wrong gate. Now amber always
+means "the Risk Engine said no"; a portfolio rejection gets a neutral
+block plus its violet panel. The `approved` row is also relabelled
+"approved (Risk Engine)", and `AgentTradeForm`'s `quantity` row
+"quantity (agent proposed)", since D029 made both ambiguous.
+Reason: the backend has carried a complete portfolio audit record since
+D029 and the product simply did not show it. The specific harm was not a
+missing feature but a misleading one: `approved: true` with `status:
+"rejected"` rendered as a bare amber "rejected / approved true" told a user
+the Risk Engine had both passed and stopped the same trade, with no
+indication that a second gate existed. Showing a resize was the same
+problem in a quieter form — `fill_quantity` differed from what was typed
+and nothing said why.
+No backend change was needed or made: all four fields already existed on
+`TradeSubmissionResponse` and are already documented in docs/API.md.
+Consequences: 10 new frontend tests (5 per form), 79/79 `apps/web` tests
+passing (69 before), `npm run build` compiles with zero TypeScript errors.
+Per form the five cover: approve (no panel), modify (both quantities plus
+the constraint and detail), reject (violet panel, "not the Risk Engine"
+wording, and an assertion that the risk block is NOT amber), null action
+(panel absent AND no "Portfolio Manager" text anywhere, so nothing implies
+approval), and an older-shaped response carrying no `portfolio_*` fields at
+all. Two pre-existing `eslint` findings in `SessionStatus.tsx`/`session.ts`
+remain and were not touched — they are unrelated to this change.
+Verified live, not only in tests: brought up this worktree's own docker
+stack (`docker compose -p trading-os-phase32` with host ports remapped to
+5438/6388/8008 through a throwaway override file using `!override`, to
+avoid colliding with sibling Phase 31/33 worktrees and with the user's own
+stack on the default 5432/6379/8000; the tracked `docker-compose.yml` was
+never edited), ran real Alembic migrations `0001`→`0009` against a fresh
+database, seeded a role/user/paper-broker/grant, and drove the real
+containerized API over HTTP. Obtained four REAL responses from it, in
+order, on one real broker: `AAPL` buy 5 @100 →
+`portfolio_action: "approve"`; then with
+`PORTFOLIO_MAX_SYMBOL_PCT_OF_EQUITY=0.001`, `MSFT` buy 5 @100 →
+`"modify"` / `symbol_concentration` / `portfolio_requested_quantity: "5"`
+/ `fill_quantity: "1"`; `TSLA` buy 5 @200 → `status: "rejected"` with
+`approved: true`, `block_reason: null`, `portfolio_action: "reject"`; and
+`NVDA` buy 5000 @100 → `approved: false`,
+`block_reason: "exceeds_max_position_size"`, `portfolio_action: null`.
+Each of those four verbatim JSON bodies was then fed to the real
+`TradeForm` component and the resulting DOM was dumped and read: approve
+rendered a green risk block and NO portfolio panel; modify rendered the
+blue panel with `5` and `1` in the two quantity cells and the backend's
+own detail string; reject rendered the violet panel with "not the Risk
+Engine" while the risk block came out neutral, not amber; the risk-
+rejected response rendered an amber risk block with the portfolio panel
+entirely absent.
+Not verified live: the trades were driven against the running API over
+HTTP rather than by clicking the running Next.js dev server's own form —
+the browser tool available in this environment returned HTTP 403 for the
+dev server's JS chunks, so the page never hydrated and no React handler
+could fire. The dev server itself did start and serve the real dashboard
+(both forms present in the DOM), and the component rendering above used
+the real component against real backend payloads, but the full
+click-through path was not exercised end to end this phase. No market-data
+vendor or LLM provider was wired, so all prices were caller-supplied and
+`AgentTradeForm` was exercised only through its own tests, not against a
+real agent — its rendering path is the identical shared component.
+Docker containers, volumes, the throwaway compose override, the test-only
+`.env`, `apps/web/.env.local` and the throwaway render harness were all
+removed afterward.
+Status: Implemented and verified as above.

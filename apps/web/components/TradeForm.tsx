@@ -3,8 +3,12 @@
 import { useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
 import { subscribeToBrokerSelection } from "@/lib/brokerSelection";
+import PortfolioVerdict, {
+  riskVerdictTone,
+  type PortfolioVerdictFields,
+} from "@/components/PortfolioVerdict";
 
-type TradeResponse = {
+type TradeResponse = PortfolioVerdictFields & {
   order_id?: string;
   status?: "filled" | "rejected";
   approved?: boolean;
@@ -152,29 +156,29 @@ export default function TradeForm() {
       )}
 
       {result && !errorDetail && (
-        <div
-          className={`mt-3 rounded px-3 py-2 text-sm ${
-            result.status === "rejected"
-              ? "bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-              : "bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-300"
-          }`}
-        >
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
-            <dt className="opacity-70">order_id</dt>
-            <dd>{result.order_id}</dd>
-            <dt className="opacity-70">status</dt>
-            <dd>{result.status}</dd>
-            <dt className="opacity-70">approved</dt>
-            <dd>{String(result.approved)}</dd>
-            <dt className="opacity-70">block_reason</dt>
-            <dd>{result.block_reason ?? "—"}</dd>
-            <dt className="opacity-70">fill_quantity</dt>
-            <dd>{result.fill_quantity ?? "—"}</dd>
-            <dt className="opacity-70">fill_price</dt>
-            <dd>{result.fill_price ?? "—"}</dd>
-          </dl>
-          {result.detail && <p className="mt-2">{result.detail}</p>}
-        </div>
+        <>
+          <div
+            data-testid="risk-verdict"
+            className={`mt-3 rounded px-3 py-2 text-sm ${riskVerdictTone(result)}`}
+          >
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <dt className="opacity-70">order_id</dt>
+              <dd>{result.order_id}</dd>
+              <dt className="opacity-70">status</dt>
+              <dd>{result.status}</dd>
+              <dt className="opacity-70">approved (Risk Engine)</dt>
+              <dd>{String(result.approved)}</dd>
+              <dt className="opacity-70">block_reason</dt>
+              <dd>{result.block_reason ?? "—"}</dd>
+              <dt className="opacity-70">fill_quantity</dt>
+              <dd>{result.fill_quantity ?? "—"}</dd>
+              <dt className="opacity-70">fill_price</dt>
+              <dd>{result.fill_price ?? "—"}</dd>
+            </dl>
+            {result.detail && <p className="mt-2">{result.detail}</p>}
+          </div>
+          <PortfolioVerdict {...result} />
+        </>
       )}
     </section>
   );
