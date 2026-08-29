@@ -250,8 +250,9 @@ request body — never a guessed or stale price.
 ## `POST /backtests`
 
 Runs the one hard-coded SMA(20)-crossover strategy (D025) against real
-historical daily closes through the real Risk Engine and a fresh
-in-memory paper broker. Never touches any broker's persisted state.
+historical daily closes through the real Risk Engine, the real trade-path
+Portfolio Manager (D035) and a fresh in-memory paper broker. Never touches
+any broker's persisted state.
 Requires `Authorization: Bearer <token>` from any authenticated, active
 user — no `broker_id`, no `Permission`, no `BrokerGrant` (see
 docs/DECISIONS.md D025 for why this endpoint is deliberately not scoped
@@ -290,7 +291,10 @@ Response (200, `BacktestResult`):
     {"date": "2026-08-26", "equity": "99863.600"},
     {"date": "2026-08-27", "equity": "99863.600"},
     {"date": "2026-08-28", "equity": "99966.830"}
-  ]
+  ],
+  "portfolio_modified_trades": 0,
+  "portfolio_modify_risk_blocked_trades": 0,
+  "portfolio_rejected_trades": 0
 }
 ```
 `num_trades`/`win_rate_pct` are computed over completed round trips (a
@@ -299,6 +303,19 @@ it), not raw fill count. Every trade proposal in the run was gated by the
 same Risk Engine a real paper trade uses — an all-cash BUY proposal that
 exceeds `max_position_pct_of_equity` is sized down and retried once, same
 as any other risk-gated trade in this system.
+
+The three `portfolio_*` counters (added in D035) report what the trade-path
+Portfolio Manager did during the run, using the same `PORTFOLIO_*` settings
+the live trade path uses — no backtest-specific limits:
+- `portfolio_modified_trades` — risk-approved signals it resized. Counts
+  MODIFY decisions, not fills.
+- `portfolio_modify_risk_blocked_trades` — the subset of those whose resized
+  quantity was then rejected by the Risk Engine's mandatory re-evaluation,
+  so nothing filled. Reported separately so a modify that filled and a
+  modify that was blocked afterwards are never conflated.
+- `portfolio_rejected_trades` — risk-approved signals it rejected outright.
+Risk Engine rejections are not counted by any of these — the two gates stay
+distinguishable in the audit trail (D029).
 
 Error responses: 401 (no/invalid token), 400 `NOT_CONFIGURED:` (no
 `HistoryProvider` configured — see D021/D015's Longbridge credential

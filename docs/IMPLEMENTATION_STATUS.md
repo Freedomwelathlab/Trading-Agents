@@ -700,6 +700,38 @@ Update this after meaningful implementation work — not for every commit.
   no-new-dependency scope; it remains open pending explicit permission.
   See D031/D032 for full detail.
 
+- **Phase 30 — backtests gated by the Portfolio Manager too (2026-08-29,
+  D035).** Closes the honest gap D029 itself recorded: the backtest engine
+  called `evaluate_trade()` directly, so backtests modelled per-trade risk
+  but no portfolio-level constraint. `apps/api/app/backtesting/engine.py`
+  now replicates `oms/service.py::submit_trade()`'s RISK ENGINE ->
+  PORTFOLIO MANAGER -> BROKER sequence inline, on every simulated trade
+  decision: a risk-approved proposal goes to the real
+  `portfolio_manager.manager.decide()`, and a MODIFY's resized quantity is
+  passed back through `evaluate_trade()` before the simulated fill — the
+  same load-bearing re-gate invariant D029 pinned for the live path. The
+  `PortfolioState` is built at each step from the run's own disposable
+  in-memory `PaperBrokerAdapter` (D025), never from a real broker's rows,
+  and `submit_trade()` itself is deliberately NOT called because it is
+  DB/audit-coupled while a backtest writes nothing. The loop stays pure and
+  deterministic — no LLM, no I/O added. `POST /backtests` supplies the same
+  `Settings.portfolio_*` limits the live trade path uses (no
+  backtest-specific override), and `BacktestResult` gains
+  `portfolio_modified_trades`, `portfolio_modify_risk_blocked_trades` and
+  `portfolio_rejected_trades` so the audit trail exists in backtests too.
+  **277/277 pytest tests passing** (272 pre-existing + 5 new in
+  `tests/backtesting/test_engine_portfolio_manager.py`), `ruff check .` and
+  `mypy apps` clean (69 source files). **Verified live** over real HTTP
+  against this worktree's own Docker stack (ports remapped to 5443/6390/8030
+  to avoid the running sibling phase29 stack; torn down afterwards): real
+  Alembic `0001`->`0009`, a seeded user, a real login, and three real
+  `POST /backtests` runs showing approve-only, a real MODIFY, and a real
+  portfolio REJECT. **Not verified with real vendor data:** no Longbridge
+  credentials were readable in this session, so the containerized API
+  honestly returned `NOT_CONFIGURED` for a real-symbol run and the live
+  runs above used an injected fake `HistoryProvider`'s synthetic closes —
+  unlike D025, which was verified against real Longbridge history. See D035.
+
 ## In Progress
 
 Nothing currently mid-implementation.

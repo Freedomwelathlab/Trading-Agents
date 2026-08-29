@@ -2415,3 +2415,166 @@ clean. Live-verified against the running stack: two seeded users with
 different grants, each `GET /brokers` returned only that user's broker;
 cross-user detail returned 403, a nonexistent id 404, no token 401.
 Status: Implemented and verified as above.
+
+---
+
+**D035 — Backtests run through the Portfolio Manager too: the RISK -> PORTFOLIO -> BROKER sequence replicated inline in the replay loop, not by calling submit_trade()**
+Date: 2026-08-29
+Decision: `apps/api/app/backtesting/engine.py` now gates every simulated
+trade by BOTH the Risk Engine and the trade-path Portfolio Manager,
+closing the gap D029's own "Consequences" section recorded honestly
+("`apps/api/app/backtesting/` calls `evaluate_trade()` directly ... so
+backtests are unchanged by this phase and do NOT model portfolio-level
+constraints"). Concretely, `_attempt_trade()` keeps its existing risk
+path (including the single EXCEEDS_MAX_POSITION_SIZE retry at the
+engine-reported `max_quantity_allowed`) and hands every risk-APPROVED
+proposal to a new `_apply_portfolio_gate_and_fill()`, which calls the
+real `portfolio_manager.manager.decide()` and then the real
+`PaperBrokerAdapter`. `POST /backtests` builds a `PortfolioLimits` from
+`Settings.portfolio_max_symbol_pct_of_equity` /
+`portfolio_min_cash_reserve_pct_of_equity` / `portfolio_max_open_positions`
+- the exact same values the live trade path reads - and passes it to
+`run_backtest(..., portfolio_limits=...)`. `BacktestResult` gains three
+counters (`portfolio_modified_trades`,
+`portfolio_modify_risk_blocked_trades`, `portfolio_rejected_trades`).
+Neither `apps/api/app/risk/engine.py` nor `apps/api/app/portfolio_manager/`
+was modified at all; this phase is wiring plus a result-shape addition.
+
+Reason, on the judgment calls this phase asked for:
+- Why replicate the sequence inline rather than call `submit_trade()`:
+  `submit_trade()` is the sanctioned live path precisely because it is
+  DB/audit-coupled at its edges (`submit_trade_and_record()` writes the
+  `orders`/`fills` rows, including D029's `orders.portfolio_*` audit
+  columns), and D025's whole structural guarantee is that a backtest
+  writes nothing and cannot reach a real broker's persisted state. Making
+  `engine.py` call into `oms/` would either drag that coupling into the
+  backtest path or force `submit_trade()` to grow a "backtest mode"
+  parameter - both worse than ~25 lines that mirror it. The mirroring is
+  not left to trust: `_apply_portfolio_gate_and_fill()` reproduces
+  `submit_trade()`'s branch-for-branch order (reject -> return, modify ->
+  re-gate -> return-or-fill, else fill), its docstrings name the file they
+  mirror, and `tests/backtesting/test_engine_portfolio_manager.py`
+  deliberately mirrors `tests/oms/test_service_portfolio_manager.py`'s
+  structure so the two stay comparable when either changes.
+- Why the MODIFY re-gate is unconditional here as well: it is D029's
+  correctness-critical invariant ("no quantity this system produces - from
+  an LLM, a human, or the Portfolio Manager itself - reaches a broker
+  without the deterministic Risk Engine having approved that exact
+  quantity"), and a backtest whose fills were gated more loosely than
+  production's would answer a different question than the one asked of it.
+  Two dedicated tests pin it - see the honest caveat under Status.
+- Why the `PortfolioState` is rebuilt at each simulated decision point from
+  the run's own broker: D025's fresh, disposable `PaperBrokerAdapter` IS
+  the simulated portfolio at that point in the timeline.
+  `portfolio_manager.manager.portfolio_state_from_positions()` already
+  existed for exactly this shape of input (raw positions + caller marks +
+  cash) and is itself pure, so no new I/O and no new dependency enters the
+  replay loop; the only mark supplied is that day's real close for the
+  traded symbol, the same price the proposal carries, which is the
+  mark-consistency precondition `decide()`'s docstring requires.
+- Why no backtest-specific limit override: the HTTP caller cannot override
+  them, deliberately. A backtest exists to tell you how the *deployed*
+  configuration would have behaved; letting a request supply looser
+  portfolio limits would produce a number that describes no system that
+  exists, and it would be the same scope creep D025's alternative (b)
+  rejected for stop prices. `run_backtest()`'s `portfolio_limits` argument
+  is optional only so pure unit tests can exercise the pre-D035 path,
+  mirroring D029's identical decision for `submit_trade()`'s own optional
+  `portfolio`/`portfolio_limits` - and for the same reason: skipping this
+  component cannot make a simulated trade less safe, because the Risk
+  Engine still gated it and this component can only shrink or stop a
+  trade. `POST /backtests` always supplies them.
+- Why three counters rather than one "portfolio_blocked" number: a MODIFY
+  that filled at a smaller size and a MODIFY whose resized quantity the
+  risk re-gate then rejected are different outcomes, and collapsing them
+  would hide the more interesting one. Risk Engine rejections are
+  deliberately not counted by any of the three: D029's reasoning for
+  keeping `BlockReason` and `PortfolioConstraint` separate applies
+  identically here - an audit reader must be able to tell which gate
+  stopped a trade.
+Alternatives: (a) call `submit_trade()` directly - rejected above.
+(b) Run the Portfolio Manager once per backtest against a starting
+portfolio instead of per-step - rejected: concentration and cash-reserve
+limits are functions of the portfolio as it evolves, so a single up-front
+evaluation would be a different, weaker check wearing the same name.
+(c) Retry a portfolio-REJECTED trade at a smaller size - rejected:
+`decide()` already returns MODIFY when a compliant size exists, so a
+REJECT means no size >= 1 complies; retrying would be the caller
+second-guessing the component, and `submit_trade()` does not do it either.
+(d) Persist per-simulated-trade portfolio decisions the way
+`orders.portfolio_*` does for real trades - rejected outright: that is a
+DB write in the backtest path, which is exactly what D025 made
+structurally impossible; the aggregate counters on `BacktestResult` are
+the audit surface a backtest can honestly offer. (e) Fabricate marks for
+symbols other than the traded one so a multi-symbol portfolio could be
+simulated - not applicable and not attempted: the v1 strategy trades
+exactly one symbol (D025), so the only open position ever held is the one
+being marked at its real close.
+Consequences: an existing backtest whose portfolio limits now bind will
+report a DIFFERENT (smaller or absent) trade than it did pre-D035. That is
+the intended correction, not a regression - the previous number described
+fills a real `submit_trade()` would never have made. Runs where nothing
+binds are byte-identical to before, which a baseline test asserts by
+comparing a loose-limits run against a no-limits run field by field.
+`MAX_OPEN_POSITIONS` can in practice never bind in a v1 backtest (one
+symbol, so the projected count is at most 1) - it is still evaluated
+rather than skipped, because the component decides that, not the caller.
+Numbering note: this worktree (`phase-30-backtest-portfolio-manager`)
+branched from `main` at D033. It claims **D035** rather than the next free
+D034 to leave headroom for the concurrently-running sibling phase-29
+worktree, the same convention D030/D031/D032 used when parallel worktrees
+collided on a number at merge time. If D034 turns out to be free at merge,
+this entry stays D035 - renumbering a decision after the fact is what those
+three notes exist to avoid repeating.
+Status: Implemented, tested: 5 new tests in
+`tests/backtesting/test_engine_portfolio_manager.py` - (1) a loose-limits
+run proved field-for-field identical to a no-limits run (the baseline that
+pins "an unbinding gate is invisible"), (2) a 5% per-symbol cap that
+resizes the risk-approved 9 shares to 4 and fills exactly 4, with the whole
+equity curve (10,000 / 10,040 / 9,920) hand-derived in the test's own
+comment, (3) a 99% cash-reserve limit that produces a real portfolio
+REJECT, no fill, and a run that completes normally on a flat curve, (4) the
+re-gate observed directly, and (5) a re-gate rejection proved to prevent
+the fill entirely. 277/277 total tests passing (272 pre-existing + 5),
+`ruff check .` and `mypy apps` clean (69 source files).
+Honest caveat on tests (4) and (5): unlike the live path's equivalent test,
+they monkeypatch `engine.evaluate_trade` - (4) to a pass-through spy that
+records every quantity the real engine was asked about (observing
+`[90, 9, 4, 4]`: the blocked all-cash proposal, the risk-approved 9, the
+Portfolio Manager's own 4 re-gated, then the sell), and (5) to inject a
+rejection for the resized quantity only. That is not a stylistic choice:
+the one risk check that is genuinely non-monotone in quantity is D024's
+duplicate-order rule, and the backtest engine passes no `recent_orders`
+because nothing is persisted (D025), so no real input exists that makes the
+real engine reject a smaller quantity it just approved a larger version of.
+The alternative was to leave the invariant unpinned in this context, which
+for a correctness-critical property is worse than an explicitly-labelled
+seam.
+Verified live: this worktree's own `docker compose -p tradingos-phase30`
+stack with host ports remapped to 5443/6390/8030 via a throwaway override
+file (the tracked `docker-compose.yml` was never edited) to avoid the
+concurrently-running sibling phase29 stack on 5442/6389/8029; real Alembic
+`0001`->`0009` against a fresh database, a directly-inserted test user, a
+real form login, and the real containerized API driven by curl:
+`POST /backtests` with no token -> 401, and with a real token -> 400
+`NOT_CONFIGURED: no history provider.` Then three real HTTP runs against
+the real app (real Postgres, real auth, real Risk Engine, real Portfolio
+Manager, real paper broker) under a real uvicorn server, one per outcome:
+default `PORTFOLIO_*` settings -> final equity 9,820 with all three
+counters 0; `PORTFOLIO_MAX_SYMBOL_PCT_OF_EQUITY=0.05` ->
+`portfolio_modified_trades: 1` and the equity curve 10,000 / 10,040 /
+9,920, matching the hand-derived unit test exactly; and
+`PORTFOLIO_MIN_CASH_RESERVE_PCT_OF_EQUITY=0.99` ->
+`portfolio_rejected_trades: 1`, `num_trades: 0`, flat 10,000 curve.
+Not verified live: unlike D025, this was NOT verified against real
+Longbridge historical data. No usable vendor credentials were readable in
+this session, so the containerized API reported
+`history_provider=NOT_CONFIGURED` and honestly refused a real-symbol run;
+the three runs above used an injected fake `HistoryProvider` whose closes
+are synthetic (the same hand-derived series the unit tests use). Every
+other component in those runs was the real one. No frontend work was done
+(`apps/web/` still does not render the backtest response at all, let alone
+the new counters). The docker containers, their volume, the throwaway
+compose override, the throwaway seed/live-check scripts, the test-only
+`.env` and the verification venv were all removed afterward.
+Status: Implemented and verified as above.

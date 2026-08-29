@@ -18,6 +18,7 @@ from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.models import User
 from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
+from apps.api.app.portfolio_manager.models import PortfolioLimits
 from apps.api.app.risk.models import RiskLimits
 
 router = APIRouter(prefix="/backtests", tags=["backtesting"])
@@ -48,9 +49,22 @@ async def run_backtest_endpoint(
         duplicate_order_window_seconds=settings.risk_duplicate_order_window_seconds,
     )
 
+    portfolio_limits = PortfolioLimits(
+        max_symbol_pct_of_equity=settings.portfolio_max_symbol_pct_of_equity,
+        min_cash_reserve_pct_of_equity=settings.portfolio_min_cash_reserve_pct_of_equity,
+        max_open_positions=settings.portfolio_max_open_positions,
+    )
+    # Deliberately the same Settings.portfolio_* values the live trade path
+    # reads (apps/api/app/api/routes/trades.py), with no backtest-specific
+    # override: a backtest whose portfolio limits differed from production's
+    # would answer a question nobody asked. See docs/DECISIONS.md D035.
+
     try:
         return await run_backtest(
-            request, history_provider=history_provider, risk_limits=risk_limits
+            request,
+            history_provider=history_provider,
+            risk_limits=risk_limits,
+            portfolio_limits=portfolio_limits,
         )
     except UnsupportedDateRangeError as exc:
         raise HTTPException(status_code=400, detail=f"UNSUPPORTED_DATE_RANGE: {exc}") from None
