@@ -31,9 +31,10 @@ from apps.api.app.api.dependencies import AuthorizedBroker, require_broker_acces
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import PortfolioSnapshotPositionRow, PortfolioSnapshotRow
+from apps.api.app.db.models import PortfolioSnapshotRow
 from apps.api.app.portfolio.errors import BrokerAccountNotFoundError, MissingMarkError
 from apps.api.app.portfolio.models import PortfolioPosition, PortfolioSnapshot
+from apps.api.app.portfolio.persistence import persist_portfolio_snapshot
 from apps.api.app.portfolio.snapshot import compute_portfolio_snapshot
 
 router = APIRouter(prefix="/brokers/{broker_id}/portfolio", tags=["portfolio"])
@@ -75,6 +76,35 @@ class PortfolioSnapshotHistoryResponse(BaseModel):
     offset: int
 
 
+def _to_history_entry(row: PortfolioSnapshotRow) -> PortfolioSnapshotHistoryEntry:
+    """One persisted row -> its response shape. Shared by the POST and the
+    history listing so a snapshot reads back identically however it was
+    captured - including one written by the Phase 27 scheduler
+    (apps/api/app/portfolio/scheduler.py), which is deliberately
+    indistinguishable here: a snapshot is a snapshot, and both paths run
+    the same compute + persist code."""
+    return PortfolioSnapshotHistoryEntry(
+        id=row.id,
+        broker_id=row.broker_id,
+        captured_at=row.captured_at,
+        cash=row.cash,
+        positions=[
+            PortfolioPosition(
+                symbol=p.symbol,
+                quantity=p.quantity,
+                avg_cost=p.avg_cost,
+                current_value=p.current_value,
+                unrealized_pnl=p.unrealized_pnl,
+                realized_pnl=p.realized_pnl,
+            )
+            for p in row.positions
+        ],
+        total_equity=row.total_equity,
+        total_unrealized_pnl=row.total_unrealized_pnl,
+        total_realized_pnl=row.total_realized_pnl,
+    )
+
+
 @router.get("", response_model=PortfolioSnapshot)
 async def get_portfolio_endpoint(
     broker_id: uuid.UUID,
@@ -107,12 +137,18 @@ async def create_portfolio_snapshot_endpoint(
     authorized: AuthorizedBroker = Depends(require_broker_access(Permission.VIEW_PORTFOLIO)),
 ) -> PortfolioSnapshotHistoryEntry:
     """Computes a snapshot exactly as GET .../portfolio does, then persists
-    it as a new append-only row (docs/DECISIONS.md D027). Never a
-    scheduled/automatic job - only ever created when a caller explicitly
-    POSTs here, and only ever from compute_portfolio_snapshot()'s real
-    output (same MissingMarkError/BrokerAccountNotFoundError -> 400
+    it as a new append-only row (docs/DECISIONS.md D027). This is the
+    caller-triggered path: a row appears here only because someone POSTed,
+    with marks they supplied. Phase 27 (D030) added a second, opt-in path -
+    apps/api/app/portfolio/scheduler.py, which sources its marks from the
+    real MarketDataRouter instead of a request body and skips rather than
+    guessing when a quote is unavailable. Both paths run the identical
+    compute + persist code, so the two are indistinguishable in the stored
+    history by design.
+
+    Same MissingMarkError/BrokerAccountNotFoundError -> 400
     DATA_UNAVAILABLE discipline as the read endpoint - a snapshot is never
-    persisted from a guessed or partial valuation)."""
+    persisted from a guessed or partial valuation."""
     del authorized  # required for the auth+grant check only; unused otherwise
 
     try:
@@ -127,48 +163,11 @@ async def create_portfolio_snapshot_endpoint(
     except BrokerAccountNotFoundError as exc:
         raise HTTPException(status_code=400, detail=f"DATA_UNAVAILABLE: {exc}") from None
 
-    row = PortfolioSnapshotRow(
-        broker_id=broker_id,
-        cash=computed.cash,
-        total_equity=computed.total_equity,
-        total_unrealized_pnl=computed.total_unrealized_pnl,
-        total_realized_pnl=computed.total_realized_pnl,
-    )
-    row.positions = [
-        PortfolioSnapshotPositionRow(
-            symbol=position.symbol,
-            quantity=position.quantity,
-            avg_cost=position.avg_cost,
-            current_value=position.current_value,
-            unrealized_pnl=position.unrealized_pnl,
-            realized_pnl=position.realized_pnl,
-        )
-        for position in computed.positions
-    ]
-    session.add(row)
-    await session.commit()
-    await session.refresh(row, attribute_names=["positions"])
-
-    return PortfolioSnapshotHistoryEntry(
-        id=row.id,
-        broker_id=row.broker_id,
-        captured_at=row.captured_at,
-        cash=row.cash,
-        positions=[
-            PortfolioPosition(
-                symbol=p.symbol,
-                quantity=p.quantity,
-                avg_cost=p.avg_cost,
-                current_value=p.current_value,
-                unrealized_pnl=p.unrealized_pnl,
-                realized_pnl=p.realized_pnl,
-            )
-            for p in row.positions
-        ],
-        total_equity=row.total_equity,
-        total_unrealized_pnl=row.total_unrealized_pnl,
-        total_realized_pnl=row.total_realized_pnl,
-    )
+    # Phase 27 (D030) moved the row-building into
+    # apps/api/app/portfolio/persistence.py so this route and the scheduled
+    # capture write identical rows through one code path.
+    row = await persist_portfolio_snapshot(session, broker_id, computed)
+    return _to_history_entry(row)
 
 
 @router.get("/history", response_model=PortfolioSnapshotHistoryResponse)
@@ -201,29 +200,7 @@ async def get_portfolio_history_endpoint(
     )
 
     return PortfolioSnapshotHistoryResponse(
-        snapshots=[
-            PortfolioSnapshotHistoryEntry(
-                id=row.id,
-                broker_id=row.broker_id,
-                captured_at=row.captured_at,
-                cash=row.cash,
-                positions=[
-                    PortfolioPosition(
-                        symbol=p.symbol,
-                        quantity=p.quantity,
-                        avg_cost=p.avg_cost,
-                        current_value=p.current_value,
-                        unrealized_pnl=p.unrealized_pnl,
-                        realized_pnl=p.realized_pnl,
-                    )
-                    for p in row.positions
-                ],
-                total_equity=row.total_equity,
-                total_unrealized_pnl=row.total_unrealized_pnl,
-                total_realized_pnl=row.total_realized_pnl,
-            )
-            for row in rows
-        ],
+        snapshots=[_to_history_entry(row) for row in rows],
         limit=limit,
         offset=offset,
     )

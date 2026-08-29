@@ -179,6 +179,41 @@ point-in-time read), but none of those consumers are built yet; Phase 25
 only adds the ability to write and read the history they'll eventually
 need.
 
+Phase 27 (D030) adds the **first background/scheduled component in the
+system** — `apps/api/app/portfolio/scheduler.py`, an in-process asyncio
+task owned by the FastAPI lifespan (`apps/api/app/main.py`) that runs a
+snapshot cycle every `PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS`. It is
+**opt-in and disabled by default**
+(`PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED=false`); when off, nothing is
+constructed and the app behaves exactly as it did after Phase 25.
+
+Architecturally, this is the first component that reads the market-data
+layer *without* an HTTP request driving it:
+
+```
+asyncio interval task
+  -> eligible brokers (those with a broker_accounts row)
+  -> per broker: open symbols -> MarketDataRouter.get_snapshot() [real quotes]
+  -> compute_portfolio_snapshot()  [same deterministic function as the HTTP path]
+  -> persist_portfolio_snapshot()  [same append-only write as the HTTP path]
+```
+
+The no-fabrication rule is what shapes the design: the scheduler has no
+caller to supply `marks`, so it sources every mark from the existing
+`MarketDataRouter` (D015/D017's real Longbridge-backed path). If a real
+quote cannot be obtained for even one held symbol, the broker is skipped
+for that cycle and a typed `ScheduledSnapshotOutcome` is logged
+(`portfolio_snapshot_skipped`, at warning level, naming the unpriced
+symbols) — the snapshot is never partially valued and never written from
+a substituted price. A gap in an append-only series is honest; a wrong
+row in it is permanent. See D030.
+
+No new dependency was introduced: `asyncio.sleep` in a lifespan-owned
+task covers "every N seconds while the process is up". This does mean
+each API worker process would run its own independent loop, which is the
+main thing that would justify revisiting the choice — see D030's
+Consequences.
+
 ## Database
 
 Postgres 16 + TimescaleDB. Current tables: `users`, `roles`, `assets`,

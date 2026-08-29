@@ -1885,3 +1885,133 @@ the Phase 23/24/25 merge to this run's actual collected total. Docker
 containers/volumes, the test-only `.env`, and the verification venv were
 all removed afterward; nothing from this pass was left running.
 Status: Implemented and verified as above.
+
+---
+
+**D030 — Automatic/scheduled portfolio snapshots: an opt-in in-process asyncio task that sources real marks from MarketDataRouter and skips rather than fabricating**
+Date: 2026-08-29
+Decision: Added `apps/api/app/portfolio/scheduler.py` — a
+`PortfolioSnapshotScheduler` started from the FastAPI lifespan
+(`apps/api/app/main.py`) that runs `run_snapshot_cycle()` immediately on
+start and then every `PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS` (new setting,
+default 3600). It is gated behind
+`PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED` (new setting, **default false**).
+Each cycle selects the brokers that have a `broker_accounts` row, reads
+each one's nonzero `broker_positions` symbols, fetches a real quote for
+every one of those symbols through the *existing* `MarketDataRouter`
+(D015/D017), and — only if every symbol resolved — calls the same
+`compute_portfolio_snapshot()` and the same persistence code the manual
+`POST /brokers/{id}/portfolio/snapshots` route uses. That shared write
+path was extracted this phase into
+`apps/api/app/portfolio/persistence.py` (`persist_portfolio_snapshot()`),
+and the route's response-shaping into a `_to_history_entry()` helper, so
+the manual and scheduled paths cannot drift apart. No new pip dependency
+was added and no new table or migration was needed.
+Reason: `docs/PROJECT_CONTEXT.md`'s "Planned Work" listed automatic
+snapshotting as the follow-on to Phase 25/D027's deliberately manual-only
+capture. The hard problem is that D027's design leans on the *caller* to
+supply `marks`, and a scheduler has no caller — so the obvious
+implementation would have to invent a price, which
+`docs/TRADING_SAFETY.md` and spec Sec57 forbid outright. Routing the
+scheduler through `MarketDataRouter` resolves this without weakening
+anything: the marks are real vendor quotes from the identical path
+`GET /market-data/{symbol}/quote` and the omitted-`estimated_price` trade
+path already use. When a real quote is unavailable, the broker is skipped
+for that cycle and a typed `ScheduledSnapshotOutcome`
+(`ScheduledSnapshotStatus.SKIPPED_MARKET_DATA_UNAVAILABLE` /
+`SKIPPED_MARKET_DATA_NOT_CONFIGURED` / `SKIPPED_NO_BROKER_ACCOUNT` /
+`SKIPPED_INCOMPLETE_VALUATION`) is returned and logged at **warning**
+level with the exact unpriced symbols and the vendor's own
+`NO_DATA_AVAILABLE:`/`NOT_CONFIGURED:` sentinel text. Skipping is
+specifically right for an append-only table: a row silently missing one
+holding's value would be indistinguishable, permanently, from a row where
+that holding was genuinely closed. A gap is honest; a wrong row is not.
+The default-off posture matches every other consequential switch in this
+codebase (`LIVE_TRADING_ENABLED`, `EMERGENCY_STOP_ACTIVE`, the
+Longbridge and LLM credential trios): this is the first unattended
+behavior in the system that reads real broker state and writes real rows
+on a timer with no human in the loop, so it should exist only where
+someone asked for it.
+Alternatives: **APScheduler / Celery / a cron sidecar** — rejected, and
+deliberately *not* installed. The requirement is "await this coroutine
+every N seconds while the process is up", which `asyncio.sleep` in a
+lifespan-owned task expresses completely. Those libraries would buy cron
+expressions, cross-restart persistence, and multi-worker leader election,
+none of which this phase needs, and each would need its own configuration
+surface, failure modes, and safety review before being allowed near real
+broker state. Project policy is to ask before adding a new tool, and
+since no such approval could be obtained mid-task, the correct default
+was to not add one — which turned out to cost nothing, since the stdlib
+covers the actual requirement.
+**Falling back to `Settings.paper_broker_starting_cash` when a broker has
+no `broker_accounts` row** (as `GET .../portfolio` does) — rejected for
+the scheduler. A human asking for a live read of a never-traded broker
+gets a clearly-labelled hypothetical; a scheduler writing that same
+number into append-only history would be manufacturing a permanent record
+of a cash balance no row ever asserted. Hence
+`default_starting_cash=None` and `SKIPPED_NO_BROKER_ACCOUNT`.
+**Persisting a partial snapshot with the priced positions only, or with a
+`marks_incomplete` flag** — rejected: it invites exactly the silent
+misreading described above, and every downstream consumer (performance
+attribution, charts) would have to remember to honor the flag forever.
+**Carrying the previous snapshot's mark forward for an unpriceable
+symbol** — rejected outright; that is fabrication with extra steps.
+**Snapshotting every row in `brokers`** — rejected in favor of "brokers
+with a `broker_accounts` row", since that row is created lazily by the
+execution layer (D014) and its presence is the existing signal that a
+broker has real persisted state.
+**Fanning out across brokers concurrently** — rejected at this scale;
+quotes are already fetched concurrently *within* one broker
+(`resolve_marks` uses `asyncio.gather`), and parallelizing across brokers
+too would multiply DB connections and vendor rate-limit pressure for no
+practical gain.
+Consequences: The system now has its first background component. Two new
+settings are documented above; with both at their defaults the runtime
+behavior is byte-identical to Phase 25. Each API **worker process** runs
+its own independent loop, so running more than one uvicorn/gunicorn
+worker would multiply snapshot rows — the single clearest trigger for
+revisiting the "no scheduler library" choice (leader election or an
+external trigger would then be warranted). Snapshots are not backfilled
+across a restart, and the interval is wall-clock, not market-hours-aware:
+a scheduler left enabled overnight will keep recording unchanged
+after-hours rows, or keep logging skips if the vendor returns nothing —
+both deliberate, both future work rather than something to solve by
+guessing a market calendar this repo doesn't have. `captured_at` is left
+to the DB's `server_default=func.now()` for both paths so the app clock
+can't reorder the series.
+Numbering note: developed in a `phase-27-scheduled-snapshots` worktree in
+parallel with sibling `phase-26` and `phase-28` worktrees, all three
+branched from `main` at D028. This entry claims **D030** rather than the
+next free D029 specifically to leave headroom for those siblings and
+avoid a merge-time collision on the same number; the gap is intentional
+and does not indicate a missing decision.
+Verification: `ruff check .` clean, `mypy apps` clean (65 source files),
+228/228 tests passing against real Postgres (208 pre-existing + 20 new:
+8 unit in `tests/portfolio/test_scheduler.py`, 12 DB-backed integration
+in `tests/api/test_snapshot_scheduler.py`). Live-verified end to end
+against a real uvicorn process and a real Postgres in this worktree with
+`PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED=true`,
+`PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS=10` and two seeded brokers, both
+given real positions through the real `POST /brokers/{id}/trades` path:
+the flat (bought-then-sold) broker was snapshotted automatically on every
+cycle, and `GET .../portfolio/history` returned four genuine
+scheduler-written rows (`cash: "100100.00000000"`,
+`total_realized_pnl: "100.00000000"`, distinct `captured_at`s ~10s
+apart), computed from the real fills; the broker still holding 10
+`AAPL.US` was skipped on **every** cycle with
+`portfolio_snapshot_skipped` /
+`status: "skipped_market_data_not_configured"` /
+`unpriced_symbols: ["AAPL.US"]`, and its history endpoint returned
+`snapshots: []` — the no-fabrication guarantee observed live, not just in
+tests. **Not verified live:** the router-supplied-mark capture path
+against a *real vendor*, because no Longbridge credentials exist in this
+environment (the market-data layer genuinely reported NOT_CONFIGURED, so
+the live run exercised the refusal path rather than the success path);
+that path is covered by the DB-backed integration tests, which drive the
+real `MarketDataRouter` with a fake only at the vendor boundary, exactly
+as `tests/marketdata/test_router.py` does. Graceful lifespan shutdown
+(`scheduler.stop()`) was exercised by tests but not in the live run,
+which ended with a forced kill. Docker containers/volumes, the temporary
+port-remapping compose override, the test-only `.env`, and the
+verification venv were all removed afterward.
+Status: Implemented and verified as above.

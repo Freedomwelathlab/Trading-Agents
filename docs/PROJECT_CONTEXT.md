@@ -142,9 +142,28 @@ chosen over a JSON column for queryability - see D027); `GET
 /brokers/{broker_id}/portfolio/history` reads them back,
 oldest-to-newest, paginated. Still gated by the same
 `Permission.VIEW_PORTFOLIO` - no new permission was needed (D027).
-Deliberately manual-only: a snapshot exists only because a caller
-explicitly POSTed it, never a scheduled/automatic capture - that remains
-explicit future work. Backtesting/alerts/performance-attribution
+Phase 25 was deliberately manual-only (a snapshot existed only because a
+caller explicitly POSTed it); Phase 27 (D030) closes that gap with an
+opt-in, default-OFF in-process asyncio scheduler
+(`apps/api/app/portfolio/scheduler.py`, started by the FastAPI lifespan,
+`PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED` /
+`PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS`, no new dependency). Since a
+scheduler has no caller to supply `marks`, it sources a real quote for
+every held symbol from the existing `MarketDataRouter` (D015/D017) and
+**skips the broker for that cycle, writing nothing**, if any held symbol
+cannot be priced - returning a typed `ScheduledSnapshotOutcome` and
+logging the unpriced symbols at warning level rather than substituting
+any price (spec Sec57). A cash-only broker needs no marks and is captured
+normally. Capture runs the same `compute_portfolio_snapshot()` and the
+same (newly extracted) `persist_portfolio_snapshot()` the manual POST
+uses, so scheduled and manual rows are indistinguishable in the history.
+Live-verified with the real app + real Postgres: a flat broker was
+auto-snapshotted every cycle with real numbers from real fills, while a
+broker holding `AAPL.US` was skipped every cycle
+(`skipped_market_data_not_configured`) with an empty history - no
+Longbridge credentials exist in this environment, so the real-vendor
+*capture* path is covered by integration tests (real router, fake only at
+the vendor boundary) rather than live. Backtesting/alerts/performance-attribution
 themselves are still not built; Phase 25 only gives them a real time
 series to eventually read.
 
@@ -168,11 +187,13 @@ genuine equity curve with one real, risk-gated trade.
 
 ## Planned Work
 
-Phase 26+: the rest of the parallel analyst layer (fundamental/news/
+Phase 28+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57),
-research debate, automatic/scheduled portfolio snapshotting (on top of
-Phase 25/D027's manual-only capture), and the trade-path Portfolio
-Manager per the governing spec's "Target" architecture. Order not
+research debate, and the trade-path Portfolio Manager per the governing
+spec's "Target" architecture. (Automatic/scheduled portfolio
+snapshotting is now done — Phase 27/D030; its own remaining follow-ons
+are market-hours awareness and multi-worker safety, since each API worker
+currently runs its own independent loop.) Order not
 finalized. Also pending: re-verify D018/D019's
 live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether

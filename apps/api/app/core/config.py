@@ -49,6 +49,26 @@ class Settings(BaseSettings):
     """See docs/DECISIONS.md D024 for why 5s was chosen over a shorter or
     longer window."""
 
+    portfolio_snapshot_scheduler_enabled: bool = False
+    """Opt-in switch for the automatic portfolio snapshot loop (Phase 27,
+    docs/DECISIONS.md D030). Defaults to FALSE deliberately: this is
+    unattended behavior that reads real broker state and writes real
+    append-only history on a timer with no human in the loop, so it follows
+    the same fail-closed, explicitly-enabled posture as
+    `live_trading_enabled` and the market-data/LLM credential trios below.
+    Phase 25/D027's manual `POST /brokers/{id}/portfolio/snapshots` remains
+    the only capture path unless this is set. See
+    apps/api/app/portfolio/scheduler.py."""
+
+    portfolio_snapshot_interval_seconds: int = 3600
+    """How often the snapshot loop runs when enabled. One hour by default -
+    frequent enough to build a usable intraday equity curve, far below any
+    market-data vendor's rate limits at this portfolio size, and coarse
+    enough that a full day of an unattended process adds ~24 rows per
+    broker rather than thousands. Must be positive; the scheduler refuses
+    to construct otherwise (a zero interval would busy-loop the DB and the
+    vendor)."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None
@@ -89,6 +109,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 "TRADING_MODE=live requires LIVE_TRADING_ENABLED=true. "
                 "Refusing to start in an inconsistent live-but-disabled state."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_positive_snapshot_interval(self) -> "Settings":
+        """Validated at config load, not just at scheduler construction, so a
+        bad interval fails the app's startup with a clear message instead of
+        surfacing later as a ValueError from inside the lifespan."""
+        if self.portfolio_snapshot_interval_seconds <= 0:
+            raise ValueError(
+                "PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS must be positive. A zero or "
+                "negative interval would busy-loop the snapshot cycle against the "
+                "database and the market data vendor."
             )
         return self
 
