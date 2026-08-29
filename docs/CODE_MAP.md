@@ -87,7 +87,12 @@ engine unable to run with every external service down. `recent_orders`
 data reaches the engine — as plain `RecentOrder` data the caller queried
 and handed in, never a DB call the engine makes itself; see
 `apps/api/app/oms/persistence.py`'s `get_recent_filled_orders()` for the
-one query that produces it.
+one query that produces it. The same discipline applies to
+`emergency_stop_active` as of D039: its authoritative value is now a
+persisted row, but that row is read by
+`apps/api/app/safety/emergency_stop.py` one layer above and handed in as
+the same plain boolean this signature always took — the engine's
+signature, behavior, and zero-I/O purity are unchanged.
 Tests: `tests/risk/test_engine.py` (23 tests, including one that proves the
 engine still blocks a bad trade when a stubbed LLM provider raises, and 9
 covering duplicate-order detection — D024)
@@ -457,6 +462,40 @@ D017, `POST /brokers/{broker_id}/trades` uses this same
 `get_market_data_router`/`MarketDataRouter` when a trade omits
 `estimated_price` — this endpoint lets a caller preview that price
 without submitting a trade.
+
+## Emergency stop (safety)
+
+Purpose: spec Sec46's platform-wide kill switch as a persisted, audited,
+live-flippable control — no `.env` edit and no restart to halt trading
+(D039).
+Main files: `apps/api/app/safety/emergency_stop.py`
+(`get_emergency_stop_state()`, `is_emergency_stop_active()`,
+`set_emergency_stop()`, `EmergencyStopState`),
+`apps/api/app/api/routes/emergency_stop.py`
+(`POST /admin/emergency-stop`, `POST /admin/emergency-stop/deactivate`,
+`GET /admin/emergency-stop`), `EmergencyStopEvent` in
+`apps/api/app/db/models.py`, migration
+`migrations/versions/0010_emergency_stop_events.py`
+Interface: `is_emergency_stop_active(session, *, settings_default) -> bool`
+— the one call the trade path makes, in `_execute_trade()`
+(`apps/api/app/api/routes/trades.py`), whose result is passed straight to
+`evaluate_trade()`/`submit_trade()`.
+Dependencies: `sqlalchemy`, `apps.api.app.db.models`. Deliberately a
+separate package from `risk/` so the Risk Engine's zero-I/O boundary is
+structural, not a convention — nothing in `apps/api/app/risk/` may import
+this.
+Tests: `tests/api/test_emergency_stop.py` (16 integration tests against
+real Postgres — status-endpoint scoping including the unauthenticated 401
+and the non-admin 200, admin-only writes, the required non-blank reason in
+both directions, the append-only audit trail and latest-row-wins ordering,
+a real trade blocked and then unblocked over HTTP with `Settings` left
+false throughout, the persisted row beating a true `Settings` default,
+survival across a fresh app lifespan and a fresh DB session, and a
+structural assertion that `risk/` imports nothing from this layer)
+Important: the state is read per trade submission, never cached — a
+cached emergency stop is a failure mode that fails OPEN.
+`Settings.emergency_stop_active` is the bootstrap default only, consulted
+if and only if the table is empty.
 
 ## Admin routes
 
