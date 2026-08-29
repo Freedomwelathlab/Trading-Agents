@@ -565,10 +565,20 @@ optimization.
 
 ## Tests
 
-210 tests, all passing (202 from Phase 23/D025's backtesting engine on
-top of the 174 baseline, plus 8 more from Phase 25/D027's persisted
-snapshots - see docs/DECISIONS.md D025/D027 for the exact new-test
-breakdowns). Baseline, 174 tests: fail-closed live-mode gate (4, incl. missing JWT
+208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
+backend verification (fresh venv, `ruff check .`, `mypy apps`, real
+Postgres/Redis via docker-compose, `alembic upgrade head` through 0008,
+`pytest tests/ -q`) after the Phase 23/24/25 merge, correcting this
+section's earlier 210-test placeholder estimate. That run also caught
+one real cross-phase bug: `backtesting/engine.py`'s default "today" used
+the raw calendar date instead of the most recent trading day, so any run
+landing on a Saturday/Sunday rejected every request with
+`UNSUPPORTED_DATE_RANGE` - fixed by rolling the default back to the prior
+weekday (a caller-supplied `today`, as every existing test uses, is left
+untouched). The count below is this verification's actual collected
+total, not a per-phase arithmetic sum - see docs/DECISIONS.md D025/D027
+for the per-phase new-test breakdowns that make up most of it.
+Baseline, 174 tests: fail-closed live-mode gate (4, incl. missing JWT
 secret), log redaction (1), health endpoint (1), risk engine (23, incl. 9
 duplicate-order-detection tests — D024), paper broker (5), OMS (4, incl. 1
 proving `recent_orders` blocks a duplicate before the broker is touched),

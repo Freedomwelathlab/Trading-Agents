@@ -71,6 +71,17 @@ def _label_trading_days(*, end_date: date, count: int) -> list[date]:
     return dates
 
 
+def _most_recent_trading_day(day: date) -> date:
+    """Rolls a calendar date back to the most recent Mon-Fri date (itself,
+    if it's already a weekday). Used only to derive the *default* "today"
+    from the real wall clock - a caller-supplied `today` (tests pinning a
+    specific date) is used exactly as given, never adjusted, since those
+    callers already choose a weekday deliberately."""
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
+
+
 async def run_backtest(
     request: BacktestRequest,
     *,
@@ -78,7 +89,7 @@ async def run_backtest(
     risk_limits: RiskLimits,
     today: date | None = None,
 ) -> BacktestResult:
-    today = today or datetime.now(UTC).date()
+    today = today or _most_recent_trading_day(datetime.now(UTC).date())
     if request.end_date != today:
         raise UnsupportedDateRangeError(
             f"end_date must be {today.isoformat()} (the most recent available trading "

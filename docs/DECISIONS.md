@@ -1836,3 +1836,52 @@ positions/broker-holdings listing UI to discover broker IDs without
 knowing them in advance (same D013-rooted gap D023 already flagged for
 users/roles/grants — no listing endpoint exists), session refresh/expiry
 UX, and Playwright e2e coverage (unchanged reasoning from D020/D023).
+
+---
+
+**D028 — Full post-merge backend verification (Phases 23/24/25): one real bug found and fixed, test-count placeholder corrected**
+Date: 2026-08-29
+Decision: Ran a from-scratch backend verification of the fully-merged
+main branch (fresh venv, `ruff check .`, `mypy apps`, real Postgres/Redis
+via `docker compose`, `alembic upgrade head`, `pytest tests/ -q`) rather
+than trusting docs/IMPLEMENTATION_STATUS.md's Phase 25 self-reported
+"210 tests" placeholder. Fixed `apps/api/app/backtesting/engine.py`:
+`run_backtest`'s default `today` (used when no `today` is explicitly
+passed) is now rolled back to the most recent Mon-Fri date via a new
+`_most_recent_trading_day()` helper, instead of using the raw calendar
+date from `datetime.now(UTC).date()`.
+Reason: D025's `end_date == today` check (`UnsupportedDateRangeError`)
+compared the request's `end_date` against the literal current calendar
+date. On any Saturday or Sunday, `today` is not a trading day, so no
+`end_date` a caller could legitimately supply (all of which are meant to
+be trading days) could ever match it — `POST /backtests` rejected every
+request with `UNSUPPORTED_DATE_RANGE` on weekends, a real cross-phase
+bug invisible in Phase 23's own verification (which happened not to run
+on a weekend) and exposed by running this pass on a Saturday
+(2026-08-29). All five call sites in `tests/backtesting/test_engine.py`
+already pin an explicit weekday `today=date(2026, 8, 26)`, so they were
+unaffected by both the bug and the fix; only the real-clock default path
+was wrong.
+Alternatives: relaxing the equality check to accept any `end_date` up to
+today — rejected, that would silently let a caller ask for a stale window
+past the actual most-recent trading day, which is exactly the mislabeled-
+data risk `UnsupportedDateRangeError`'s docstring (docs/DECISIONS.md
+D025) exists to prevent. Hardcoding a weekday check into the route layer
+instead of the engine — rejected, `run_backtest` already owns "what is
+today" for this module and is the one place both the route and every
+test call through.
+Consequences: `POST /backtests` now behaves identically on every day of
+the week, not just Monday-Friday plus a lucky non-weekend `pytest` run.
+`ruff check .` and `mypy apps` both stayed clean; the four seemingly
+unrelated failures this fix corrected (`test_backtests.py`'s three D025
+integration tests) were this bug, not flakiness — a fourth failure in
+`tests/test_config.py::test_missing_jwt_secret_key_fails_closed` was
+independently traced to this pass's own shell having sourced a local
+`.env` into `os.environ` (a verification-harness artifact, not a code
+bug) and reproduced as a pass once that leak was removed. Final count:
+208 tests, all passing, ruff+mypy clean — corrects
+docs/IMPLEMENTATION_STATUS.md's prior 210-test placeholder estimate for
+the Phase 23/24/25 merge to this run's actual collected total. Docker
+containers/volumes, the test-only `.env`, and the verification venv were
+all removed afterward; nothing from this pass was left running.
+Status: Implemented and verified as above.
