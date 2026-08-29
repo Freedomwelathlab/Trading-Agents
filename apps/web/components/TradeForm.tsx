@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { handleExpiredSession } from "@/lib/session";
 
 type TradeResponse = {
   order_id?: string;
@@ -45,6 +46,10 @@ export default function TradeForm() {
       const data = (await res.json().catch(() => null)) as TradeResponse | null;
       setStatus(res.status);
       if (!res.ok) {
+        // A 401 means the httpOnly session cookie is gone or dead;
+        // redirect to login with a real reason rather than rendering
+        // a bare HTTP 401 next to a form that can no longer work (D032).
+        if (handleExpiredSession(res.status)) return;
         setErrorDetail(data?.detail ?? `Request failed (HTTP ${res.status})`);
         return;
       }

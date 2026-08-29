@@ -225,12 +225,13 @@ reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now
 warranted (deliberately not built in Phase 16 — one analyst has nothing
 to parallelize against). Frontend candidates remaining after Phase
-20/D023 and Phase 24/D026 (admin UI, agent-trades UI, and the portfolio
-view are now built): a historical performance chart on top of the
-portfolio view (blocked on Phase 25's persisted snapshots), broker
-discovery (no such endpoint exists yet), session refresh/expiry UX,
-Playwright if a protectable flow emerges, and a users/roles/grants
-listing UI (blocked on D013's deliberate no-listing-endpoints scope cut).
+20/D023, Phase 24/D026 and Phase 28/D031/D032 (admin UI, agent-trades
+UI, the portfolio view, a historical performance chart, a
+users/roles/grants listing UI, and session expiry UX are now all built):
+broker discovery (no such endpoint exists yet) and Playwright e2e
+coverage. Playwright was deliberately skipped in Phase 28 because it
+needs a new tool dependency, and remains open pending explicit
+permission to add one.
 
 `apps/web/` (D020, Phase 17; extended Phase 20/D023, Phase 24/D026) is
 the frontend — login, `/health` display, quote lookup, paper-trade
@@ -258,6 +259,39 @@ is closed, and D023 re-confirms it for the new endpoints): real
 login → admin create/update user/role → create/revoke broker grant →
 agent-trade `NOT_CONFIGURED:` → non-admin 403, all through the app's own
 route handlers, never the backend directly.
+
+Phase 28 (D031/D032) is frontend v3, closing three of those four
+candidates without adding a single new dependency. The historical
+performance chart is a hand-rolled inline SVG polyline of `total_equity`
+over `captured_at` reading Phase 25/D027's
+`GET /brokers/{id}/portfolio/history` - every vertex is one real
+persisted snapshot, nothing interpolated or extended past the last real
+capture, and an empty history renders as "nothing captured yet" rather
+than a zeroed curve. The users/roles/grants listing UI required closing
+D013's no-listing scope cut first: `GET /admin/users`, `GET /admin/roles`
+and `GET /admin/broker-grants` (D031) are read-only, carry no new
+permission (they inherit the router's existing `admin:manage`
+dependency), paginate on the same `limit`/`offset` convention as D027,
+and reuse the existing response DTOs so no password or hash can leak
+into a listing. That closes the real usability gap D023/D026 both
+flagged - `PATCH /admin/users/{id}` and
+`DELETE /admin/broker-grants/{grant_id}` previously needed an id no part
+of the product could show you. Session expiry UX (D032) adds
+`GET /auth/session`, which returns expiry metadata only - never the
+token, never a renewed one, and 401 for an expired token or a
+deactivated user. It exists because the JWT is in an httpOnly cookie
+(D020) that client JS cannot read, so any "expiring soon" warning would
+otherwise have been a fabricated local countdown; `SessionStatus` shows
+the server's own `expires_in_seconds` and re-polls rather than ticking
+down locally. A shared `handleExpiredSession()` now turns any route
+handler's 401 into a redirect to `/login?reason=session-expired` with a
+real explanation instead of a bare "HTTP 401". There is still no
+refresh-token or sliding-expiry mechanism - D010's fixed-lifetime access
+token is unchanged, and the new endpoint reports on a session, it cannot
+extend one. 226 backend tests and 61 frontend tests pass; ruff/mypy
+clean; `npm run build` has zero type errors. Verified live against a
+real stack and a real browser (see D031/D032). Playwright/e2e was
+deliberately skipped - it needs a new tool dependency.
 
 ## Known Problems
 

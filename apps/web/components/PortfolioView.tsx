@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { handleExpiredSession } from "@/lib/session";
 
 type Position = {
   symbol: string;
@@ -58,6 +59,10 @@ export default function PortfolioView() {
       const data = (await res.json().catch(() => null)) as PortfolioSnapshot | null;
       setStatus(res.status);
       if (!res.ok) {
+        // A 401 means the httpOnly session cookie is gone or dead;
+        // redirect to login with a real reason rather than rendering
+        // a bare HTTP 401 next to a form that can no longer work (D032).
+        if (handleExpiredSession(res.status)) return;
         // Real backend sentinels/status codes only — 400 DATA_UNAVAILABLE:
         // (a held position's mark is missing), 403 (no VIEW_PORTFOLIO
         // permission or no broker grant), 404 (unknown broker_id) — never
@@ -80,8 +85,8 @@ export default function PortfolioView() {
       </h2>
       <p className="mb-3 text-xs text-neutral-500">
         Real-time snapshot only — cash, positions, and totals as computed by
-        the backend right now. No historical performance chart here; that
-        needs persisted snapshots (a separate, later scope).
+        the backend right now. For performance over time, see Portfolio
+        history below, which charts persisted snapshots.
       </p>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <label className="flex flex-col gap-1 text-sm">

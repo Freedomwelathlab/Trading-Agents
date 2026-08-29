@@ -629,6 +629,77 @@ Update this after meaningful implementation work — not for every commit.
   phase-26/phase-28 stacks), the test-only `.env`, and the verification
   venv were all removed afterward.
 
+- **Phase 28 — frontend v3: historical performance chart, admin listing UI
+  + its backend endpoints, session expiry UX (2026-08-29, D031/D032).**
+  Closes three of the four frontend candidates Phase 24/D026 left open.
+  (1) **Historical performance chart.** `PortfolioHistoryChart`
+  (`apps/web/components/PortfolioHistoryChart.tsx`) on `/dashboard`
+  charts `total_equity` over `captured_at` from Phase 25/D027's
+  `GET /brokers/{id}/portfolio/history`, backed by a new
+  `app/api/portfolio/[brokerId]/history/route.ts` proxy. The chart is a
+  hand-rolled inline SVG polyline — **no new npm dependency was added**;
+  every plotted vertex is one real returned snapshot, nothing is
+  interpolated, smoothed, back-filled, or extended past the last real
+  capture, and the accompanying table prints each snapshot's raw values
+  verbatim. The x axis is by snapshot index, not elapsed time, because
+  D027 capture is manual and a time-scaled axis would imply a sampling
+  cadence that does not exist. Zero snapshots renders "no snapshots have
+  been captured", never an empty or zeroed curve.
+  (2) **Users/roles/grants listing UI + the backend endpoints it needed
+  (D031).** `GET /admin/users`, `GET /admin/roles`, and
+  `GET /admin/broker-grants` were added to
+  `apps/api/app/api/routes/admin.py` — read-only, no new permission
+  (they inherit the router's existing `admin:manage` dependency),
+  paginated with the same `limit`(50/500)/`offset` convention as D027's
+  history endpoint, each with a fixed total sort. Rows reuse the existing
+  `CreateUserResponse`/`CreateRoleResponse`/`BrokerGrantResponse` DTOs,
+  so no password or hash can appear. `UsersList`/`RolesList`/
+  `BrokerGrantsList` (`apps/web/components/admin/AdminListings.tsx`) on
+  `/admin` render them; the grants table surfaces the `id` the revoke
+  form needs, which previously required a direct DB query.
+  (3) **Session refresh/expiry UX (D032).** New `GET /auth/session`
+  returns `user_id`/`email`/`issued_at`/`expires_at`/
+  `expires_in_seconds` — never the token, never a renewed one, and 401
+  for an expired token or a deactivated user. It exists because the JWT
+  is in an httpOnly cookie (D020) that client JS cannot read, so a
+  "session expiring soon" warning was otherwise impossible without
+  fabricating a local countdown. `SessionStatus` polls it once a minute
+  and warns below 5 minutes; it never ticks a local timer down between
+  polls. A shared `apps/web/lib/session.ts` `handleExpiredSession(status)`
+  is now called at the `!res.ok` branch of every authenticated component,
+  so any route handler's 401 redirects to `/login?reason=session-expired`
+  where a real explanation renders instead of a bare "HTTP 401".
+  **Backend:** `ruff check .` and `mypy apps` clean (64 source files);
+  **226/226 pytest tests passing** (208 pre-existing + 18 new: 12 in
+  `tests/api/test_admin_listings.py`, 6 in `tests/api/test_session.py`),
+  all against real Postgres. **Frontend:** `npm run build` with zero
+  TypeScript errors; **61/61 Vitest tests passing** (34 pre-existing + 27
+  new across `test/PortfolioHistoryChart.test.tsx`,
+  `test/AdminListings.test.tsx`, `test/SessionStatus.test.tsx` — success,
+  empty-result, real error sentinels, 403, 404, 401-redirect, and
+  network-failure paths for every new component, plus pure-function tests
+  for the chart's coordinate mapping and the remaining-time formatter).
+  **Verified live** against a real Docker Compose stack in this worktree
+  (host ports remapped to 5436/6383/8003 to avoid the sibling phase26
+  worktree's stack, removed afterward): real Alembic migrations, a seeded
+  admin user/role/broker/grant, a real filled `AAPL.US` trade, and four
+  real POSTed snapshots producing a genuinely varying equity curve
+  (100000 → 100050 → 99980 → 100120). Exercised every new endpoint by
+  curl both directly against the API and through the frontend's own route
+  handlers with a real login cookie: all three listings, the history
+  endpoint, `/auth/session`, plus `limit=501` → 422, `offset=-1` → 422,
+  no token → 401, and a non-admin's real 403 on all three listings. In a
+  real browser: logged in through the real UI, loaded the history chart
+  (4 real plotted vertices with correct geometry), saw all three admin
+  listings render the real seeded rows, saw `SessionStatus` show the
+  backend's real "29m left", and — after deactivating that user directly
+  in Postgres — watched the next `/admin` load redirect to
+  `/login?reason=session-expired` with the real message.
+  **Not done:** Playwright/e2e coverage, deliberately skipped because it
+  requires a new tool/vendor dependency that was outside this phase's
+  no-new-dependency scope; it remains open pending explicit permission.
+  See D031/D032 for full detail.
+
 ## In Progress
 
 Nothing currently mid-implementation.
@@ -653,12 +724,12 @@ ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
 parallelize against). Frontend candidates remaining after Phase 20/D023
-and Phase 24/D026 (`/admin/*` UI, agent-trades UI, and the portfolio view
-are now built): a historical performance chart on the portfolio view
-(blocked on Phase 25's persisted snapshots), broker discovery (no such
-endpoint exists yet), session refresh/expiry UX, Playwright if a
-protectable flow emerges, and a users/roles/grants listing UI (blocked on
-D013's deliberate no-listing-endpoints scope cut). Re-verify D018/D019's LLM-completion path
+and Phase 24/D026, now further reduced by Phase 28/D031/D032 (the
+historical performance chart, the users/roles/grants listing UI, and
+session expiry UX are all built): what remains is broker discovery (no
+such endpoint exists yet) and Playwright e2e coverage — the latter
+deliberately skipped in Phase 28 because it needs a new tool dependency,
+open pending explicit permission to add one. Re-verify D018/D019's LLM-completion path
 once OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is
 reachable — D021 confirmed the Longbridge/history side works with real
 data, but no real LLM completion has been exercised yet, only fakes.
@@ -755,6 +826,20 @@ pure average-cost-basis replay math, hand-verified), portfolio HTTP
 endpoint (23, DB-backed — 15 pre-D027 covering `GET .../portfolio` + 8
 new covering `POST .../portfolio/snapshots` and
 `GET .../portfolio/history` — D027).
+
+Phase 28 (D031/D032) adds 18, bringing the backend total to **226**: admin
+listing endpoints (12, DB-backed — real rows listed with no password/hash
+field, deterministic `offset` paging, `limit=501`/`offset=-1` both 422,
+and 403/401 on all three routes) and `GET /auth/session` (6, DB-backed —
+real expiry/issued_at bounds, no token material in the response, and 401
+for a missing, malformed, expired, or deactivated-user token).
+
+Frontend (`apps/web`, Vitest + React Testing Library): **61 tests**, all
+passing — 34 pre-existing plus 27 added in Phase 28 across
+`test/PortfolioHistoryChart.test.tsx`, `test/AdminListings.test.tsx`, and
+`test/SessionStatus.test.tsx`, covering success, empty results, real
+error sentinels, 403, 404, the 401→login redirect, and network failure
+for every new component.
 
 ## Known Issues
 

@@ -5,6 +5,12 @@ import {
   DeleteBrokerGrantForm,
 } from "@/components/admin/BrokerGrantsAdmin";
 import LogoutButton from "@/components/LogoutButton";
+import SessionStatus from "@/components/SessionStatus";
+import {
+  UsersList,
+  RolesList,
+  BrokerGrantsList,
+} from "@/components/admin/AdminListings";
 
 /**
  * Admin UI for the /admin/* endpoints (docs/API.md, docs/DECISIONS.md D023).
@@ -28,6 +34,7 @@ export default function AdminPage() {
             doesn&apos;t hold it, every action below will return a real 403
             from the backend when you submit it.
           </p>
+          <SessionStatus />
         </div>
         <LogoutButton />
       </div>
@@ -37,12 +44,14 @@ export default function AdminPage() {
         <CreateUserForm />
         <UpdateUserForm />
       </div>
+      <UsersList />
 
       <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">Roles</h2>
       <div className="grid gap-4 sm:grid-cols-2">
         <CreateRoleForm />
         <UpdateRoleForm />
       </div>
+      <RolesList />
 
       <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
         Broker grants
@@ -51,6 +60,7 @@ export default function AdminPage() {
         <CreateBrokerGrantForm />
         <DeleteBrokerGrantForm />
       </div>
+      <BrokerGrantsList />
     </main>
   );
 }

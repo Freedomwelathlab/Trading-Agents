@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { handleExpiredSession } from "@/lib/session";
 
 type QuoteResponse = {
   symbol?: string;
@@ -30,6 +31,10 @@ export default function QuoteLookup() {
       const data = (await res.json().catch(() => null)) as QuoteResponse | null;
       setStatus(res.status);
       if (!res.ok) {
+        // A 401 means the httpOnly session cookie is gone or dead;
+        // redirect to login with a real reason rather than rendering
+        // a bare HTTP 401 next to a form that can no longer work (D032).
+        if (handleExpiredSession(res.status)) return;
         // Render the real sentinel-prefixed detail string from the backend
         // (NOT_CONFIGURED: / NO_DATA_AVAILABLE:) — never a generic message.
         setErrorDetail(data?.detail ?? `Request failed (HTTP ${res.status})`);

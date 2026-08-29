@@ -1,9 +1,39 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { EXPIRED_REASON } from "@/lib/session";
+
+/**
+ * Explains why the user is back on this page when they were bounced here
+ * by a real 401 from a route handler (D031) — an expired session, or one
+ * whose user was deactivated — instead of leaving them at a login form
+ * with no context. Rendered inside a Suspense boundary because
+ * `useSearchParams` requires one.
+ */
+function SessionEndedNotice() {
+  const reason = useSearchParams().get("reason");
+  if (reason !== EXPIRED_REASON) return null;
+  return (
+    <p
+      role="status"
+      className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+    >
+      Your session has ended — it either expired or your account was
+      deactivated. Sign in again to continue.
+    </p>
+  );
+}
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -40,6 +70,8 @@ export default function LoginPage() {
         <h1 className="text-xl font-semibold">Trading OS</h1>
         <p className="text-sm text-neutral-500">Sign in to continue.</p>
       </div>
+
+      <SessionEndedNotice />
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <label className="flex flex-col gap-1 text-sm">

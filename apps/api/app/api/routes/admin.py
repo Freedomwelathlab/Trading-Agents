@@ -8,16 +8,23 @@ created by direct DB insert - there is no user holding admin:manage to
 call these routes with the first time. Everything after that first
 bootstrap can go through this API instead of SQL.
 
-Deliberately still not built: listing endpoints, self-service
-registration, deleting a role/user outright (would orphan FKs from
-orders.submitted_by_user_id / users.role_id - deactivate via
-is_active=false instead). This remains the minimum surface D010/D011/D012
-needed, not a general admin panel.
+Listing endpoints (GET /admin/users, /admin/roles, /admin/broker-grants)
+were added in D030, closing D013's deliberate no-listing scope cut - they
+are read-only, paginated (limit/offset, same convention as D027's
+portfolio history), and gated by the same router-level admin:manage
+dependency every write route here already carries.
+
+Deliberately still not built: self-service registration, deleting a
+role/user outright (would orphan FKs from orders.submitted_by_user_id /
+users.role_id - deactivate via is_active=false instead), and any
+filter/search parameters on the listings (ordering is a fixed, stable
+sort; a caller pages rather than queries). This remains a minimal admin
+surface, not a general admin panel.
 """
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +36,9 @@ from apps.api.app.api.schemas_admin import (
     CreateRoleResponse,
     CreateUserRequest,
     CreateUserResponse,
+    ListBrokerGrantsResponse,
+    ListRolesResponse,
+    ListUsersResponse,
     UpdateRoleRequest,
     UpdateUserRequest,
 )
@@ -43,6 +53,108 @@ router = APIRouter(
     tags=["admin"],
     dependencies=[Depends(require_permission(Permission.ADMIN))],
 )
+
+DEFAULT_LIST_LIMIT = 50
+"""Default page size for the D030 listing routes - deliberately identical
+to the portfolio history endpoint's DEFAULT_HISTORY_LIMIT (D027) so this
+codebase has one pagination convention, not two."""
+MAX_LIST_LIMIT = 500
+"""Hard ceiling on `limit` regardless of what the caller asks for, same
+value and reasoning as the history endpoint's MAX_HISTORY_LIMIT: a caller
+needing more pages rather than the server ever building an unbounded
+response."""
+
+
+@router.get("/users", response_model=ListUsersResponse)
+async def list_users(
+    limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+) -> ListUsersResponse:
+    """Users ordered by `email` ascending - a stable, human-meaningful sort
+    that makes `offset` paging deterministic (`users` has no created_at
+    column to order by). Never returns a password or password hash: each
+    row is the same CreateUserResponse shape the create/update routes
+    return (docs/DECISIONS.md D030)."""
+    rows = (
+        (await session.execute(select(User).order_by(User.email.asc()).limit(limit).offset(offset)))
+        .scalars()
+        .all()
+    )
+    return ListUsersResponse(
+        users=[
+            CreateUserResponse(
+                id=row.id, email=row.email, is_active=row.is_active, role_id=row.role_id
+            )
+            for row in rows
+        ],
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/roles", response_model=ListRolesResponse)
+async def list_roles(
+    limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+) -> ListRolesResponse:
+    """Roles ordered by `name` ascending (unique, so the sort is total and
+    `offset` paging is deterministic). `permissions` is returned in full -
+    this listing is the only way an admin can see what a role currently
+    grants without a direct DB query."""
+    rows = (
+        (await session.execute(select(Role).order_by(Role.name.asc()).limit(limit).offset(offset)))
+        .scalars()
+        .all()
+    )
+    return ListRolesResponse(
+        roles=[
+            CreateRoleResponse(
+                id=row.id,
+                name=row.name,
+                description=row.description,
+                permissions=row.permissions,
+            )
+            for row in rows
+        ],
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/broker-grants", response_model=ListBrokerGrantsResponse)
+async def list_broker_grants(
+    limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+) -> ListBrokerGrantsResponse:
+    """Grants ordered by `(user_id, broker_id)` - the pair is unique (a
+    user can hold at most one grant per broker, enforced by the 409 on
+    create), so the sort is total and `offset` paging is deterministic.
+    This is the read side of the D012 grant model: it says who may reach
+    which broker, and is the only way to see an existing grant's `id`
+    (needed to revoke it) without a direct DB query."""
+    rows = (
+        (
+            await session.execute(
+                select(BrokerGrant)
+                .order_by(BrokerGrant.user_id.asc(), BrokerGrant.broker_id.asc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return ListBrokerGrantsResponse(
+        grants=[
+            BrokerGrantResponse(id=row.id, user_id=row.user_id, broker_id=row.broker_id)
+            for row in rows
+        ],
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post("/users", response_model=CreateUserResponse, status_code=201)
