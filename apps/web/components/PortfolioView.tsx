@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
+import { subscribeToBrokerSelection } from "@/lib/brokerSelection";
 
 type Position = {
   symbol: string;
@@ -34,6 +35,11 @@ function parseMarks(input: string): Record<string, string> {
 
 export default function PortfolioView() {
   const [brokerId, setBrokerId] = useState("");
+
+  // D034: the broker discovery list can push a real, granted broker id
+  // here so the user never has to paste a UUID. Pre-filling authorizes
+  // nothing - the backend re-checks the grant on submit.
+  useEffect(() => subscribeToBrokerSelection(setBrokerId), []);
   const [marksInput, setMarksInput] = useState("");
 
   const [loading, setLoading] = useState(false);

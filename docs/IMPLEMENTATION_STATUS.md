@@ -293,7 +293,7 @@ Update this after meaningful implementation work — not for every commit.
   `block_reason` legibly). No fabricated data anywhere: every fetch
   failure renders a real error state. Deliberately out of scope for v1:
   `/admin/*` UI, `/brokers/{id}/agent-trades` UI, broker discovery (no
-  such endpoint exists), session refresh. `npm run build` succeeds with
+  such endpoint existed then — built in Phase 29/D034), session refresh. `npm run build` succeeds with
   zero TypeScript errors. Test strategy: Vitest + React Testing Library
   (7 component tests covering quote success/503/404/network-failure and
   trade rejected/filled/403 rendering) — chosen over Playwright for this
@@ -726,8 +726,8 @@ parallel-execution infrastructure across analysts is now warranted
 parallelize against). Frontend candidates remaining after Phase 20/D023
 and Phase 24/D026, now further reduced by Phase 28/D031/D032 (the
 historical performance chart, the users/roles/grants listing UI, and
-session expiry UX are all built): what remains is broker discovery (no
-such endpoint exists yet) and Playwright e2e coverage — the latter
+session expiry UX are all built) and by Phase 29/D034 (broker discovery,
+backend and UI): what remains is Playwright e2e coverage — the latter
 deliberately skipped in Phase 28 because it needs a new tool dependency,
 open pending explicit permission to add one. Re-verify D018/D019's LLM-completion path
 once OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is
@@ -766,6 +766,33 @@ optimization.
   with one real trade filled and risk-gated exactly as the unit tests
   predict.
 
+- Phase 29: broker discovery (2026-08-29). `GET /brokers` and
+  `GET /brokers/{broker_id}` (`apps/api/app/api/routes/brokers.py`,
+  `api/schemas_brokers.py`) — authentication-only, scoped to the calling
+  user's own `BrokerGrant` rows, so a non-admin trader can finally learn
+  which broker ids they may trade on instead of being handed a UUID
+  out-of-band. Paginated `limit`(50/500)/`offset` exactly as D027/D031;
+  detail route returns 404 for a nonexistent broker and 403 for one the
+  caller holds no grant on, matching `require_broker_access`; response is
+  a five-field allow-list (`id`, `name`, `kind`, `provider`,
+  `is_active`), never a credential-shaped field. Frontend:
+  `components/BrokerDiscovery.tsx` + `app/api/brokers/route.ts` (same
+  httpOnly-cookie route-handler proxy as every other feature), with a
+  per-row "Use" button that pre-fills the real broker id into the trade,
+  agent-trade, portfolio and portfolio-history forms via
+  `lib/brokerSelection.ts` — a convenience only; the backend still
+  re-checks the grant on every request. See docs/DECISIONS.md D034 for
+  the grants-define-discoverability scoping decision and the rejected
+  alternatives (reusing the `admin:manage` grant listing, a global broker
+  listing with an `accessible` flag, permission-gating, 403-on-no-grants).
+  11 new backend integration tests (`tests/api/test_brokers.py`) against
+  real Postgres + 8 new Vitest tests
+  (`apps/web/test/BrokerDiscovery.test.tsx`); **283 backend tests
+  passing**, **69 web tests passing**, `ruff check .` and `mypy apps`
+  clean (71 source files), `npm run build` clean. Live-verified against a
+  running stack: two seeded users with disjoint grants each saw only
+  their own broker; cross-user detail 403, unknown id 404, no token 401.
+
 ## Tests
 
 Each of Phase 26, Phase 27, and Phase 28 was built in its own parallel
@@ -791,7 +818,7 @@ only saw its own disjoint additions layered on the shared 208 baseline,
 not the other two phases' new tests combined.
 
 That real merged total has since been confirmed: **272 tests, all
-passing**, by a full from-scratch backend verification of the fully-merged
+passing** (now **283** with Phase 29's broker-discovery tests), by a full from-scratch backend verification of the fully-merged
 main branch (fresh venv, `ruff check .`, `mypy apps`, real Postgres/Redis
 via `docker compose`, `alembic upgrade head` through migration 0009 —
 `orders.portfolio_*` from Phase 26 — and `pytest tests/ -q`) run

@@ -2333,3 +2333,85 @@ explicitly marked as not the merged total. The verification venv
 the `postgres`/`redis` docker containers and their volume were all
 removed after the run; nothing from this pass was left running.
 Status: Implemented and verified as above.
+
+---
+
+**D034 — Broker discovery: `GET /brokers` scoped by the caller's own broker grants, not by an admin permission**
+Date: 2026-08-29
+Decision: Added `GET /brokers` (paginated) and `GET /brokers/{broker_id}`
+in a new `apps/api/app/api/routes/brokers.py`. Both are gated on
+authentication only (`get_current_user`), and both are scoped by the
+calling user's `BrokerGrant` rows: the listing returns exactly the
+brokers that user holds a grant for, and the detail route returns 404 for
+a broker that does not exist and 403 for one that exists but the caller
+has no grant on — the same two codes, in the same order,
+`require_broker_access` already uses. Pagination is `limit` (default 50,
+max 500) / `offset` (default 0), the identical convention and values as
+D027's portfolio history and D031's admin listings. The response is an
+explicit five-field allow-list (`id`, `name`, `kind`, `provider`,
+`is_active`) in `apps/api/app/api/schemas_brokers.py`, never the ORM row.
+Frontend: `apps/web/components/BrokerDiscovery.tsx` renders that listing
+through the standard route-handler proxy
+(`apps/web/app/api/brokers/route.ts`, httpOnly cookie read server-side),
+and a per-row "Use" button pushes the real broker id into the existing
+trade, agent-trade, portfolio and portfolio-history forms via a tiny
+`window` CustomEvent channel (`apps/web/lib/brokerSelection.ts`).
+Reason: every broker-scoped route in this codebase takes a `broker_id`
+path param, and until now nothing told a user what those ids were. A
+non-admin trader had to be handed a UUID out-of-band or ask an admin —
+the frontend forms all shipped with a bare "broker UUID" text box. Grants
+are the right scoping key because they are already the authorization
+model: the read side of D012's grant now mirrors its enforcement side, so
+the discovery list can never advertise a broker whose trade/portfolio
+routes would immediately 403.
+Alternatives considered: reusing the `admin:manage`-gated
+`GET /admin/broker-grants` (D031) — rejected, it is precisely the wrong
+audience (a trader is not an admin), it returns every user's grants
+rather than the caller's, and it returns grant rows, not broker rows, so
+a client would still have to resolve each `broker_id` to a name with a
+lookup that did not exist. A global `GET /brokers` listing every
+configured broker with a separate `accessible` flag — rejected: it leaks
+the existence, names and providers of brokers the caller has no
+relationship with, for no gain, and it invites a client to render a row
+it cannot use. Gating on `VIEW_PORTFOLIO` or `SUBMIT_PAPER_TRADE` —
+rejected, wrong in both directions: it would hide brokers from a user who
+genuinely holds a grant but only the other permission, while not
+narrowing the result for anybody (the grant scope already does that
+work). Returning 403 for a user with zero grants — rejected: "you may
+reach nothing" is a correct, truthful answer to this question, and an
+empty list is how the frontend can say so without inventing a broker.
+Depending on `require_broker_access` for the detail route — rejected,
+that dependency additionally demands a `Permission`, and there is no
+single permission that means "may look up a broker I already hold a grant
+for"; the check is re-implemented in ~10 lines with the same semantics
+instead of widening a shared dependency's contract.
+Consequences: an authenticated user can now enumerate the id, name, kind,
+provider and active flag of every broker they hold a grant for — nothing
+they were not already authorized to trade on or view. The trust boundary
+does not move: pre-filling a broker id in a form authorizes nothing, and
+every subsequent call is still re-checked by `require_broker_access` on
+the server. `is_active` is deliberately reported rather than filtered on:
+hiding an inactive broker the user has a grant for would make this
+listing disagree with what the trade routes say about the same id. Still
+deliberately absent: any listing of brokers a caller has no grant for
+(there is no admin broker listing — D031's "no listing endpoint for
+brokers" gap is closed only for the grant-scoped case), any filter/search
+params (a caller pages, it does not query), and a frontend proxy for the
+detail route — the discovery component only needs the listing, so
+`app/api/brokers/` exposes exactly what the UI calls.
+Verified: 11 new integration tests in `tests/api/test_brokers.py` against
+real Postgres (two users with disjoint grants each see only their own and
+neither sees an ungranted broker; exact five-field row shape; empty list
+rather than 403 for a user with no grants; limit/offset paging
+reassembles in order; 422 on limit=501 and offset=-1; 401 without a
+token; detail 200/403/404/401). Full backend suite: **283 passed** (272
+before this phase), `ruff check .` clean, `mypy apps` clean (71 source
+files). Frontend: 8 new Vitest tests in
+`apps/web/test/BrokerDiscovery.test.tsx` (real rows, documented query
+params, empty state, 401→login redirect, network failure sentinel,
+backend error detail, selection broadcast, and end-to-end pre-fill of
+TradeForm's broker id); full web suite **69 passed**, `npm run build`
+clean. Live-verified against the running stack: two seeded users with
+different grants, each `GET /brokers` returned only that user's broker;
+cross-user detail returned 403, a nonexistent id 404, no token 401.
+Status: Implemented and verified as above.

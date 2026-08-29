@@ -1,6 +1,7 @@
 import Link from "next/link";
 import HealthStatus from "@/components/HealthStatus";
 import QuoteLookup from "@/components/QuoteLookup";
+import BrokerDiscovery from "@/components/BrokerDiscovery";
 import TradeForm from "@/components/TradeForm";
 import AgentTradeForm from "@/components/AgentTradeForm";
 import PortfolioView from "@/components/PortfolioView";
@@ -31,6 +32,9 @@ export default function DashboardPage() {
       </div>
       <HealthStatus />
       <QuoteLookup />
+      {/* Above the broker-scoped forms on purpose: it is where the
+          broker_id those forms need comes from (D034). */}
+      <BrokerDiscovery />
       <TradeForm />
       <AgentTradeForm />
       <PortfolioView />

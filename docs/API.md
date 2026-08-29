@@ -476,8 +476,50 @@ parameters — a caller pages, it does not query (D031).
 
 No delete endpoints for users/roles (D016 — would orphan FKs, deactivate/
 clear-permissions instead). D013's original "no listing endpoints
-anywhere" scope cut was closed by D031 above; there is still no listing
-endpoint for brokers, orders, or fills.
+anywhere" scope cut was closed by D031 above; D034's `GET /brokers`
+(below) covers brokers, but only those the caller holds a grant for —
+there is still no admin-wide broker listing, and none for orders or
+fills.
+
+## `GET /brokers`
+
+Requires `Authorization: Bearer <token>` — any active user, no special
+permission (D034). Returns exactly the brokers the calling user holds a
+`BrokerGrant` for; a user with no grants gets an empty list (200, not
+403). Query params: `limit` (default 50, max 500 — 422 outside that
+range), `offset` (default 0, 422 if negative) — same convention as D027/
+D031. Ordered by `(name, id)`; `name` is not unique on `brokers`, so the
+id is the tiebreaker that makes `offset` paging deterministic.
+
+Response (200, `ListBrokersResponse`):
+```json
+{
+  "brokers": [
+    {
+      "id": "…uuid…",
+      "name": "Live Check Alpha",
+      "kind": "paper",
+      "provider": "paper-sim",
+      "is_active": true
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
+Those five fields are an explicit allow-list — no credential-shaped field
+is ever returned. `is_active` is reported as stored, never filtered on:
+an inactive broker the user holds a grant for is still a real fact about
+their access.
+
+## `GET /brokers/{broker_id}`
+
+Same auth as above. 200 with a single `BrokerResponse` (the row shape
+above) when the caller holds a grant for it; **404** if no broker with
+that id exists; **403** if it exists but the caller holds no grant — the
+same order and codes `require_broker_access` uses, so this route and the
+trade/portfolio routes never disagree about a given `broker_id`.
 
 ## `GET /market-data/{symbol}/quote`
 
