@@ -16,7 +16,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "."),
+      // `import.meta.dirname`, not `__dirname`: this file is ESM (`.mts`),
+      // and Vite's native config loader - already the default in Vitest 4's
+      // Vite, mandatory in a future major - does not inject the CommonJS
+      // globals. See docs/DECISIONS.md D050.
+      "@": path.resolve(import.meta.dirname, "."),
     },
   },
 });

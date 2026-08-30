@@ -25,6 +25,44 @@ doesn't distinguish which, and the route deliberately takes the same time
 either way (see `login.py`'s `_DUMMY_HASH`) to avoid leaking which emails
 are registered.
 
+**423 for a locked-out account** (Phase 39, D049). After
+`AUTH_MAX_FAILED_LOGIN_ATTEMPTS` consecutive failed password attempts
+(default 5), the account is locked for `AUTH_LOCKOUT_DURATION_MINUTES`
+(default 15) and even the correct password is refused:
+
+```json
+{"detail": "Account temporarily locked after repeated failed login attempts. Try again later."}
+```
+
+Details that matter to a client:
+
+- **423 is only ever returned to a caller who supplied the CORRECT
+  password.** A wrong password against a locked account still returns the
+  generic 401, and an unknown email always returns 401 — so 423 can never
+  be used to discover whether an email is registered. A client must not
+  treat a 401 as proof that an account is *not* locked.
+- The response does **not** say how much time is left, deliberately. There
+  is no `Retry-After` header. "Later" is all a client can truthfully
+  relay.
+- A wrong password while locked does **not** extend the lock, so a third
+  party cannot hold a user out indefinitely by guessing.
+- A successful login resets the counter to zero; the lock expires on its
+  own. There is no unlock endpoint and no email flow.
+- Set `AUTH_MAX_FAILED_LOGIN_ATTEMPTS=0` to disable the lockout entirely,
+  in which case 423 is never returned.
+
+## CSRF posture
+
+The frontend's auth cookie is `httpOnly` with `SameSite=Lax` (D020), and
+that is the app's **only** anti-CSRF defence — there is no anti-CSRF
+token, deliberately (D050). `SameSite=Lax` withholds the cookie from every
+cross-site request except a top-level GET navigation, and **no route in
+this API or in `apps/web/` changes state on a GET** — every mutation is a
+POST, PATCH, or DELETE. Adding a state-changing GET route would silently
+break this and require a real CSRF token; don't. The backend itself is
+authenticated by `Authorization: Bearer`, never by a cookie, so it is not
+CSRF-reachable at all.
+
 ## `GET /auth/session`
 
 Requires `Authorization: Bearer <token>` — any active user, no special

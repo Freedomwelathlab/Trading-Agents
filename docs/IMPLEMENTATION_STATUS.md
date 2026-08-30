@@ -1061,6 +1061,46 @@ optimization.
   `total_equity = 100100`. Weekday behavior in tests uses an **injected**
   Monday instant, not a real one.
 
+- Phase 39: security-audit remediation — login lockout, CSRF posture on
+  record, vitest CVE (2026-08-30). Fixes three findings from a completed
+  read-only security review of the backend and frontend.
+  **(1) Failed-login lockout on `POST /auth/login`** (D049), the app's one
+  previously unthrottled credential endpoint: `apps/api/app/auth/lockout.py`
+  (new, pure arithmetic with a single `utcnow()` clock seam) + two new
+  `users` columns (`failed_login_count`, `locked_until`; migration `0012`)
+  + two new settings (`AUTH_MAX_FAILED_LOGIN_ATTEMPTS` default 5, `0`
+  disables; `AUTH_LOCKOUT_DURATION_MINUTES` default 15, both validated at
+  startup). N consecutive failures lock the account; a correct password
+  during the lock gets **423** with a clear message, while a wrong password
+  still gets the generic **401** — so 423 is unreachable to anyone who
+  doesn't already know the password and adds no email-enumeration oracle on
+  top of the existing `_DUMMY_HASH` timing parity. No new pip dependency and
+  no first-ever Redis client: Postgres was already a hard dependency of this
+  route, and unlike an in-process counter it survives restarts and is
+  correct under `uvicorn --workers N`.
+  **(2) CSRF posture recorded** (D050): documentation only — `SameSite=Lax`
+  on D020's httpOnly cookie remains the sole defence, which is sound
+  precisely because no route in this app changes state on a GET. Written up
+  in `docs/API.md` so the invariant it rests on is visible to whoever adds
+  the next route.
+  **(3) vitest 2 → 4** in `apps/web` (D050), clearing a critical
+  `vitest --ui` advisory (never used here, dev-only, never shipped) plus
+  transitive `vite`/`esbuild` ones: `npm audit` **5 → 0 vulnerabilities**;
+  `@vitejs/plugin-react` to v6 and `vitest.config.ts` → `.mts` with
+  `import.meta.dirname` were the real config migrations required, not
+  suppressed warnings.
+  **400 backend tests passing** over the measured 379 baseline (+21: 9
+  pure-arithmetic, 8 real-Postgres integration, 4 config-validation),
+  `ruff check .` and `mypy apps` clean (77 source files); **102 Vitest
+  tests passing** over the 99 baseline (+3 `LoginForm` tests pinning that
+  the 423 message reaches the user verbatim), `npm run build` succeeds.
+  Live-verified against a real uvicorn + real Postgres: real HTTP POSTs
+  drove a real lockout (401 ×3 → 423 on the correct password → 401 on a
+  wrong one), the `users` row showed the real counter and timestamp, and
+  the lock cleared on the **real wall clock** with a deliberately short
+  1-minute configured window. The 15-minute default's expiry is covered by
+  the injected-clock tests, not walked in real time.
+
 - Phase 38: multi-worker safety for the portfolio snapshot scheduler
   (2026-08-30). `apps/api/app/portfolio/cycle_lock.py` (new) +
   `PORTFOLIO_SNAPSHOT_CYCLE_LOCK_ENABLED` (new setting, **default true**)
