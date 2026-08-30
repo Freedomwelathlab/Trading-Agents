@@ -241,6 +241,23 @@ amber always means the Risk Engine said no and the D029 combination
 `approved: true` + `status: "rejected"` is no longer attributed to the
 wrong gate. No backend change was needed; the four fields already existed.
 
+Phase 37 (D045) closes that last candidate with a real Playwright e2e
+suite for `apps/web/` (`npm run test:e2e`, deliberately separate from the
+Vitest `npm test`). `@playwright/test` plus Chromium alone is the one new
+dependency, added on explicit user permission. Nothing in it is mocked -
+that is the point, since the 99 Vitest component tests already cover
+rendering against fabricated responses. Each of the 11 specs drives a
+real browser against a real `next dev`, whose route handlers proxy to a
+real FastAPI process over a real Postgres seeded by `scripts/seed_e2e.py`
+(the same direct-SQL bootstrap D013 has always required); the trades they
+submit are real `orders`/`fills` rows decided by the real Risk Engine and
+the real trade-path Portfolio Manager, including a genuine MODIFY. The
+backend URL is configurable (`E2E_API_BASE_URL`). What it does NOT cover
+is recorded rather than faked: every flow needing a real LLM provider or
+market-data vendor (agent trades, quotes, portfolio views, backtests),
+and the Portfolio Manager's REJECT/`max_open_positions` paths, which
+`TradeForm` structurally cannot reach because it has no "marks" input.
+
 ## Planned Work
 
 Phase 29+: the rest of the parallel analyst layer (fundamental/news/
@@ -280,9 +297,10 @@ to parallelize against). Frontend candidates remaining after Phase
 20/D023, Phase 24/D026, Phase 28/D031/D032 and Phase 29/D034 (admin UI,
 agent-trades UI, the portfolio view, a historical performance chart, a
 users/roles/grants listing UI, session expiry UX, and broker discovery
-are now all built): Playwright e2e coverage. Playwright was deliberately
-skipped in Phase 28 because it needs a new tool dependency, and remains
-open pending explicit permission to add one.
+are now all built): none. The last one, Playwright e2e coverage, was
+built in Phase 37/D045 once the user granted explicit permission for the
+one new dependency it needed - so every frontend candidate this document
+has tracked is now built.
 
 Phase 29 (D034) added broker discovery: `GET /brokers` and
 `GET /brokers/{broker_id}`, authentication-only and scoped to the
@@ -349,7 +367,8 @@ token is unchanged, and the new endpoint reports on a session, it cannot
 extend one. 226 backend tests and 61 frontend tests pass; ruff/mypy
 clean; `npm run build` has zero type errors. Verified live against a
 real stack and a real browser (see D031/D032). Playwright/e2e was
-deliberately skipped - it needs a new tool dependency.
+deliberately skipped there - it needs a new tool dependency - and is now
+built in Phase 37/D045.
 
 ## Known Problems
 

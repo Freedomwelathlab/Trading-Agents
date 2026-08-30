@@ -69,7 +69,25 @@ including the exact
 `DATA_UNAVAILABLE:` sentinel strings, a rejected trade's `block_reason`,
 a non-admin's real 403, and a 404 for an unknown broker — never a
 generic "error occurred" message. See D020 for why Vitest/RTL was chosen
-over Playwright for this phase.
+over Playwright for that phase.
+
+## End-to-end test (Playwright — D045)
+
+```bash
+npm run test:e2e
+```
+
+A **separate** suite from `npm test`, and deliberately not part of it.
+Nothing here is mocked: real Chromium -> real `next dev` -> real route
+handlers -> a real Trading OS API -> a real Postgres with real seeded
+rows. It therefore cannot run without a backend, a migrated database and
+the fixtures `scripts/seed_e2e.py` writes.
+
+Full bring-up, the environment knobs (`E2E_API_BASE_URL`,
+`E2E_WEB_PORT`, `E2E_SEED_COMMAND`) and the gotchas
+(`localhost` not `127.0.0.1`; wait for hydration) are documented in
+`docs/DEVELOPMENT_WORKFLOW.md`. One-time:
+`npx playwright install chromium`.
 
 ## Auth model
 

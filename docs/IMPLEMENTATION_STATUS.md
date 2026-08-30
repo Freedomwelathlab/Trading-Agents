@@ -1015,6 +1015,44 @@ optimization.
   `total_equity = 100100`. Weekday behavior in tests uses an **injected**
   Monday instant, not a real one.
 
+- Phase 37: Playwright e2e coverage for `apps/web/` (2026-08-30).
+  `apps/web/playwright.config.ts` + `apps/web/e2e/` (`fixtures.ts`,
+  `helpers.ts`, `global-setup.ts`, `auth.spec.ts`, `trade.spec.ts`,
+  `broker-discovery.spec.ts`, `admin.spec.ts`) and `scripts/seed_e2e.py`
+  — the last remaining frontend candidate, unblocked by the user's
+  explicit permission for the one new dependency (`@playwright/test`
+  plus Chromium only, not all three engines). Run by a new
+  `npm run test:e2e`; deliberately NOT part of `npm test`, and
+  `vitest.config.ts` now excludes `e2e/**` so Vitest never collects specs
+  that cannot run without a database. Nothing is mocked: real Chromium →
+  real `next dev` → real route handlers → real FastAPI → real Postgres
+  with real seeded rows, and real `orders`/`fills` written by the real
+  Risk Engine (D004) and Portfolio Manager (D029). The backend URL is
+  configurable (`E2E_API_BASE_URL`, default `http://localhost:8000`), as
+  is the dev-server port (`E2E_WEB_PORT`, default 3100). Covered: valid
+  login → `/dashboard` + a real httpOnly cookie invisible to
+  `document.cookie`; invalid login → the backend's real
+  `Incorrect email or password.`, no redirect, no cookie; no cookie →
+  proxy bounce to `/login`; an invalid session on a protected page →
+  `/login?reason=session-expired` (D032); a real approved trade with a
+  real fill and, per D038, no Portfolio Manager panel; a real
+  `missing_stop_price` risk rejection; a real Portfolio Manager MODIFY
+  (requested 100 / filled 50, binding constraint `symbol_concentration`)
+  beside a non-amber risk verdict; a real 403 on an ungranted broker;
+  `BrokerDiscovery` listing real granted brokers and pushing one into the
+  trade and agent-trade forms; and `/admin` listing real users/roles/
+  grants for an admin while a non-admin gets three real 403s. **11/11
+  specs passing, verified three times consecutively** against a real stack
+  (compose project `tradingos-e2e37` on ports 55437/56437, all eleven
+  migrations applied, real uvicorn on 8037, real Chromium) — the user's
+  own dev stack on 5432/6379/8000/3005 was left untouched. Not covered,
+  deliberately: every flow needing a real LLM provider or market-data
+  vendor (agent trades, quotes, portfolio views, backtests) since neither
+  is configured here, and the Portfolio Manager's REJECT /
+  `max_open_positions` paths, which `TradeForm` cannot reach because it
+  has no "marks" input. See docs/DECISIONS.md D045 (D044 was claimed by
+  the parallel phase-36 worktree).
+
 ## Tests
 
 Each of Phase 26, Phase 27, and Phase 28 was built in its own parallel
@@ -1194,6 +1232,16 @@ and `test/SessionStatus.test.tsx`; 8 more from Phase 29's broker discovery
 and 20 added in Phase 31 (`test/BacktestPanel.test.tsx`, D037). Between
 them they cover success, empty results, real error sentinels, 403, 404,
 422, the 401→login redirect, and network failure for every component.
+
+Frontend e2e (`apps/web/e2e`, Playwright + Chromium): **11 specs, all
+passing** — a separate suite from the Vitest one above, run by
+`npm run test:e2e` and never by `npm test`. It cannot run without a real
+backend, a real migrated database and the fixtures `scripts/seed_e2e.py`
+writes; see docs/DEVELOPMENT_WORKFLOW.md for the bring-up and
+docs/DECISIONS.md D045 for what it does and does not cover. The Vitest
+count above is unchanged by Phase 37 (99 as run on this branch): the
+phase adds no component test, only the `e2e/**` exclude that keeps the
+two suites apart.
 
 ## Known Issues
 

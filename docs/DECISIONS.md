@@ -3472,3 +3472,148 @@ independently-reported worktree counts (317 and 336, each off the same
 clean-room run was the only way to be sure rather than assume from the
 arithmetic alone.
 Status: Implemented and verified as above.
+
+**D045 — Playwright e2e coverage for `apps/web/`: the last remaining frontend candidate, against a real backend only**
+
+Date: 2026-08-30
+Decision: Added a Playwright end-to-end suite for `apps/web/` — the one
+frontend candidate `docs/PROJECT_CONTEXT.md` had been carrying since
+Phase 28, deliberately skipped there because it needs a new tool
+dependency. The user granted permission for that dependency in this
+phase, so `@playwright/test` (plus a single browser engine, Chromium —
+not all three) is now a devDependency of `apps/web` and the only new
+dependency this phase adds. This entry is D045, not D044: the sibling
+phase-36 worktree, developed in parallel off the same `main` at
+`ed02f1b`, already claimed D044 for `portfolio_snapshots.cost_basis_method`,
+so the next free number was taken per this project's parallel-worktree
+numbering convention.
+
+Shape: `apps/web/playwright.config.ts` starts `next dev` itself via
+`webServer` and points its route handlers at a configurable backend
+(`E2E_API_BASE_URL`, defaulting to `http://localhost:8000`, passed
+through as the `API_BASE_URL` the handlers already read), so a local run
+and a CI run can target different backends without editing a file.
+`E2E_WEB_PORT` (default 3100) picks the dev-server port. The suite lives
+in `apps/web/e2e/`, is run by a new `npm run test:e2e`, and is
+deliberately NOT wired into `npm test`: `vitest.config.ts` now excludes
+`e2e/**`, because Vitest's default `**/*.spec.ts` glob would otherwise
+collect specs that cannot run without a database. Unit/component and e2e
+stay separate suites, as they are in most Next.js projects.
+
+Nothing in this suite is mocked. That is the whole justification for it
+existing alongside the 99 Vitest component tests, which already cover
+rendering against fabricated responses — repeating that here would prove
+nothing. Every spec drives a real Chromium against a real `next dev`,
+whose route handlers proxy to a real FastAPI process, backed by a real
+Postgres with real migrated tables and real seeded rows. The trades the
+suite submits are real `orders`/`fills` rows produced by the real
+deterministic Risk Engine (D004) and the real trade-path Portfolio
+Manager (D029).
+
+`scripts/seed_e2e.py` writes those fixtures by direct SQL — the same
+bootstrap every phase has used since D013, because there is no user
+holding `admin:manage` to call `/admin/*` with the first time. It creates
+two roles, an admin and a non-admin trader, and three paper brokers: a
+flat one (100,000 cash, no positions), a concentrated one (80,000 cash +
+200 `AAPL.US`), and one no fixture user holds a grant for. The
+concentrated broker is sized so that a 100-share buy at 100.00 passes the
+Risk Engine (10,000 notional == the 10%-of-equity single-position cap
+exactly) and is then shrunk to 50 by the Portfolio Manager's
+25%-of-equity per-symbol cap — a genuine MODIFY produced by real code,
+not a stubbed verdict. Playwright's `globalSetup` re-runs the seed before
+every run (`E2E_SEED_COMMAND` / `E2E_SKIP_SEED`), because those trades
+permanently change real broker rows and the MODIFY case only holds while
+the concentrated broker still holds exactly its seeded position. For the
+same reason the suite is single-worker, serial, and `retries: 0` — a
+retry would re-submit real trades against a book the first attempt
+already changed, so a "pass on retry" would mean nothing.
+
+Every trade the suite submits supplies an explicit `estimated_price`,
+i.e. D017's caller-authoritative path. No market-data vendor is consulted
+and no quote is invented, which is what makes the asserted risk and
+portfolio verdicts deterministic rather than dependent on whatever the
+market was doing.
+
+Two environment-level findings were required to make any of this work,
+both recorded here because they will bite the next person:
+1. The base URL must be `http://localhost:<port>`, not
+   `http://127.0.0.1:<port>`. Next 16's dev server 403s asset requests
+   whose Host is a bare IP not listed in `allowedDevOrigins`, which
+   leaves the page server-rendered but never hydrated. A click then fires
+   the browser's NATIVE form submit instead of the React handler, the
+   page navigates to `/login?`, and the spec fails for a reason that has
+   nothing to do with the product.
+2. Even on `localhost`, specs must wait for hydration before interacting,
+   for the same reason. `e2e/helpers.ts`'s `waitForHydration()` polls for
+   the `__reactFiber$…` expando React stamps on every host node it
+   hydrates — a real signal, not a sleep. `networkidle` is unusable here
+   because the dev server holds an HMR socket open.
+Timeouts are deliberately generous (120s per test, 30s per assertion):
+`next dev` compiles each route and route handler on first request, and a
+cold compile of a data-fetching component genuinely takes tens of seconds.
+Tighter values produced a flake that said nothing about the product.
+
+What the 11 specs cover: login with valid credentials reaching
+`/dashboard` with a real httpOnly cookie the browser's own
+`document.cookie` cannot see; login with invalid credentials rendering
+the backend's real `Incorrect email or password.` with no redirect and no
+cookie; no cookie at all being bounced off `/dashboard` by the proxy; an
+invalid session on a protected page redirecting to
+`/login?reason=session-expired` with D032's real explanation; a real
+approved trade rendering a real fill and (per D038) NO Portfolio Manager
+panel; a real `missing_stop_price` risk rejection rendering amber with no
+portfolio panel; a real Portfolio Manager MODIFY rendering violet-adjacent
+beside a green risk verdict with requested 100 / filled 50; a real 403 on
+a broker the user holds no grant for; `BrokerDiscovery` listing the
+user's real granted brokers and pushing one into the trade and
+agent-trade forms; and `/admin` listing the real users, roles and grants
+for an admin — with the same page rendering three real 403s, and no user
+rows, for a non-admin.
+
+Scope cuts, stated plainly rather than faked:
+- No spec exercises `AgentTradeForm`'s success path, the quote lookup's
+  success path, `PortfolioView`, `PortfolioHistoryChart`, or
+  `BacktestPanel`'s success path. Each of those needs a real LLM provider
+  or a real market-data vendor, and neither is configured in this
+  environment. Writing specs that assert the `NOT_CONFIGURED:` sentinel
+  would have been possible but adds nothing the Vitest suite doesn't
+  already cover, and asserting a success path would have required
+  fabricating vendor data (spec §57).
+- The Portfolio Manager's REJECT and `max_open_positions` paths are not
+  covered. Both require a broker holding positions in symbols other than
+  the one being traded, and `TradeForm` has no "marks" input — such a
+  trade fails with a real `DATA_UNAVAILABLE` before any verdict is
+  reached. That is a true property of the current UI, so the gap is
+  recorded rather than worked around by calling the API directly, which
+  would no longer be an e2e test of the frontend.
+Verified live: `npm run test:e2e` was run end-to-end against a stack
+brought up for this phase — a real Postgres 16 (timescaledb image) and
+Redis 7 under compose project `tradingos-e2e37` on remapped host ports
+55437/56437, `alembic upgrade head` applying all eleven migrations, a
+real uvicorn process on 127.0.0.1:8037 with a throwaway `.env.e2e37`, the
+seed script, `next dev` on port 3137, and a real Chromium. **All 11 specs
+passed, three times consecutively** (54.3s, 1.5m and 1.7m wall clock, the
+last of those through `npm run test:e2e` itself). An earlier run
+of the same 11 had 1 failure — the broker-listing assertion timing out on
+a cold route-handler compile — which is what the timeout increase above
+fixed; it is reported here rather than quietly re-run away. The user's own
+dev stack (`trading-os-postgres-1`/`trading-os-redis-1` on 5432/6379, plus
+their uvicorn on 8000 and Next dev on 3005) was left running and
+untouched throughout, and this phase's own containers, venv, `.env`, and
+compose file were torn down afterwards. Alongside: 99 Vitest component
+tests still pass (unchanged — this phase adds no Vitest test, and the new
+exclude correctly keeps the e2e specs out of that run), `npm run build`
+has zero type errors, and `ruff check .` / `mypy apps scripts` are clean
+with the new seed script included.
+Alternatives: (a) mocking the backend with Playwright's `page.route()` —
+rejected outright: that is exactly what the existing Vitest suite already
+does, and an e2e suite that never touches the real API would be a more
+expensive way to test less. (b) Installing all three browser engines —
+rejected as unjustified cost for a suite whose assertions are about
+application behaviour, not rendering-engine differences. (c) Adding
+`allowedDevOrigins: ["127.0.0.1"]` to `next.config.ts` to work around
+finding (1) — rejected because it changes production configuration to
+suit a test; using `localhost` costs nothing. (d) Folding e2e into
+`npm test` — rejected: it would make the unit suite unrunnable without
+Docker, a database, and a browser.
+Status: Implemented and verified as above.
