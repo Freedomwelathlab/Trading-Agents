@@ -1442,6 +1442,43 @@ count above is unchanged by Phase 37 (99 as run on this branch): the
 phase adds no component test, only the `e2e/**` exclude that keeps the
 two suites apart.
 
+A full from-scratch integration verification run 2026-08-31 against
+`main` at `c2e0ec4` (Phase 39's login-lockout persistence and the
+vitest 2→4 major bump merged) confirmed the true post-merge backend
+total is **400 tests, all passing** — exactly Phase 39's own
+independently-reported 400. Following the same
+D028/D033/D036/D040/D043/D046/D048 precedent: fresh Python 3.13 venv
+(3.11/3.12 were unavailable on the host; 3.13 is within the project's
+`>=3.11` requirement and all dependencies built clean wheels for it),
+`pip install -e ".[dev]"`, `ruff check .` (clean, "All checks passed!"),
+`mypy apps` (clean, "Success: no issues found in 77 source files" — 77
+vs. D048's 76 reflects Phase 39's new login-lockout code), a
+separately-named throwaway Postgres/Redis pair on remapped host ports
+55432/56379 under its own compose project name `tradingos-verify39`
+(the user's own default-port 5432/6379 dev stack, plus their uvicorn on
+8000 and Next.js dev server on 3005, was left completely untouched — no
+`docker compose down` was ever run, and the throwaway config lived in
+a temporary `.env`-free setup: `DATABASE_URL`/`REDIS_URL`/`JWT_SECRET`
+were exported as shell variables for this session only, since
+`pydantic-settings` gives shell env vars precedence over the repo's real
+`.env` file, so the user's own `.env` was never read from or written to),
+`alembic upgrade head` — all twelve migrations (0001 through Phase 39's
+`0012_users_login_lockout`) applied cleanly in sequence against a real
+Postgres 16 (timescaledb image) database with no manual intervention —
+and `pytest tests/ -q` against that same real database: 400 passed, 3
+pre-existing warnings (the same two `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass),
+zero failures, zero errors. No cross-phase integration bug was found. A
+separate frontend check was also run: `cd apps/web && npm install &&
+npm run build && npm test` (Vitest unit tests only, per this pass's
+scope — Playwright e2e needs its own real backend and was skipped) —
+`npm install` reported 0 vulnerabilities, `npm run build` succeeded with
+zero TypeScript errors under the bumped vitest/vite toolchain, Vitest
+reported **102 tests across 13 files, all passing**, exactly matching
+Phase 39's own report, and a standalone `npm audit` confirmed 0
+vulnerabilities, verifying Phase 39's CVE-clearing claim. See
+docs/DECISIONS.md D051 for the full verification record.
+
 ## Known Issues
 
 None open.

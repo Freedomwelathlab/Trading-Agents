@@ -4207,3 +4207,68 @@ before this phase — verified by stashing the change and re-running — all
 pre-existing and untouched here. The Playwright e2e suite was not run: it
 needs a full running backend and browser engines and was out of scope for
 this security-fix phase.
+
+**D051 — Full post-merge integration verification (Phase 39): clean run, real merged test count confirmed at 400, backend + frontend**
+
+Date: 2026-08-31
+Decision: Ran a from-scratch full integration verification of the
+fully-merged main branch at `c2e0ec4` (Phase 39's login-lockout
+migration `0012` and the vitest 2→4 major bump, D049/D050, merged),
+covering both backend and frontend, following the exact
+D028/D033/D036/D040/D043/D046/D048 precedent. Backend: a fresh Python
+venv, `pip install -e ".[dev]"`, `ruff check .`, `mypy apps`, a real
+Postgres 16 (timescaledb image) and Redis 7 via a standalone throwaway
+`docker-compose.verify.yml` (not an override of the base compose file,
+per D040's port-merge lesson) under its own compose project name
+`tradingos-verify39` on remapped host ports 55432/56379, `alembic
+upgrade head` against that database, then `pytest tests/ -q` with
+`DATABASE_URL`/`REDIS_URL`/`JWT_SECRET` exported directly in-shell (no
+throwaway `.env` file needed, since `apps/api/app/core/config.py`'s
+`Settings` reads environment variables ahead of its `.env` file). Only
+Python 3.13 and 3.14 were available on the host (no 3.11/3.12); 3.13 was
+used since it is within the project's `>=3.11` requirement and every
+dependency provided prebuilt wheels for it. The user's own dev stack
+(`trading-os-postgres-1`/`trading-os-redis-1` on default ports 5432/6379,
+a uvicorn process on port 8000, a Next.js dev server on port 3005, all
+using the real root `.env`) was confirmed untouched throughout — no bare
+`docker compose down` was run, the real `.env` file was never read or
+written, and those two containers were independently observed via
+`docker ps` to already be in an exited state at the point this session
+resumed after an interruption, which this verification pass did not
+cause (it never issued a stop/restart against them) and did not attempt
+to fix, since restarting the user's own stack is explicitly out of scope
+for this task.
+Verified live: `ruff check .` reported "All checks passed!" with zero
+findings. `mypy apps` reported "Success: no issues found in 77 source
+files" (77 vs. D048's 76 reflects Phase 39's new login-lockout code) with
+zero findings. `alembic upgrade head` applied all twelve migrations in
+sequence — 0001 through Phase 39's new
+`0012_users_login_lockout` (`users.failed_login_count` /
+`users.locked_until`) — against a real, freshly created database with no
+manual intervention. `pytest tests/ -q` collected and ran the entire
+suite against that same real Postgres/Redis pair: **400 tests, all
+passing**, 3 warnings (the same two `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass —
+neither new nor actionable), zero failures, zero errors, on the first
+clean run — no shell-environment-leakage artifact this time.
+Frontend: `cd apps/web && npm install` (0 vulnerabilities) `&& npm run
+build` (Turbopack, Next.js 16.3.3 — compiled successfully, TypeScript
+checked clean, all 16 routes generated) `&& npm test` (`vitest run`,
+which is what `npm test` invokes — Playwright e2e was correctly excluded
+and not run, since it needs its own real backend). Vitest reported
+**102 tests across 13 files, all passing**, exactly matching Phase 39's
+own D050 report, unchanged. A standalone `npm audit` was run again after
+the build/test pass and independently confirmed **0 vulnerabilities**,
+verifying D050's CVE-clearing claim held after the full merge.
+No real cross-phase integration bug was found anywhere in this pass —
+migration 0012's new columns, the login-lockout logic, and the
+vitest/vite toolchain bump all integrate cleanly with every earlier
+phase's code and tests.
+Status: Verified, no code changes required. Cleanup completed: the
+`tradingos-verify39` docker compose stack was torn down
+(`docker compose -p tradingos-verify39 down -v`), the throwaway
+`.venv_verify` Python venv was removed, and no `.env` file was ever
+created (env vars were shell-exported for this session only, never
+written to disk). The user's own stack
+(`trading-os-postgres-1`/`trading-os-redis-1`, uvicorn on 8000, Next.js
+dev server on 3005) was left exactly as found.
