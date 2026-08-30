@@ -132,6 +132,27 @@ class Settings(BaseSettings):
     see apps/api/app/portfolio/market_hours.py for why a hardcoded
     exchange calendar was rejected rather than approximated."""
 
+    portfolio_snapshot_cycle_lock_enabled: bool = True
+    """Phase 38 (docs/DECISIONS.md D047): before doing any work, each
+    snapshot cycle takes a non-blocking Postgres session-level advisory
+    lock, so that running the API under more than one uvicorn/gunicorn
+    worker produces ONE snapshot row per interval instead of one per
+    worker. This closes the multi-worker consequence D030 recorded.
+
+    Defaults TRUE, for the same reason the market-hours gate does: "on" is
+    the side that writes fewer rows into an append-only table, and with a
+    single worker there is never a contender, so the lock is always
+    acquired and the cycle behaves exactly as it did before Phase 38 (at
+    the cost of one pooled connection and two trivial statements per
+    cycle).
+
+    Set false to restore D030's unguarded behaviour, in which no lock
+    statement is issued at all. Only do that with a single worker: with
+    several, it reinstates the duplicate-row bug. No new dependency backs
+    this - see apps/api/app/portfolio/cycle_lock.py for why Postgres
+    advisory locks were chosen over Redis (provisioned but unwired), a
+    leader-election library, or a scheduler library."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None

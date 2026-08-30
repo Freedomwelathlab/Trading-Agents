@@ -57,3 +57,27 @@ def test_an_unrecognised_scheduler_cost_basis_method_fails_at_config_load():
             jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
             portfolio_snapshot_cost_basis_method="hifo",
         )
+
+
+def test_the_snapshot_cycle_lock_defaults_to_enabled():
+    """D047's default is ON, unlike the scheduler switch itself: "on" is the
+    side that writes FEWER rows into an append-only table, and with a single
+    worker it is a no-op that always acquires. An operator who enables the
+    scheduler and thinks no further about it must get the multi-worker-safe
+    behaviour, not the duplicate-row one."""
+    settings = Settings(
+        _env_file=None, jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256"
+    )
+    assert settings.portfolio_snapshot_cycle_lock_enabled is True
+
+
+def test_the_snapshot_cycle_lock_can_be_disabled_to_restore_d030_behaviour():
+    """The escape hatch must be reachable from configuration alone, since
+    that is the only way a single-worker deployment can decline the extra
+    pooled connection the lock holds for a cycle."""
+    settings = Settings(
+        _env_file=None,
+        jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
+        portfolio_snapshot_cycle_lock_enabled=False,
+    )
+    assert settings.portfolio_snapshot_cycle_lock_enabled is False

@@ -24,6 +24,7 @@ from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_provider,
 )
 from apps.api.app.marketdata.router import MarketDataRouter
+from apps.api.app.portfolio.cycle_lock import SnapshotCycleLock
 from apps.api.app.portfolio.market_hours import MarketHoursGate
 from apps.api.app.portfolio.scheduler import PortfolioSnapshotScheduler
 
@@ -71,6 +72,14 @@ async def lifespan(app: FastAPI):
             # otherwise. Whichever method is used is recorded on every row,
             # so GET .../history never mixes incomparable P&L silently.
             cost_basis_method=settings.portfolio_snapshot_cost_basis_method,
+            # Phase 38 (D047): cross-worker mutual exclusion, on by
+            # default. This lifespan runs once per uvicorn/gunicorn
+            # worker, so without it every worker would append its own row
+            # per interval to an append-only series. With one worker the
+            # lock is always won and the cycle is unchanged.
+            cycle_lock=SnapshotCycleLock(
+                enabled=settings.portfolio_snapshot_cycle_lock_enabled
+            ),
         )
         scheduler.start()
         app.state.portfolio_snapshot_scheduler = scheduler
@@ -100,6 +109,9 @@ async def lifespan(app: FastAPI):
         ),
         portfolio_snapshot_cost_basis_method=(
             settings.portfolio_snapshot_cost_basis_method.value
+        ),
+        portfolio_snapshot_cycle_lock=(
+            "pg_advisory" if settings.portfolio_snapshot_cycle_lock_enabled else "DISABLED"
         ),
     )
     yield

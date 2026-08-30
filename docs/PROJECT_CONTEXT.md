@@ -290,9 +290,23 @@ holidays are still NOT checked, deliberately: an honest per-exchange gate
 needs a real trading-calendar source (the installed Longbridge SDK does
 expose `trading_session()`/`trading_days()`, but not the market timezones
 needed to use them) rather than a hardcoded hours/holiday table, which
-spec Sec57 forbids as fabrication. Each API worker process still runs its
-own independent scheduler loop (so >1 worker would multiply snapshot
-rows), untouched by Phase 35. Also pending: re-verify D018/D019's
+spec Sec57 forbids as fabrication. Phase 38/D047 closes the other half of
+D030's open consequences: each API worker process still starts its own
+scheduler loop (the lifespan runs per worker), but a cycle now takes a
+non-blocking Postgres **session-level advisory lock**
+(`apps/api/app/portfolio/cycle_lock.py`,
+`PORTFOLIO_SNAPSHOT_CYCLE_LOCK_ENABLED`, default true) before enumerating
+any broker, so `uvicorn --workers N` writes one snapshot row per interval
+instead of N into an append-only table. The losers record the typed
+`SnapshotCycleLockDecision.SKIPPED_LOCK_HELD` - an ordinary outcome, not
+an error - and skip without a single DB query or vendor call; the winner
+releases in a `finally` on every path. No new dependency, table, or
+migration: Redis is provisioned but still unwired in Python, and an
+advisory lock dies with its connection so a killed worker cannot wedge
+the schedule. Single-worker behaviour is byte-identical to D030.
+Live-verified with two separate OS processes racing one real cycle each
+against one real Postgres: lock on → 1 row, lock off → 2 rows. Also
+pending: re-verify D018/D019's
 live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now

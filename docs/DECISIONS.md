@@ -2188,8 +2188,20 @@ Saturday or Sunday, before any DB query or vendor call, via
 weekend gate only: intraday after-hours and exchange holidays are still
 NOT checked, deliberately, because doing so honestly needs a real
 trading-calendar source rather than a hardcoded table. Read D042 before
-assuming this is "market-hours aware". The multi-worker consequence
-above is unchanged and still open.** `captured_at` is left
+assuming this is "market-hours aware".**
+**Update (Phase 38, D047): the multi-worker consequence above is now
+CLOSED. Each worker process still runs its own loop — the lifespan runs
+once per worker — but before a cycle does any work it takes a
+non-blocking Postgres session-level advisory lock
+(`apps/api/app/portfolio/cycle_lock.py`,
+`PORTFOLIO_SNAPSHOT_CYCLE_LOCK_ENABLED`, default true), so exactly one
+worker per interval captures and the rest record the typed
+`SnapshotCycleLockDecision.SKIPPED_LOCK_HELD` and skip. `uvicorn
+--workers N` therefore produces one snapshot row per interval rather
+than N. No leader-election or scheduler library was needed after all, so
+D030's "no scheduler library" choice stands rather than being revisited;
+see D047. With a single worker the lock is always acquired and the cycle
+is unchanged.** `captured_at` is left
 to the DB's `server_default=func.now()` for both paths so the app clock
 can't reorder the series.
 Numbering note: developed in a `phase-27-scheduled-snapshots` worktree in
@@ -3818,4 +3830,115 @@ reported 359 total held up in a real from-scratch clean-room run against
 merged `main`, and whether Phase 37's frontend build and Vitest suite
 still passed unchanged, and a clean-room run was the only way to be sure
 rather than assume from either phase's own report alone.
+Status: Implemented and verified as above.
+
+---
+
+**D047 — Multi-worker safety for the snapshot scheduler: a non-blocking Postgres advisory lock per cycle, closing D030's last open consequence with no new dependency**
+Date: 2026-08-30
+Decision: Added `apps/api/app/portfolio/cycle_lock.py` — a frozen,
+connection-agnostic `SnapshotCycleLock` whose `hold(session)` async
+context manager takes `SELECT pg_try_advisory_lock(classid, objid)` on a
+session opened solely to own the lock, yields a typed
+`SnapshotCycleLockDecision`, and releases with `pg_advisory_unlock` in a
+`finally` on every path including an exception. `run_snapshot_cycle()`
+now takes an optional `cycle_lock=` and, after the D042 market-hours gate
+but *before* enumerating brokers, returns immediately with
+`lock=SKIPPED_LOCK_HELD` and no outcomes when another process holds it.
+`SnapshotCycleResult` gained a `lock` field plus `lock_skipped` and `ran`
+properties; `PortfolioSnapshotScheduler` gained a `cycle_lock=`
+constructor argument threaded into every cycle; `main.py` wires
+`SnapshotCycleLock(enabled=settings.portfolio_snapshot_cycle_lock_enabled)`
+from the new `PORTFOLIO_SNAPSHOT_CYCLE_LOCK_ENABLED` setting (**default
+true**). No new pip dependency, no new table, no migration.
+Reason: D030's "Consequences" named exactly one open trigger for
+revisiting its design — "Each API worker process runs its own
+independent loop, so running more than one uvicorn/gunicorn worker would
+multiply snapshot rows". That is a real correctness bug in an
+*append-only* table: four workers produce four near-simultaneous rows per
+interval, none individually wrong, forming a series that is, permanently.
+A session-level advisory lock is the smallest honest fix. It is
+non-blocking on purpose (`pg_try_...`, not `pg_advisory_lock`): a
+contender that waited would simply stack up behind the winner and then
+write the duplicate row anyway. It is released with its connection, so a
+SIGKILLed worker cannot wedge the schedule the way a hand-managed
+`scheduler_leader` row with an expiry could — which is also why no
+migration was needed. The lock guards a *cycle*, not a snapshot: the
+manual `POST /brokers/{id}/portfolio/snapshots` endpoint (D027) is
+untouched and still writes whenever a human asks, because a deliberate
+request with a caller watching the result is not the failure mode being
+suppressed.
+The two-int4 key form was chosen over
+`hashtext('portfolio_snapshot_scheduler')::bigint`: `hashtext` is an
+undocumented internal whose output is not contractually stable across
+major versions, and a value that shifted under a rolling upgrade would
+silently split the lock in two during precisely the window where two
+worker vintages run at once. Fixed constants (`classid` = ASCII `b"trad"`
+= 1953653092, `objid` = ASCII `b"snap"` = 1936613744) are also what
+`pg_locks` shows an operator, verbatim and greppable, and leave a free
+namespace for any future background job in this repo.
+Alternatives: **A Redis lock** — rejected. Redis is *provisioned*
+(docker-compose.yml, `Settings.redis_url`) but as of this phase no Python
+code in the repo opens a Redis connection; the `redis` package is an
+unused declared dependency. Building the codebase's first Redis client to
+protect a snapshot loop would introduce a whole new runtime dependency
+edge and a new "what if Redis is down" failure mode. Postgres is the one
+service the cycle cannot run without anyway, so a Postgres lock adds
+nothing that can fail independently of the work it guards.
+**APScheduler / Celery / a leader-election library** — rejected for the
+same reasons D030 rejected them, now with evidence: the multi-worker case
+was the one thing D030 conceded might justify them, and it turned out to
+need nine lines of raw SQL rather than a new tool with its own
+configuration surface and safety review.
+**A `scheduler_leader` table with a lease/expiry** — rejected: it needs a
+migration, a clock the app must trust, and an expiry long enough to
+survive a slow cycle yet short enough to recover from a crash. Advisory
+locks get crash recovery free from the connection lifetime.
+**Blocking `pg_advisory_lock`, or an xact-scoped
+`pg_advisory_xact_lock`** — rejected: the blocking form serializes the
+losers into writing the duplicates anyway, and the xact-scoped form would
+tie the lock's lifetime to a transaction boundary the cycle does not
+otherwise have (each broker deliberately gets its own session, D030).
+**Deduplicating after the fact (a unique index on
+`(broker_id, captured_at)` or similar)** — rejected: `captured_at` is a
+server `now()` with microsecond resolution, so near-simultaneous rows do
+not actually collide, and any coarser bucketing would start rejecting
+legitimate manual snapshots.
+Consequences: One new setting, defaulting true. With a single worker the
+lock is always acquired and the cycle proceeds into byte-identical code —
+verified — at the cost of one pooled connection held for the cycle and
+two trivial statements. The lock session is deliberately never committed
+(a committed session returns its connection to the pool and would hand
+the lock away), so a cycle holds one idle-in-transaction connection for
+its duration; at this scale, with one cycle per hour by default, that is
+immaterial, but it is the reason the lock session issues no other query.
+Setting `PORTFOLIO_SNAPSHOT_CYCLE_LOCK_ENABLED=false` restores D030's
+unguarded behaviour exactly (no lock statement at all) and should only be
+done with one worker. This does NOT make the scheduler
+restart-persistent or cron-capable, and it does not coordinate anything
+except this one cycle; a second background job would need its own objid.
+Verification: `ruff check .` clean, `mypy apps` clean (76 source files),
+**379/379 tests passing** against real Postgres (359 pre-existing + 20
+new: 8 unit in `tests/portfolio/test_cycle_lock.py` covering the key
+constants, the decision enum and the release discipline including the
+exception path; 2 settings tests in `tests/test_config.py`; 10 DB-backed
+integration in
+`tests/api/test_snapshot_scheduler_multiworker.py`, where the contending
+"other worker" is a genuinely separate real database session really
+holding the real advisory lock — nothing about the contention is
+simulated). Live-verified in this worktree against a real Postgres
+(isolated docker compose project `tos38` on port 55432, so the user's own
+dev stack on 5432 was never touched) with fixtures from
+`scripts/seed_e2e.py`: **two separate OS processes**, each running one
+real `run_snapshot_cycle`, released against the same database at the same
+instant. With the lock enabled, pid 20872 logged
+`portfolio_snapshot_captured` and pid 11072 logged
+`portfolio_snapshot_cycle_lock_not_acquired` and returned
+`{"lock": "skipped_lock_held", "ran": false, "captured": 0}` — **one
+row** in `portfolio_snapshots`. The identical race with
+`SnapshotCycleLock(enabled=False)` produced **two rows** from two
+`captured` outcomes, which is the pre-D047 bug reproduced live and the
+control proving the lock is what prevents it. In both runs the
+market-data-less broker was skipped honestly with
+`skipped_market_data_not_configured`, never valued.
 Status: Implemented and verified as above.
