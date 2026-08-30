@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "trading-os-web",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "apps/web"],
-      "port": 3000
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "npm", "run", "dev", "--prefix", "apps/web", "--", "-p", "3005"],
+      "port": 3005
     }
   ]
 }

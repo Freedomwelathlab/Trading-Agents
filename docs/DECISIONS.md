@@ -2179,7 +2179,17 @@ across a restart, and the interval is wall-clock, not market-hours-aware:
 a scheduler left enabled overnight will keep recording unchanged
 after-hours rows, or keep logging skips if the vendor returns nothing —
 both deliberate, both future work rather than something to solve by
-guessing a market calendar this repo doesn't have. `captured_at` is left
+guessing a market calendar this repo doesn't have.
+**Update (Phase 35, D042): the market-hours half of that is now
+PARTIALLY closed — an enabled scheduler skips whole cycles on a UTC
+Saturday or Sunday, before any DB query or vendor call, via
+`apps/api/app/portfolio/market_hours.py`
+(`PORTFOLIO_SNAPSHOT_MARKET_HOURS_GATE_ENABLED`, default true). It is a
+weekend gate only: intraday after-hours and exchange holidays are still
+NOT checked, deliberately, because doing so honestly needs a real
+trading-calendar source rather than a hardcoded table. Read D042 before
+assuming this is "market-hours aware". The multi-worker consequence
+above is unchanged and still open.** `captured_at` is left
 to the DB's `server_default=func.now()` for both paths so the app clock
 can't reorder the series.
 Numbering note: developed in a `phase-27-scheduled-snapshots` worktree in
@@ -3235,3 +3245,171 @@ over real HTTP `average` basis 105 / realized 225 / unrealized 125,
 hand-computed figure, with `cash` 99700 and `total_equity` 100350
 identical across all three, the no-parameter response byte-identical to
 `average`, and `?cost_basis_method=hifo` rejected 422.
+Status: Implemented and verified as above.
+
+---
+
+**D042 — Market-hours gating for the snapshot scheduler: an honest weekend-only gate, not a fabricated exchange calendar**
+Date: 2026-08-30
+Decision: Added `apps/api/app/portfolio/market_hours.py` — a frozen,
+I/O-free `MarketHoursGate` with one method, `evaluate(as_of) ->
+MarketHoursDecision` (`RUN` / `RUN_GATE_DISABLED` / `SKIP_WEEKEND`).
+`run_snapshot_cycle()` (D030) now evaluates that gate **first**, before
+the eligible-broker query, and returns an empty `SnapshotCycleResult`
+carrying the decision when it says skip — so a gated cycle issues zero SQL
+and makes zero market-data vendor calls. `SnapshotCycleResult` gained a
+typed `market_hours` field and a `gated` property (distinct from
+`skipped_count`, which counts brokers skipped *within* a cycle that did
+run). `PortfolioSnapshotScheduler` gained a `market_hours_gate` and an
+injectable `clock`, read once per cycle rather than at construction so a
+long-lived scheduler sees the weekend begin and end while it runs. New
+setting `PORTFOLIO_SNAPSHOT_MARKET_HOURS_GATE_ENABLED`, **default true**,
+wired in `apps/api/app/main.py` and reported in the startup log line. No
+new pip dependency, no new table, no migration, no change to any HTTP
+surface.
+This closes — **partially, and only partially** — the gap D030's
+"Consequences" recorded verbatim: "the interval is wall-clock, not
+market-hours-aware: a scheduler left enabled overnight will keep recording
+unchanged after-hours rows, or keep logging skips". Weekends are now
+gated. Overnight-on-a-weekday and holidays are **not**, and this entry
+does not claim otherwise.
+Reason: the honest scope question is what "market hours" can mean in a
+codebase that has no trading-calendar data source. Saturday and Sunday are
+derived from the Gregorian calendar itself, not from any exchange's
+policy: no venue in the supported set (Longbridge's US/HK/CN/SG equity
+markets) holds a regular equity session on either. That makes the weekend
+check a computable fact rather than a guess — the one part of
+"market hours" implementable with no vendor, no dependency, and no
+invention. It removes roughly two sevenths of an enabled scheduler's
+wasted cycles, and it removes them at the cheapest possible point (before
+the DB is touched).
+The gate evaluates day-of-week **in UTC**, because UTC is the only clock
+this process can read without a timezone database (`zoneinfo` needs system
+tz data, absent on some deployment targets; adding `tzdata` would be a new
+pip dependency — see Alternatives). That choice was checked rather than
+assumed, and the check is pinned by a test: the earliest regular open
+across supported markets (HK/CN 09:30 UTC+8 = 01:30 UTC) lands on a UTC
+Monday, and the latest regular close (US 16:00 ET Friday = 20:00/21:00 UTC
+in either DST state) lands on a UTC Friday, so no regular session is ever
+suppressed. The one knowingly-clipped window is US *extended-hours*
+trading late on a Friday (post-market to 20:00 ET = 00:00–01:00 UTC
+Saturday), which is skipped. That is accepted, documented in the module
+docstring, and pinned by its own test so it stays a deliberate tradeoff
+rather than becoming a forgotten one — a missed low-liquidity
+extended-hours cycle leaves an honest gap in an append-only series, and
+anyone who objects can switch the gate off.
+Default **true**, unlike `PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED`'s
+fail-closed false. The two defaults point the same direction for the same
+reason: the safe side is the side that does less. For the scheduler itself
+that meant "don't run"; for the gate it means "on", because on is what
+suppresses vendor calls and meaningless rows. Off restores D030's exact
+unconditional behavior, which is the right setting for testing and for
+anyone snapshotting 24/7 instruments.
+Vendor capability, checked rather than assumed: the installed `longport`
+package (v4.3.7) **does** expose real session data — direct introspection
+of `AsyncQuoteContext` confirms `trading_session()` and
+`trading_days(market, begin, end)`, plus the types `MarketTradingSession`,
+`TradingSessionInfo` (`begin_time`/`end_time`/`trade_session`),
+`MarketTradingDays` and the `Market` enum (US/HK/CN/SG/Crypto);
+`market_status()` exists too, but on `AsyncMarketContext`, a context this
+codebase has never constructed. So the honest answer is: a real
+holiday-aware calendar source **is** reachable in principle, and it was
+still not wired this phase — see the first Alternative for exactly why.
+Alternatives: **Wiring `trading_session()` / `trading_days()` through a
+new `TradingCalendarProvider` port** — the right eventual design, and
+explicitly deferred rather than rejected. Three concrete blockers, none of
+which is "it doesn't exist": (1) both APIs express times and dates in
+each market's *local* terms, and the SDK does not supply the market's
+timezone, so turning "09:30–16:00 in market X" into an instant this
+process can compare against `utc_now()` needs a market→timezone map plus
+`zoneinfo` tz data — i.e. either a hardcoded offset table (the exact
+fabrication this entry refuses) or a new `tzdata` dependency; (2) it needs
+a symbol→`Market` mapping derived from the `.US`/`.HK`/`.SH`/`.SZ`/`.SG`
+suffix convention, which is defensible but is new inference code that must
+fail closed on an unknown suffix; (3) `market_status()` lives on
+`AsyncMarketContext`, which would be a second SDK context to construct,
+credential-gate and safety-review, and its closed-hours semantics could
+not be verified in this phase without live calls. Doing it properly is a
+phase, not a footnote, and doing it half-way would produce a gate that
+looks authoritative and is not. When it is built it must go through the
+existing router/provider discipline with typed
+`NOT_CONFIGURED`/`DATA_UNAVAILABLE` handling, and — critically — must
+**fail open** (run the cycle) when the calendar is unavailable, because
+failing closed there would silently stop recording real history on a
+vendor outage.
+**Hardcoding exchange sessions and a holiday list** — rejected outright.
+It is fabricated data with a confident face: it would look authoritative,
+it would rot silently the first time an exchange moved a session or a
+government moved a holiday, and a wrong "the market is open" is
+indistinguishable downstream from a real one. Exactly what
+docs/TRADING_SAFETY.md and spec §57 forbid.
+**Adding a market-calendar library (`pandas_market_calendars`,
+`exchange_calendars`)** — deliberately NOT added, and recorded as such
+per project policy (ask before adding a tool; no live answer was
+obtainable mid-task, so the default is not to add). It would also import a
+large transitive tree (pandas) into an API image for one boolean.
+**Lengthening the sleep to the next market open instead of gating the
+cycle** — rejected: it requires the very next-open calculation this module
+has no authoritative source for, and it makes `interval_seconds` mean two
+different things. Gating keeps the interval simple and means the first
+weekday cycle fires within one interval of reopening.
+**Making the gate skip *brokers* rather than the whole cycle** — rejected;
+the gate's input is a clock, not a broker, and evaluating it once per
+cycle before any query is what makes a weekend tick actually free.
+**Defaulting the gate to off** — rejected; a market-hours feature that
+nobody gets by default fixes nothing for the operator who enables the
+scheduler and thinks no further about it.
+Consequences: An enabled scheduler now no-ops through weekends at the cost
+of one enum comparison per tick. `SnapshotCycleResult`'s new field
+defaults to `RUN_GATE_DISABLED`, and both `run_snapshot_cycle()` and the
+scheduler treat an omitted gate as "no gating", so every pre-Phase-35 call
+site — including the D030 tests — keeps its exact previous meaning; this
+is pinned by a test rather than left to inspection. The remaining, still
+open, follow-ons from D030's Consequences are unchanged: intraday
+after-hours and holiday awareness (needs the real calendar port described
+above) and multi-worker safety. `docs/PROJECT_CONTEXT.md` and
+`docs/IMPLEMENTATION_STATUS.md` were updated to state the partial scope in
+those words, not as "market-hours awareness: done".
+Numbering note: developed in a `phase-35-scheduler-market-hours` worktree
+branched from `main` at D040, in parallel with a sibling phase-34
+worktree that claims **D041**. This entry claims **D042** to avoid a
+merge-time collision on the same number — the same parallel-worktree
+convention D030/D031/D032 and D035 already established. The gap is
+intentional and does not indicate a missing decision.
+Verification: `ruff check .` clean ("All checks passed!"), `mypy apps`
+clean (75 source files), and **336/336 tests passing** against a real
+Postgres in this worktree — a measured 304 baseline (confirmed by
+stashing this phase's changes and re-running the full suite in the same
+environment) plus **32 new**: 20 unit in
+`tests/portfolio/test_market_hours.py` (pure, no I/O — weekday/weekend
+across a full real week, the disabled-gate escape hatch, naive-datetime
+rejection, non-UTC conversion in both directions, the exact
+Saturday-00:00/Monday-00:00 UTC boundary instants, the
+no-regular-session-is-suppressed claim, and the knowingly-clipped Friday
+US extended-hours window) and 12 DB-backed integration in
+`tests/api/test_snapshot_scheduler_market_hours.py` (a real broker with a
+real filled position placed through the real trade endpoint: a weekend
+cycle writes no row *and* makes no vendor call; the identical cycle on a
+Monday captures equity 100200; a disabled gate captures on a Saturday; an
+omitted gate preserves pre-D042 behavior; and the real running asyncio
+scheduler no-ops across a simulated weekend then captures once its clock
+crosses into Monday). Where a weekend/weekday distinction is under test
+the "as of" clock is **injected** — real Saturday/Monday instants, asserted
+against the actual calendar by a guard test — not waited for.
+Live-verified end to end against a real uvicorn process and a real
+Postgres in this worktree, and by genuine coincidence on a real UTC
+**Sunday** (2026-08-30T03:44Z), so the weekend path was exercised by the
+real system clock, not a stub: with
+`PORTFOLIO_SNAPSHOT_SCHEDULER_ENABLED=true`,
+`PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS=5` and a seeded broker made eligible
+through the real `POST /brokers/{id}/trades` path, the startup line logged
+`market_hours_gate: weekend_utc` and the loop emitted 12 consecutive
+`portfolio_snapshot_cycle_gated` events with **zero** captures and zero
+`portfolio_snapshots` rows. Restarting the same process against the same
+broker with `PORTFOLIO_SNAPSHOT_MARKET_HOURS_GATE_ENABLED=false` produced
+zero gated events, 6 `portfolio_snapshot_captured` events, and 6 real rows
+at `total_equity = 100100.00000000` (100000 − 10×100 + 10×110, all real
+fills) — confirming the suppression was the gate's doing and not a broken
+setup. Seeded rows were removed afterwards.
+Status: Implemented and verified as above. Scope is weekend-only by
+design; per-exchange session and holiday awareness remains open.

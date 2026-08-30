@@ -49,12 +49,25 @@ automated behavior that reads real broker state and writes real rows on a
 timer with no human in the loop; opt-in is the fail-closed posture this
 codebase applies to every other consequential switch (live trading, the
 emergency stop, the market-data and LLM credential trios). See D030.
+
+MARKET-HOURS GATING (Phase 35, D042)
+------------------------------------
+The interval is still plain wall-clock, but a cycle is now gated by
+`MarketHoursGate` (apps/api/app/portfolio/market_hours.py) before any
+broker is enumerated: on a UTC Saturday or Sunday the whole cycle
+no-ops, costing zero DB queries and zero vendor calls. That gate is a
+*weekend* check only - deliberately not a fabricated exchange calendar -
+and it can be disabled with
+`PORTFOLIO_SNAPSHOT_MARKET_HOURS_GATE_ENABLED=false`. Read that module's
+docstring before assuming it knows anything about holidays or session
+times; it does not, on purpose.
 """
 
 import asyncio
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
@@ -65,6 +78,11 @@ from apps.api.app.core.logging import get_logger
 from apps.api.app.db.models import BrokerAccount, BrokerPosition
 from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
 from apps.api.app.portfolio.errors import BrokerAccountNotFoundError, MissingMarkError
+from apps.api.app.portfolio.market_hours import (
+    MarketHoursDecision,
+    MarketHoursGate,
+    utc_now,
+)
 from apps.api.app.portfolio.persistence import persist_portfolio_snapshot
 from apps.api.app.portfolio.snapshot import compute_portfolio_snapshot
 
@@ -134,9 +152,22 @@ class ScheduledSnapshotOutcome:
 
 @dataclass(frozen=True)
 class SnapshotCycleResult:
-    """One full pass over every eligible broker."""
+    """One full pass over every eligible broker - or, when the market-hours
+    gate suppressed the pass, a record of that with no outcomes at all."""
 
     outcomes: tuple[ScheduledSnapshotOutcome, ...] = field(default=())
+    market_hours: MarketHoursDecision = MarketHoursDecision.RUN_GATE_DISABLED
+    """Why this cycle ran, or did not (D042). Defaults to
+    RUN_GATE_DISABLED so a `SnapshotCycleResult()` built directly in a test
+    or a caller predating Phase 35 keeps meaning exactly what it used to:
+    "a cycle that ran with no market-hours consideration"."""
+
+    @property
+    def gated(self) -> bool:
+        """True when the whole cycle was suppressed before touching the
+        database or the vendor. Distinct from `skipped_count`, which counts
+        brokers skipped *within* a cycle that did run."""
+        return not self.market_hours.should_run
 
     @property
     def captured_count(self) -> int:
@@ -292,8 +323,20 @@ async def run_snapshot_cycle(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     market_data_router: MarketDataRouter | None,
+    market_hours_gate: MarketHoursGate | None = None,
+    as_of: datetime | None = None,
 ) -> SnapshotCycleResult:
     """One full pass: snapshot every eligible broker, independently.
+
+    D042: the market-hours gate is evaluated FIRST, before the broker
+    query. A gated cycle therefore issues no SQL and makes no vendor call
+    at all - the point of the gate is to stop paying for work whose result
+    would be an unchanged after-hours row or a logged skip. `as_of`
+    defaults to the real UTC clock and is injectable so weekend behavior
+    can be exercised deterministically.
+
+    `market_hours_gate=None` means "no gating", equivalent to a disabled
+    gate, which is what every pre-Phase-35 caller got.
 
     Each broker gets its own session so one broker's failed commit cannot
     poison another's transaction, and so a long cycle does not hold a single
@@ -303,6 +346,25 @@ async def run_snapshot_cycle(
     brokers as well would multiply concurrent DB connections and vendor
     rate-limit pressure for no benefit at this scale.
     """
+    gate = market_hours_gate if market_hours_gate is not None else MarketHoursGate(enabled=False)
+    decision = gate.evaluate(as_of if as_of is not None else utc_now())
+    if not decision.should_run:
+        # info, not warning: unlike a market-data skip (which leaves a hole
+        # in the series that a human may need to explain), this hole is the
+        # intended, configured behavior and would otherwise fire noisily
+        # every interval all weekend.
+        logger.info(
+            "portfolio_snapshot_cycle_gated",
+            market_hours=decision.value,
+            reason=(
+                "as_of falls on a Saturday or Sunday in UTC; no supported market holds a "
+                "regular equity session then, so the cycle was skipped without querying "
+                "the database or the market data vendor. This is a weekend check only - "
+                "holidays and per-exchange session times are NOT checked (D042)."
+            ),
+        )
+        return SnapshotCycleResult(outcomes=(), market_hours=decision)
+
     async with session_factory() as session:
         broker_ids = await eligible_broker_ids(session)
 
@@ -332,7 +394,7 @@ async def run_snapshot_cycle(
                 detail=outcome.detail,
             )
 
-    return SnapshotCycleResult(outcomes=tuple(outcomes))
+    return SnapshotCycleResult(outcomes=tuple(outcomes), market_hours=decision)
 
 
 class PortfolioSnapshotScheduler:
@@ -348,6 +410,15 @@ class PortfolioSnapshotScheduler:
     and the loop sleeps and tries again - a scheduler that stops
     permanently on one transient DB blip would silently stop recording
     history, which is a worse failure than a logged, retried error.
+
+    D042: the loop keeps ticking on its plain wall-clock interval all
+    weekend, but each tick's cycle is gated (see `run_snapshot_cycle`), so
+    a weekend tick is an in-process no-op rather than a round of DB and
+    vendor traffic. Gating the cycle rather than lengthening the sleep is
+    deliberate: it keeps `interval_seconds` meaning one simple thing, and
+    it means the first weekday cycle fires within one interval of the
+    market reopening instead of being scheduled from a computed
+    next-open time this module has no authoritative source for.
     """
 
     def __init__(
@@ -356,6 +427,8 @@ class PortfolioSnapshotScheduler:
         *,
         market_data_router: MarketDataRouter | None,
         interval_seconds: int,
+        market_hours_gate: MarketHoursGate | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError(
@@ -366,6 +439,12 @@ class PortfolioSnapshotScheduler:
         self._session_factory = session_factory
         self._market_data_router = market_data_router
         self._interval_seconds = interval_seconds
+        # None means "no gating" for backwards compatibility with every
+        # pre-D042 construction site; the app wires a real gate in main.py.
+        self._market_hours_gate = (
+            market_hours_gate if market_hours_gate is not None else MarketHoursGate(enabled=False)
+        )
+        self._clock = clock
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -380,6 +459,9 @@ class PortfolioSnapshotScheduler:
             "portfolio_snapshot_scheduler_started",
             interval_seconds=self._interval_seconds,
             market_data="configured" if self._market_data_router else "NOT_CONFIGURED",
+            market_hours_gate=(
+                "weekend_utc" if self._market_hours_gate.enabled else "DISABLED"
+            ),
         )
 
     async def stop(self) -> None:
@@ -399,9 +481,17 @@ class PortfolioSnapshotScheduler:
     async def run_once(self) -> SnapshotCycleResult:
         """One cycle, awaited directly. Used by the loop below and by tests
         that need a deterministic single pass rather than wall-clock
-        timing."""
+        timing.
+
+        The clock is read here, once per cycle, rather than at
+        construction: a long-lived scheduler must see the weekend start and
+        end while it is running, not decide once at startup.
+        """
         return await run_snapshot_cycle(
-            self._session_factory, market_data_router=self._market_data_router
+            self._session_factory,
+            market_data_router=self._market_data_router,
+            market_hours_gate=self._market_hours_gate,
+            as_of=self._clock(),
         )
 
     async def _run(self) -> None:

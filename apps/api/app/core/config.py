@@ -92,6 +92,23 @@ class Settings(BaseSettings):
     to construct otherwise (a zero interval would busy-loop the DB and the
     vendor)."""
 
+    portfolio_snapshot_market_hours_gate_enabled: bool = True
+    """Phase 35 (docs/DECISIONS.md D042): when the snapshot scheduler is
+    enabled, skip cycles that fall on a Saturday or Sunday in UTC instead
+    of firing a full round of DB queries and vendor quote calls whose only
+    product would be an unchanged after-hours row (or a logged skip).
+
+    Defaults TRUE - unlike the scheduler switch above, which is fail-closed
+    at false, this one's safer state is ON, because "on" is the side that
+    does *less*: fewer vendor calls, fewer meaningless rows. Set it false
+    to restore D030's unconditional wall-clock firing, which is the right
+    choice for testing and for anyone snapshotting 24/7 instruments.
+
+    This is a WEEKEND gate only. It knows nothing about public holidays,
+    half-days, or per-exchange session times, and does not pretend to -
+    see apps/api/app/portfolio/market_hours.py for why a hardcoded
+    exchange calendar was rejected rather than approximated."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None

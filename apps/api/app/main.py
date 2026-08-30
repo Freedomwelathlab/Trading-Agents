@@ -24,6 +24,7 @@ from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_provider,
 )
 from apps.api.app.marketdata.router import MarketDataRouter
+from apps.api.app.portfolio.market_hours import MarketHoursGate
 from apps.api.app.portfolio.scheduler import PortfolioSnapshotScheduler
 
 settings = get_settings()
@@ -60,6 +61,12 @@ async def lifespan(app: FastAPI):
             get_session_factory(),
             market_data_router=app.state.market_data_router,
             interval_seconds=settings.portfolio_snapshot_interval_seconds,
+            # Phase 35 (D042): weekend gating, on by default. A weekend
+            # cycle becomes an in-process no-op instead of a full round of
+            # DB queries and vendor quote calls.
+            market_hours_gate=MarketHoursGate(
+                enabled=settings.portfolio_snapshot_market_hours_gate_enabled
+            ),
         )
         scheduler.start()
         app.state.portfolio_snapshot_scheduler = scheduler
@@ -80,6 +87,11 @@ async def lifespan(app: FastAPI):
         portfolio_snapshot_scheduler=(
             f"enabled:{settings.portfolio_snapshot_interval_seconds}s"
             if settings.portfolio_snapshot_scheduler_enabled
+            else "DISABLED"
+        ),
+        portfolio_snapshot_market_hours_gate=(
+            "weekend_utc"
+            if settings.portfolio_snapshot_market_hours_gate_enabled
             else "DISABLED"
         ),
     )
