@@ -850,11 +850,15 @@ Phase 20+ (order not finalized): the rest of the parallel analyst layer
 research debate, and FIFO/LIFO cost-basis reporting as a Portfolio module
 alternative to the current average-cost method. Automatic/scheduled
 portfolio snapshotting is now DONE (Phase 27/D030) - remaining follow-ons
-there: market-hours awareness (the interval is plain wall-clock, so an
-enabled scheduler records unchanged after-hours rows or logs repeated
-skips), and multi-worker safety (each API worker process runs its own
-independent loop, so >1 worker would multiply rows - see D030's
-Consequences). If a second analyst is
+there: market-hours awareness is now PARTIALLY addressed (Phase 35/D042
+gates whole cycles on a UTC weekend; intraday after-hours and exchange
+holidays are still NOT checked, and closing that needs a real
+trading-calendar port over the Longbridge SDK's `trading_session()` /
+`trading_days()`, plus a market-timezone source this repo does not have -
+see D042's Alternatives for the three concrete blockers and the
+fail-open requirement), and multi-worker safety (each API worker process
+runs its own independent loop, so >1 worker would multiply rows - see
+D030's Consequences), which is untouched. If a second analyst is
 ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
@@ -927,6 +931,46 @@ optimization.
   clean (71 source files), `npm run build` clean. Live-verified against a
   running stack: two seeded users with disjoint grants each saw only
   their own broker; cross-user detail 403, unknown id 404, no token 401.
+
+- Phase 35: market-hours gating for the snapshot scheduler (2026-08-30).
+  `apps/api/app/portfolio/market_hours.py` — a frozen, I/O-free
+  `MarketHoursGate` whose `evaluate(as_of)` returns a typed
+  `MarketHoursDecision` (`RUN` / `RUN_GATE_DISABLED` / `SKIP_WEEKEND`).
+  `run_snapshot_cycle()` (D030) evaluates it **before** the eligible-broker
+  query, so a gated cycle costs zero SQL and zero market-data vendor
+  calls; `SnapshotCycleResult` gained a `market_hours` field and a `gated`
+  property, and `PortfolioSnapshotScheduler` gained a `market_hours_gate`
+  and an injectable `clock` read once per cycle. New setting
+  `PORTFOLIO_SNAPSHOT_MARKET_HOURS_GATE_ENABLED`, **default true** (the
+  safe side here is the side that does less work), wired in `main.py` and
+  surfaced in the startup log line. No new dependency, table, migration,
+  or HTTP surface.
+  **Scope is weekends only, and deliberately so.** This partially closes
+  D030's recorded gap ("the interval is wall-clock, not market-hours-aware
+  ... will keep recording unchanged after-hours rows"). Saturday/Sunday is
+  a property of the calendar, not of any exchange's policy, so it is
+  computable without a vendor; intraday session times and exchange
+  holidays are NOT checked, because doing that honestly needs a real
+  trading-calendar source. The installed `longport` v4.3.7 SDK *does*
+  expose `trading_session()` and `trading_days()` on `AsyncQuoteContext`
+  (confirmed by direct introspection, not assumed), but wiring them needs
+  a market→timezone map the SDK does not supply, a symbol→`Market`
+  mapping, and — for `market_status()` — a second SDK context this
+  codebase has never constructed. That is a phase, not a footnote; see
+  docs/DECISIONS.md D042, which also records that a market-calendar pip
+  dependency was deliberately NOT added and that a hardcoded holiday/hours
+  table was rejected as fabrication under docs/TRADING_SAFETY.md / spec
+  §57.
+  32 new tests (20 pure unit in `tests/portfolio/test_market_hours.py`,
+  12 DB-backed in `tests/api/test_snapshot_scheduler_market_hours.py`);
+  **336 backend tests passing** in this worktree over a measured 304
+  baseline, `ruff check .` and `mypy apps` clean (75 source files).
+  Live-verified against a real uvicorn process and real Postgres on a real
+  UTC **Sunday**: gate on → 12 consecutive `portfolio_snapshot_cycle_gated`
+  events, zero captures, zero rows for a genuinely eligible seeded broker;
+  same process and broker with the gate off → 6 real captures at
+  `total_equity = 100100`. Weekday behavior in tests uses an **injected**
+  Monday instant, not a real one.
 
 ## Tests
 
@@ -1080,3 +1124,9 @@ them they cover success, empty results, real error sentinels, 403, 404,
 ## Known Issues
 
 None open.
+
+Open, known-and-scoped limitations (not defects): the snapshot scheduler's
+market-hours gate is weekend-only — intraday after-hours and exchange
+holidays are not checked (Phase 35/D042) — and each API worker process
+still runs its own independent scheduler loop, so >1 worker would multiply
+snapshot rows (D030).

@@ -253,9 +253,17 @@ shows its aggregate counters since Phase 31/D037, and the trade forms in
 `apps/web/` now render the Portfolio Manager's verdict for a live trade
 too (Phase 32/D038, additive alongside the existing risk verdict). The
 scheduler's interval is
-plain wall-clock (not market-hours-aware), and each API worker process
-runs its own independent scheduler loop (so >1 worker would multiply
-snapshot rows). Also pending: re-verify D018/D019's
+still plain wall-clock, but Phase 35/D042 now gates each cycle: an enabled
+scheduler skips whole cycles on a UTC Saturday/Sunday, before touching the
+DB or the vendor (`PORTFOLIO_SNAPSHOT_MARKET_HOURS_GATE_ENABLED`, default
+true). That is a **weekend gate only** - intraday after-hours and exchange
+holidays are still NOT checked, deliberately: an honest per-exchange gate
+needs a real trading-calendar source (the installed Longbridge SDK does
+expose `trading_session()`/`trading_days()`, but not the market timezones
+needed to use them) rather than a hardcoded hours/holiday table, which
+spec Sec57 forbids as fabrication. Each API worker process still runs its
+own independent scheduler loop (so >1 worker would multiply snapshot
+rows), untouched by Phase 35. Also pending: re-verify D018/D019's
 live-provider paths once OmniRoute (or another compatible endpoint) is
 reachable; if a second analyst is ever added, revisit whether
 parallel-execution/fan-out infrastructure across analysts is now
