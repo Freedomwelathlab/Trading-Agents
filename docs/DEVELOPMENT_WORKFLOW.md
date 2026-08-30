@@ -21,3 +21,70 @@
 
 Don't reread the entire project at every turn — this workflow exists so that
 doesn't have to happen.
+
+## Running the e2e suite (`apps/web`, Playwright — D045)
+
+`apps/web` has two independent test suites:
+
+| Suite | Command | Needs |
+| --- | --- | --- |
+| Component (Vitest + RTL) | `npm test` | nothing but `node_modules` |
+| End-to-end (Playwright) | `npm run test:e2e` | Docker, a migrated Postgres, a running API, a browser |
+
+They are separate on purpose. `npm test` mocks `fetch` and asserts
+rendering; `npm run test:e2e` mocks nothing at all — that is the only
+reason it earns its cost. `vitest.config.ts` excludes `e2e/**` so the two
+never collide.
+
+One-time setup, inside `apps/web`:
+
+```
+npm install                        # picks up @playwright/test
+npx playwright install chromium    # one engine is enough
+```
+
+Full local bring-up (from the repo root; adjust ports if they collide
+with a stack you already have running — the examples below use the base
+`docker-compose.yml` defaults):
+
+```
+# 1. Real Postgres + Redis
+docker compose up -d postgres redis
+
+# 2. Real schema
+alembic upgrade head
+
+# 3. Real API (needs DATABASE_URL/REDIS_URL/JWT_SECRET_KEY in your .env)
+uvicorn apps.api.app.main:app --port 8000
+
+# 4. Real fixtures — users, roles, brokers, grants (direct SQL, D013)
+python scripts/seed_e2e.py
+
+# 5. The suite. It starts `next dev` itself; do not start one yourself.
+cd apps/web && npm run test:e2e
+```
+
+Step 4 is also run automatically by Playwright's `globalSetup` before
+every run, because several specs submit real trades that permanently
+change real broker rows. Environment knobs:
+
+- `E2E_API_BASE_URL` — backend base URL (default `http://localhost:8000`).
+  Passed to `next dev` as `API_BASE_URL`, so CI and local runs can target
+  different backends.
+- `E2E_WEB_PORT` — port for the dev server Playwright starts (default 3100).
+- `E2E_SEED_COMMAND` — override the seed command (e.g. to name a venv's
+  interpreter). `E2E_SKIP_SEED=1` skips seeding entirely.
+
+Notes that will save you an hour:
+
+- The suite addresses the dev server as `localhost`, never `127.0.0.1`.
+  Next 16 returns 403 for asset requests from a bare IP that isn't in
+  `allowedDevOrigins`, which leaves the page rendered but never hydrated —
+  and an unhydrated click fires the browser's native form submit instead
+  of the React handler.
+- Specs wait for hydration (`waitForHydration()` in `e2e/helpers.ts`)
+  before interacting, for the same reason.
+- The suite is single-worker, serial, and never retries: it mutates real
+  broker state, so a retried trade would run against a different book.
+- `scripts/seed_e2e.py` deletes and recreates the rows it owns. Never
+  point it at a database you care about.
