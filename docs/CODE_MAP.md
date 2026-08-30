@@ -185,10 +185,20 @@ enum), `apps/api/app/auth/routes/login.py` (`POST /auth/login`),
 `apps/api/app/auth/schemas.py` (`TokenResponse`)
 Dependencies: `apps.api.app.core.config` (`jwt_secret_key` etc.),
 `apps.api.app.db.models.User`/`Role`
+Also: `apps/api/app/auth/lockout.py` (D049) - the failed-login lockout
+state machine (`LockoutState`, `is_locked`, `state_after_failed_attempt`,
+`state_after_successful_attempt`, and the `utcnow()` clock seam).
+Deliberately pure: no session, no request, no clock of its own, so lock
+EXPIRY is testable without sleeping. `login.py` owns reading/writing the
+two `users` columns it reasons about (`failed_login_count`,
+`locked_until`).
 Tests: `tests/auth/test_security.py` (8 unit tests),
 `tests/auth/test_authorization.py` (3 unit tests against the
-`require_permission` checker directly), `tests/api/test_auth.py`
-(4 integration tests against real Postgres)
+`require_permission` checker directly), `tests/auth/test_lockout.py`
+(9 unit tests on the pure lockout arithmetic), `tests/api/test_auth.py`
+(4 integration tests against real Postgres),
+`tests/api/test_login_lockout.py` (8 integration tests against real
+Postgres, with an injected clock for the expiry cases)
 Important: **no public registration endpoint exists** — users and roles are
 created either via the `/admin/*` routes (see the HTTP API layer section
 below and D013) or, for the very first admin, by direct DB insert.
@@ -196,6 +206,12 @@ Authorization is *permission-based via `Role.permissions`*, not
 per-resource for trading — a user whose role grants `SUBMIT_PAPER_TRADE`
 still needs a `BrokerGrant` for the specific broker (D012).
 `Permission.ADMIN` ("admin:manage") gates every `/admin/*` route.
+`POST /auth/login` locks an account after N consecutive failed passwords
+(D049) and answers **423** - but only to a caller who supplied the CORRECT
+password; a wrong password against a locked account still gets the generic
+401, which is what keeps the lockout from becoming an email-enumeration
+oracle on top of `login.py`'s `_DUMMY_HASH` timing parity. Read the
+ordering in `login()` before changing it: the 401 branch must come first.
 `get_current_user` eager-loads
 `User.role` via `selectinload` — lazy-loading it later in an async context
 would raise, not silently work. `require_permission(Permission.X)` returns

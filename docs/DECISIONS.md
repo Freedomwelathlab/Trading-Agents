@@ -4004,3 +4004,206 @@ reported 379 total held up in a real from-scratch clean-room run against
 merged `main`, and a clean-room run was the only way to be sure rather
 than assume from the phase's own report alone.
 Status: Implemented and verified as above.
+
+---
+
+**D049 — Failed-login lockout for `POST /auth/login`: a Postgres-persisted per-account counter, and a 423 that is only ever shown to a caller who already knows the password**
+
+Date: 2026-08-30
+Decision: `POST /auth/login` — until now the one unthrottled credential
+endpoint in the app — now counts CONSECUTIVE failed password attempts per
+account and locks the account for a configured window once a threshold is
+reached. Two new columns on `users` carry the whole mechanism
+(migration `0012`): `failed_login_count` (NOT NULL, `server_default='0'`)
+and `locked_until` (nullable `timestamptz`; NULL means "never locked",
+which is deliberately distinguishable from a past timestamp meaning "was
+locked, expired"). Two new settings configure it:
+`AUTH_MAX_FAILED_LOGIN_ATTEMPTS` (default 5, `0` disables the feature
+entirely) and `AUTH_LOCKOUT_DURATION_MINUTES` (default 15). A negative
+threshold, or a non-positive duration while the lockout is enabled, fails
+at app startup rather than at the first failed login — both mistakes fail
+in the dangerous direction (no lockout, or a lock that expires the instant
+it is set). The arithmetic lives in a pure module,
+`apps/api/app/auth/lockout.py`: no session, no request, no clock of its
+own — `now` is always passed in, through the module's single `utcnow()`
+seam, which is what lets the expiry path be tested in milliseconds instead
+of by sleeping for fifteen real minutes.
+
+The response shape is the part that needed the most care, and it is not
+the obvious one. The lockout answer is **423 Locked**, and it is raised
+**only after the presented password has been verified as correct**. The
+full ordering in `login.py` is: look up the user; bcrypt-verify against
+the real hash or `_DUMMY_HASH` (unchanged — the existing timing-parity
+discipline still runs on every request, including locked ones); if the
+credentials are bad, answer the generic 401 and, only for a real active
+account with a real wrong password that is not already locked, advance the
+counter; then, and only then, check the lock and answer 423. The
+consequence is that 423 is unreachable by anyone who does not already know
+the password: an unknown email always 401s (there is no row to count
+against), a registered email with a wrong password always 401s whether or
+not it is locked, and only the legitimate account holder — or an attacker
+who has already won — ever sees the word "locked". The lockout therefore
+adds no email-enumeration oracle on top of what `_DUMMY_HASH` was written
+to prevent, while still telling the real user the truth: "Account
+temporarily locked after repeated failed login attempts. Try again later."
+The message names the cause and the remedy but not the remaining time,
+which would be a free signal on exactly when to resume guessing. A wrong
+password against an already-locked account does **not** extend the lock;
+otherwise an attacker could hold a victim out of their own account
+indefinitely by guessing forever. An expired lock resets the run to zero
+before counting the next failure, so a user who was locked once, waited it
+out, and then mistyped is at 1-of-N rather than N-and-instantly-relocked.
+A successful login always clears both columns.
+
+`apps/web/` needed no change to surface this correctly: D020's login route
+handler already forwards the backend's real status and its `detail`
+verbatim, and `app/login/page.tsx` renders that `detail` rather than a
+generic string, so the 423 message reaches the user as written. Three new
+Vitest tests (`test/LoginForm.test.tsx`) pin exactly that, in the spirit
+of D020's "never a generic 'error occurred' swallowing which case fired" —
+including the negative assertion that the 423 case does not render as
+"Incorrect email or password", which would send a locked-out user hunting
+for a typo that isn't there.
+
+Reason: rate limiting was the right fix and a *per-account persisted
+lockout* was the right shape of it. Three alternatives were rejected. (1)
+A pip rate-limit library (`slowapi` et al.): this repo's policy is to ask
+before adding a tool, and the fix does not need one — the entire mechanism
+is two columns and ~90 lines of pure arithmetic. (2) An in-process
+sliding-window counter using only the stdlib: cheaper still, but its state
+dies on restart (an attacker gets a fresh budget from any deploy or crash)
+and is per-worker, so running the API under N uvicorn workers multiplies
+the real threshold by N — the exact class of multi-worker defect Phase 38
+had just finished closing for the snapshot scheduler (D047). Documenting
+that as an honest limitation, the way D030/D042 documented theirs, was
+considered and rejected: unlike a skipped weekend snapshot, a silently
+5x-weakened brute-force defence is a limitation whose whole cost lands on
+the security property the change exists to provide. (3) Redis: it is
+provisioned in `docker-compose.yml` and `Settings.redis_url` exists, but
+no Python code in this repo has ever opened a Redis connection. Being the
+first to wire in a Redis client — with its connection lifecycle, its
+failure-mode question (does login fail open or closed when Redis is
+down?), and its new hard runtime dependency for the auth path — is a
+larger architectural decision than a MEDIUM-severity finding warrants, and
+would have been made in passing rather than deliberately. Postgres is
+already a hard dependency of this endpoint (the user row is read there
+anyway), so the counter costs no new infrastructure, no new dependency,
+and no new failure mode; it survives restarts; and it is correct under any
+number of workers for free, because the database is the shared state.
+Per-account rather than per-IP is the deliberate axis: per-IP is trivially
+defeated by a botnet and punishes shared NATs, whereas the asset being
+protected here is a specific account's password.
+Alternatives: the three above (a rate-limit dependency, in-process
+stdlib-only counters, Redis). Also considered and rejected: returning 429
+instead of 423 (429 means "you sent too many requests", which is about the
+caller; the account is what is locked, and 423 says so); returning the
+generic 401 even for a locked account (safest against enumeration, but the
+ordering above already achieves that without lying to the real user, who
+would otherwise be left permanently unable to explain why their correct
+password stopped working); exposing the remaining lock time in the
+response or a `Retry-After` header (a scheduling hint for an attacker,
+worth more to them than to the user, who only needs "later"); an
+admin unlock endpoint (deferred — the lock is 15 minutes and expires on
+its own; an unlock route is new authenticated surface with no current
+demand); and clearing an expired `locked_until` eagerly on every login,
+which would mean a database write on every successful login by every user
+who was ever locked, to save reading a timestamp.
+Status: Implemented and verified. `apps/api/app/auth/lockout.py`,
+`apps/api/app/auth/routes/login.py`, `apps/api/app/core/config.py`,
+`apps/api/app/db/models.py`, `migrations/versions/0012_users_login_lockout.py`,
+`.env.example`. 21 new backend tests (9 pure-arithmetic in
+`tests/auth/test_lockout.py`, 8 real-Postgres integration in
+`tests/api/test_login_lockout.py`, 4 configuration-validation in
+`tests/test_config.py`); full backend suite 400 passed, `ruff check .`
+clean, `mypy apps` clean (77 source files). Verified live against a real
+stack (own compose project on ports 55432/56379, all 12 migrations
+applied, uvicorn on 8039, a real user row inserted directly per D010): a
+legitimate login returned 200; three real wrong-password POSTs each
+returned 401 and left `failed_login_count=3` with a real `locked_until` in
+the `users` row; the correct password then returned **423** with the
+lockout message; a wrong password at that same moment still returned
+**401**, confirming the no-enumeration ordering; and after waiting out a
+deliberately short **1-minute** configured window on the real wall clock
+(`AUTH_LOCKOUT_DURATION_MINUTES=1`, not a test clock), the same correct
+password returned 200 and the row was back to `failed_login_count=0`,
+`locked_until=NULL`. The 15-minute default is exercised by the test-clock
+path in `tests/api/test_login_lockout.py`; only the short window was
+walked in real time, because the two share one code path and the
+difference is a `timedelta`.
+
+---
+
+**D050 — CSRF posture recorded as deliberate: `SameSite=Lax` is the defence, and it covers this app's entire mutation surface. Plus the vitest 2 to 4 bump**
+
+Date: 2026-08-30
+Decision: Two smaller Phase 39 items, recorded together because both are
+"the existing posture is right, say so" rather than new mechanism.
+
+**CSRF.** The `SameSite=Lax` attribute on D020's httpOnly auth cookie is
+and remains this app's sole anti-CSRF defence; no anti-CSRF token was
+added. That is a deliberate choice, not an oversight, and this entry
+exists because a security review correctly flagged that it had never been
+written down. `SameSite=Lax` withholds the cookie from any cross-site
+request that is not a top-level GET navigation. Every state-changing route
+in `apps/web/` is a POST, PATCH, or DELETE to a same-origin Next.js route
+handler (`app/api/auth/login`, `app/api/auth/logout`,
+`app/api/trades/[brokerId]`, `app/api/agent-trades/[brokerId]`,
+`app/api/backtests`, and the six `app/api/admin/*` handlers); not one
+mutation is reachable by GET, and none is reachable cross-origin with the
+cookie attached. Lax's known gap — cross-site top-level GET navigation
+still carries the cookie — is therefore not a gap here, because a GET on
+this app changes nothing. The browser never calls the backend directly
+(D020), so the backend's own bearer-token API surface is not
+cookie-authenticated at all and is structurally immune to CSRF regardless.
+Adding a double-submit-cookie token on top would add a token to mint,
+rotate, thread through eleven route handlers, and fail loudly on
+expiry — new surface and new failure modes, for a class of attack the
+current posture already closes. It becomes the right call the day a
+state-changing GET route exists, or the day a cookie has to be sent to an
+origin the app does not control; until then it would be ceremony that
+implies a boundary that is already elsewhere. `docs/API.md` and this entry
+are the record; the invariant to preserve is **"no state-changing GET"**,
+which is what the whole argument rests on.
+
+**vitest.** `apps/web`'s `vitest@^2.1.8` carried a critical advisory
+(arbitrary file read/execute while the Vitest **UI** server is listening)
+plus transitive high/moderate `vite`/`esbuild` dev-server advisories. The
+project has never used `vitest --ui`, and none of this ships to
+production — it is dev tooling only, so this was routine hygiene, not an
+exposure. Bumped to `vitest@^4` (4.1.11) and `@vitejs/plugin-react@^6`
+(6.1.1, needed so the plugin speaks Vite 8's `oxc` transform instead of
+emitting deprecation warnings for the removed `esbuild` options), then
+`npm audit fix` for the remainder: **0 vulnerabilities**. Two real config
+migrations were required rather than suppressed — `vitest.config.ts` was
+renamed to `vitest.config.mts` (Vite's native config loader will not load
+ESM syntax from a `.ts` file treated as CommonJS) and its `__dirname`
+replaced with `import.meta.dirname` (the native loader injects no CommonJS
+globals). Both are the documented fixes, not warning suppressions.
+Reason: recording a defensible security posture is itself the deliverable
+for the CSRF finding — an undocumented tradeoff is indistinguishable from
+an accident to the next reviewer, which is precisely how the finding was
+raised. For vitest, the dependency was genuinely stale and the upgrade was
+cheap; leaving a critical advisory in the tree because "we don't use that
+flag" is an argument that stops being true the first time someone runs
+`vitest --ui` to debug a failing test.
+Alternatives: a double-submit-cookie CSRF token (rejected above);
+`SameSite=Strict` (rejected — it would break the ordinary case of a user
+following a link into the app while signed in, for no gain given no
+state-changing GET exists); pinning vitest to a patched 2.x (no such
+release for this advisory chain — `npm audit` itself routes to 4.x);
+suppressing the two new Vite config warnings with
+`VITE_CONFIG_NATIVE_IGNORE_WARNING` (rejected — both warnings describe
+real removals in a future major, and the fixes are one rename and one
+identifier).
+Status: Implemented and verified. CSRF: documentation only, no code
+change (`docs/DECISIONS.md`, `docs/API.md`). vitest:
+`apps/web/package.json`, `apps/web/package-lock.json`,
+`apps/web/vitest.config.ts` renamed to `apps/web/vitest.config.mts`. `npm audit`
+reports **0 vulnerabilities** (from 5: 1 critical, 1 high, 3 moderate);
+`npm test` **102 passed, 13 files** (99 pre-existing, all still green,
+plus 3 new `LoginForm` tests from D049) with no warnings; `npm run build`
+succeeds. `npm run lint` reports the same 2 errors / 1 warning it reported
+before this phase — verified by stashing the change and re-running — all
+pre-existing and untouched here. The Playwright e2e suite was not run: it
+needs a full running backend and browser engines and was out of scope for
+this security-fix phase.
