@@ -245,7 +245,15 @@ wrong gate. No backend change was needed; the four fields already existed.
 
 Phase 29+: the rest of the parallel analyst layer (fundamental/news/
 sentiment — each blocked on a real, wired data source per spec §57) and
-research debate. Order not finalized. Both the trade-path Portfolio
+research debate. Order not finalized. FIFO/LIFO cost-basis reporting is
+no longer planned work — Phase 34/D041 built it as an optional
+`?cost_basis_method=` on `GET /brokers/{id}/portfolio` (average stays the
+default and is unchanged), deriving lots from the append-only
+`orders`/`fills` history with no migration. Its one follow-on: persisted
+snapshots (D027) and the scheduler (D030) still capture average-cost
+only, because `portfolio_snapshots` has no column recording which method
+produced a row; offering the choice on the write path needs that column
+first. Both the trade-path Portfolio
 Manager (Phase 26/D029) and automatic/scheduled portfolio snapshotting
 (Phase 27/D030) are now done — remaining follow-ons: `backtesting/` has
 gated on the Portfolio Manager since Phase 30/D035, the backtest panel

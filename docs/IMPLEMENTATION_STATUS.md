@@ -362,8 +362,9 @@ Update this after meaningful implementation work — not for every commit.
   `DATA_UNAVAILABLE:`. Explicit non-scope, not built: backtesting,
   alerts, performance-attribution-over-time (all need persisted
   historical snapshots — a bigger decision for a future phase), and
-  FIFO/LIFO cost basis (this schema has no per-lot data to support it —
-  see D022's alternatives).
+  FIFO/LIFO cost basis (see D022's alternatives; subsequently revisited
+  and built in Phase 34/D041, which derives lots from the `orders`/`fills`
+  history rather than adding per-lot state).
 - Phase 22: deterministic duplicate-order detection in the Risk Engine
   (2026-08-28, D024). Closes the `docs/PROJECT_CONTEXT.md` "Open
   Decisions" gap D004 flagged as not built. A duplicate is defined as a
@@ -834,6 +835,44 @@ Update this after meaningful implementation work — not for every commit.
   with a byte-identical `.env` (md5-checked) and the state confirmed still
   active and still blocking real trades, then deactivated and a real trade
   filled again. See D039.
+- **Phase 34 — selectable FIFO/LIFO cost basis alongside average-cost
+  (2026-08-30, D041).** Closes IMPLEMENTATION_STATUS's own "FIFO/LIFO
+  cost-basis reporting as a Portfolio module alternative" planned item,
+  which D022 had deferred. D022's stated blocker — "this schema has no
+  per-lot data" — was true of stored *state* but not of history:
+  `orders`/`fills` already record every individual buy with its own
+  quantity, price and `filled_at`, which is exactly a lot ledger, so the
+  lots are **derived, not invented, and no migration is needed**.
+  `apps/api/app/portfolio/models.py` adds `CostBasisMethod`
+  (`average`/`fifo`/`lifo`); `snapshot.py` splits the replay into
+  `replay_symbol_fills_average()` (verbatim D022) and
+  `replay_symbol_fills_lots()` (a signed open-lot tracker; one
+  `newest_first` flag is the only difference between FIFO and LIFO, so
+  they cannot drift apart), behind an unchanged `replay_symbol_fills()`
+  that still defaults to AVERAGE. Both are pure — no DB, no I/O, no LLM.
+  `GET /brokers/{broker_id}/portfolio` gains an optional
+  `?cost_basis_method=` query param; **omitting it is byte-identical to
+  the D022 response** (a test asserts full response equality, not just
+  matching numbers), and an unrecognised value is a 422, never a silent
+  fallback. **Deliberate non-scope:** the persisted-snapshot POST (D027)
+  and the scheduler (D030) remain average-cost only — `portfolio_snapshots`
+  records no method column, so a stored FIFO row would be
+  indistinguishable from an average one in `GET .../history`; a test
+  asserts a `cost_basis_method` in the POST's query string does not change
+  what gets stored. **317/317 pytest tests passing** (304 D040-confirmed
+  merged baseline + 13 new: 10 pure lot-math unit tests in
+  `tests/portfolio/test_snapshot.py`, 3 DB-backed HTTP tests in
+  `tests/api/test_portfolio.py`), `ruff check .` and `mypy apps` clean (74
+  source files). **Verified live** against this worktree's own Docker
+  Postgres/Redis and a rebuilt API container (ports remapped to
+  5442/6389/8010 to avoid the user's dev stack and the sibling Phase 35
+  worktree; torn down afterwards): a real seeded multi-lot history — buy
+  10 @ 100, buy 10 @ 110, sell 15 @ 120, marked at 130 — returned over
+  real HTTP `average` basis 105 / realized 225 / unrealized 125, `fifo`
+  110 / 250 / 100, and `lifo` 100 / 200 / 150, each matching the
+  hand-computed figure, with `cash` 99700 and `total_equity` 100350
+  identical across all three and `?cost_basis_method=hifo` rejected 422.
+  See D041.
 
 ## In Progress
 
@@ -846,9 +885,13 @@ Nothing currently blocked.
 ## Planned
 
 Phase 20+ (order not finalized): the rest of the parallel analyst layer
-(fundamental/news/sentiment — each blocked on a real, wired data source),
-research debate, and FIFO/LIFO cost-basis reporting as a Portfolio module
-alternative to the current average-cost method. Automatic/scheduled
+(fundamental/news/sentiment — each blocked on a real, wired data source)
+and research debate. FIFO/LIFO cost-basis reporting is now DONE (Phase
+34/D041) - remaining follow-on there: persisted snapshots (D027) and the
+scheduler (D030) still capture average-cost only, since
+`portfolio_snapshots` has no column recording which method produced a
+row; offering the choice on the write path needs that migration first.
+Automatic/scheduled
 portfolio snapshotting is now DONE (Phase 27/D030) - remaining follow-ons
 there: market-hours awareness (the interval is plain wall-clock, so an
 enabled scheduler records unchanged after-hours rows or logs repeated

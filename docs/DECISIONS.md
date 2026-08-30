@@ -3129,3 +3129,109 @@ worktree count (304) coincidentally already equaled the true merged
 total or only appeared to, and a clean-room run was the only way to be
 sure rather than assume from the arithmetic alone.
 Status: Implemented and verified as above.
+
+**D041 — FIFO/LIFO cost basis as a per-request alternative to average-cost, on the read-only portfolio endpoint only**
+Date: 2026-08-30
+Numbering note: developed in parallel with sibling Phase 35 in a separate
+worktree. Both branched from the same `main` (D040, the last entry on
+that branch), so both may have claimed the next free D-number
+independently; if the sibling also landed a D041, one of the two needs
+renumbering at merge time. The content, not the digits, is the record.
+Decision: `apps/api/app/portfolio/models.py` adds `CostBasisMethod`
+(`average`/`fifo`/`lifo`, a `str` enum so FastAPI parses it straight from
+the query string and 422s anything else). `snapshot.py`'s
+`replay_symbol_fills()` keeps its exact signature and default but now
+dispatches on a keyword-only `method`: `replay_symbol_fills_average()`
+holds the verbatim D022 average-cost code, and
+`replay_symbol_fills_lots()` implements FIFO and LIFO. Both are pure - no
+DB, no I/O, no LLM - the same discipline D022 established, and the
+existing `_replay_fills()` / `compute_portfolio_snapshot()` simply thread
+the method through. `GET /brokers/{broker_id}/portfolio` gains an
+optional `cost_basis_method` query parameter defaulting to `average`.
+The lot tracker holds open lots as (signed_quantity, price). A fill
+extending the current direction appends a lot; an opposing fill consumes
+lots from the oldest end (FIFO) or newest end (LIFO), realizing
+`(fill_price - lot_price) * qty` per long lot closed and the negation per
+short lot closed, and any quantity left after the book empties opens lots
+in the fill's own direction rather than realizing against a fabricated
+zero cost. The reported basis is the weighted-average price of the lots
+still open - the true basis of exactly the quantity still held - and is
+zero when flat.
+Reason: D022 deferred FIFO/LIFO on the grounds that "no per-lot records
+exist anywhere (D006/D014)" and that retrofitting them would mean "either
+a schema change or silently assuming an ordering the data doesn't
+actually establish". That was correct about *stored state* and wrong
+about *history*. `orders`/`fills` are append-only (D006) and already
+record every individual buy as its own row with its own quantity, price
+and `filled_at` - that IS a lot ledger, and `filled_at` IS the ordering,
+the very same ordering D022's own average-cost replay already relies on.
+So the lots are derived from data that was genuinely recorded, nothing is
+invented, and **no migration is needed** - which is why this fits the
+report-only shape D022 wanted to protect. Offering the choice matters
+because average-cost is not what most brokers or tax regimes actually
+report; a caller reconciling against a broker statement needs the method
+that statement used. Realized P&L differing by method is not an
+inconsistency to be smoothed over: for buy 10 @ 100, buy 10 @ 110, sell
+15 @ 120 the correct answers are 225 (average), 250 (FIFO) and 200
+(LIFO), and all three are asserted independently rather than one being
+derived from another.
+Backward compatibility was treated as the hard constraint, not a
+nice-to-have. AVERAGE stays the default; the average code path is
+physically the same function body D022 shipped, moved not rewritten; and
+the guarantee is tested as full response-object equality (`default ==
+average`), not merely as matching numbers, so an accidentally added or
+reordered field would fail. Every pre-existing average-cost unit test
+still calls `replay_symbol_fills()` with no `method` argument on purpose -
+those tests are the compatibility guard.
+Alternatives: (a) a new `fill_lots` table materializing lots, as D022
+sketched - rejected, it would duplicate information `fills` already holds
+and create a second thing that can disagree with the append-only history,
+the exact failure mode D014's "Order/Fill's append-only history exists to
+make [current state] reconstructible" comment warns about. Deriving on
+read cannot drift. (b) a `cost_basis_method` field added to the
+`PortfolioSnapshot` response so the answer is self-describing - rejected
+for now, since adding a field changes the default response bytes and
+therefore breaks the compatibility guarantee above; it belongs with the
+migration in (c). (c) also accepting the parameter on
+`POST .../portfolio/snapshots` and in the scheduler - **rejected, and this
+is the load-bearing scope decision.** `portfolio_snapshots` (D027) has no
+column recording which method produced a row, so a persisted FIFO
+snapshot would read back through `GET .../history` as though it were an
+average-cost one, silently mixing incomparable numbers in a single time
+series - a misreporting hazard in exactly the append-only historical
+record D027 built to be trustworthy. That needs a migration adding the
+column, not a query parameter, so the write path stays average-only and a
+test asserts that passing `cost_basis_method` to the POST changes
+nothing. (d) supporting HIFO/specific-lot identification too - deferred,
+neither is derivable without a caller-supplied lot selection this API has
+no way to express yet; an unrecognised method is a 422 rather than a
+fallback so adding one later is purely additive.
+Consequences: three methods now have to be kept correct instead of one.
+FIFO and LIFO share a single function differing only by a `newest_first`
+flag specifically so they cannot diverge under later edits. The
+`avg_cost` field name is now slightly inaccurate under FIFO/LIFO (it is a
+lot-weighted basis, not a running average) - renaming it would break the
+response contract, so the field docstring and docs/API.md carry the
+distinction instead. Under FIFO/LIFO a fully-closed position reports a
+basis of 0 where AVERAGE carries its last running average forward; that
+divergence is deliberate and tested, since reporting a basis for a
+position that no longer exists would be the fabrication. Persisted
+history and scheduled snapshots remain average-cost only until the
+migration in (c) is done - that is now the single tracked follow-on.
+Status: Implemented, tested, verified live. 317/317 pytest passing (304
+D040-confirmed merged baseline + 13 new: 10 pure lot-math unit tests in
+`tests/portfolio/test_snapshot.py`, each hand-verified in a comment,
+including three-lot orderings, partially-consumed lots, an over-sell that
+opens a short, and the invariant that all three methods reconcile to the
+same total once every lot is closed; plus 3 DB-backed HTTP tests in
+`tests/api/test_portfolio.py`). `ruff check .` and `mypy apps` clean (74
+source files). Verified live against this worktree's own Docker
+Postgres/Redis and a rebuilt API container (host ports remapped to
+5442/6389/8010 to avoid both the user's own dev stack and the sibling
+Phase 35 worktree; torn down afterwards): a real seeded multi-lot history
+- buy 10 @ 100, buy 10 @ 110, sell 15 @ 120, marked at 130 - returned
+over real HTTP `average` basis 105 / realized 225 / unrealized 125,
+`fifo` 110 / 250 / 100, `lifo` 100 / 200 / 150, each equal to the
+hand-computed figure, with `cash` 99700 and `total_equity` 100350
+identical across all three, the no-parameter response byte-identical to
+`average`, and `?cost_basis_method=hifo` rejected 422.
