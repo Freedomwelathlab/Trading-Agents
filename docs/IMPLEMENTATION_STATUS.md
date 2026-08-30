@@ -1110,6 +1110,37 @@ the 89-test / 12-file total reported after Phase 31 (D037): neither
 Phase 32 nor Phase 33 added a new `apps/web/test/*.test.tsx` file. See
 docs/DECISIONS.md D040 for the full verification record.
 
+A full from-scratch backend verification run 2026-08-30 against `main` at
+`ba941cb` (Phase 34 FIFO/LIFO cost-basis and Phase 35 market-hours
+scheduler gate both merged) confirmed the true post-merge total is
+**349 tests, all passing** — exactly the 304 D040-confirmed baseline plus
+Phase 34's 13 new tests plus Phase 35's 32 new tests, since the two
+phases' new test files are disjoint and neither phase's tests exercise
+the other's code path. Following the same D028/D033/D036/D040 precedent:
+fresh Python venv, `pip install -e ".[dev]"`, `ruff check .` (clean, "All
+checks passed!"), `mypy apps` (clean, "Success: no issues found in 75
+source files"), a separately-named throwaway Postgres/Redis pair on
+remapped host ports 55432/56379 under its own compose project name
+`tradingos-verify34-35` (the user's own default-port 5432/6379 dev stack,
+plus their uvicorn on 8000 and Next.js dev server on 3005, was left
+completely untouched and confirmed still running before and after),
+`alembic upgrade head` — all eleven migrations (0001 through Phase 33's
+`0010_emergency_stop_events`) applied cleanly in sequence against a real
+Postgres 16 (timescaledb image) database with no manual intervention and
+no new migration from either phase, as expected — and `pytest tests/ -q`
+against that same real database: 349 passed, 3 pre-existing warnings (the
+same two `InsecureKeyLengthWarning`s and one `StarletteDeprecationWarning`
+seen in every prior verification pass), zero failures, zero errors. One
+transient failure surfaced on the first attempt
+(`test_missing_jwt_secret_key_fails_closed`) — the same shell-
+environment-leakage artifact documented in D036 and D040, this time from
+this verification's own shell exporting `JWT_SECRET_KEY` via its
+throwaway `.env` file; re-running with that variable unset reproduced the
+clean 349-pass result with no code changes required. No real cross-phase
+integration bug was found between Phase 34's cost-basis method (D041) and
+Phase 35's scheduler gate (D042). See docs/DECISIONS.md D043 for the full
+verification record.
+
 
 208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real

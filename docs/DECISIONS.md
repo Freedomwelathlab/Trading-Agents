@@ -3413,3 +3413,62 @@ fills) — confirming the suppression was the gate's doing and not a broken
 setup. Seeded rows were removed afterwards.
 Status: Implemented and verified as above. Scope is weekend-only by
 design; per-exchange session and holiday awareness remains open.
+
+**D043 — Full post-merge backend verification (Phases 34/35): clean run, real merged test count confirmed at 349**
+
+Date: 2026-08-30
+Decision: Ran a from-scratch backend verification of the fully-merged
+main branch at `ba941cb` (Phase 34 FIFO/LIFO cost-basis and Phase 35
+market-hours scheduler gate both merged), following the exact
+D028/D033/D036/D040 precedent: fresh Python venv (`.venv-verify3435`,
+discarded after the run), `pip install -e ".[dev]"`, `ruff check .`,
+`mypy apps`, a real Postgres 16 (timescaledb image) and Redis 7 via a
+standalone `docker-compose.verify3435.yml` (not an override of the base
+compose file, to avoid D040's port-merge pitfall) under its own compose
+project name `tradingos-verify34-35` on remapped host ports 55432/56379,
+`alembic upgrade head` against that database, then `pytest tests/ -q`
+with a throwaway `.env.verify3435` pointing `DATABASE_URL`/`REDIS_URL` at
+the remapped pair. The user's own dev stack
+(`trading-os-postgres-1`/`trading-os-redis-1` on default ports
+5432/6379, a uvicorn process on port 8000, a Next.js dev server on port
+3005, all using the real root `.env`) was left running and untouched
+throughout, confirmed still up both before and after this pass; no bare
+`docker compose down` was run and the real `.env` file was never read or
+written.
+Verified live: `ruff check .` reported "All checks passed!" with zero
+findings. `mypy apps` reported "Success: no issues found in 75 source
+files" with zero findings. `alembic upgrade head` applied all eleven
+migrations in sequence — 0001 through Phase 33's `0010_emergency_stop_events`
+— against a real, freshly created database with no manual intervention
+and no new migration from either Phase 34 or 35, as expected; 0010 is
+still the head. `pytest tests/ -q` collected and ran the entire suite
+against that same real Postgres/Redis pair: **349 tests, all passing**, 3
+warnings (the same two pre-existing `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass —
+neither new nor actionable), zero failures, zero errors, in a clean run.
+One transient failure surfaced on the first attempt
+(`test_missing_jwt_secret_key_fails_closed`) — the same recurring D036/D040
+shell-environment-leakage artifact: this verification's own shell had
+exported `JWT_SECRET_KEY` via `set -a; source .env.verify3435`, which
+leaked into that one test's `Settings(_env_file=None)` construction;
+unsetting `JWT_SECRET_KEY` and re-running reproduced the clean 349-pass
+result with no code changes required. This is not a cross-phase
+integration bug and nothing in `apps/` was touched.
+Reason: this pass found no real cross-phase integration bug between
+Phase 34's FIFO/LIFO cost-basis method (D041) and Phase 35's market-hours
+scheduler gate (D042) — ruff, mypy, all eleven migrations, and the full
+test suite were all clean once the verification's own environment
+leakage was corrected (the same class of leakage D036 and D040 already
+documented, now confirmed to recur a third time with the same fix). The
+confirmed 349 matches the arithmetic the task anticipated (304 D040
+baseline + Phase 34's independently-confirmed 317 total's 13 new tests +
+Phase 35's independently-confirmed 336 total's 32 new tests = 304 + 13 +
+32 = 349), since the two phases' new test files are disjoint and neither
+touches the other's code path.
+Alternatives: none considered — this is a verification pass, not a
+design decision; the only question was whether Phase 34's and Phase 35's
+independently-reported worktree counts (317 and 336, each off the same
+304 baseline) summed correctly to the true merged total, and a
+clean-room run was the only way to be sure rather than assume from the
+arithmetic alone.
+Status: Implemented and verified as above.
