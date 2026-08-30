@@ -5,6 +5,13 @@ from functools import lru_cache
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# apps/api/app/portfolio/models.py is pure Pydantic/enum - no config, no DB,
+# no I/O - so importing it here cannot cycle back. Typing the setting below
+# as the real enum rather than `str` is what makes a typo'd
+# PORTFOLIO_SNAPSHOT_COST_BASIS_METHOD fail at app startup instead of
+# silently persisting a method name nothing can read back (D044).
+from apps.api.app.portfolio.models import CostBasisMethod
+
 
 class TradingMode(str, Enum):  # noqa: UP042 (str mixin kept for pydantic/env-var interop)
     """Execution context. Spec §3/§46: an LLM alone must never reach LIVE.
@@ -91,6 +98,22 @@ class Settings(BaseSettings):
     broker rather than thousands. Must be positive; the scheduler refuses
     to construct otherwise (a zero interval would busy-loop the DB and the
     vendor)."""
+
+    portfolio_snapshot_cost_basis_method: CostBasisMethod = CostBasisMethod.AVERAGE
+    """Phase 36 (docs/DECISIONS.md D044): which cost-basis method the
+    snapshot scheduler computes and records its rows under.
+
+    Defaults to AVERAGE - the scheduler's behaviour is unchanged unless
+    this is set, which matters because the scheduler writes append-only
+    history unattended. Changing it mid-life does NOT rewrite existing
+    rows and is not meant to: each row records the method it was captured
+    under, so a series that changes method stays honest and readable
+    rather than silently mixing incomparable realized-P&L figures. A
+    client should still group by `cost_basis_method` before drawing one
+    curve across such a change.
+
+    Only average/fifo/lifo are accepted; anything else fails app startup
+    rather than falling back."""
 
     portfolio_snapshot_market_hours_gate_enabled: bool = True
     """Phase 35 (docs/DECISIONS.md D042): when the snapshot scheduler is

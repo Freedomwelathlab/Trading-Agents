@@ -3472,3 +3472,133 @@ independently-reported worktree counts (317 and 336, each off the same
 clean-room run was the only way to be sure rather than assume from the
 arithmetic alone.
 Status: Implemented and verified as above.
+
+---
+
+**D044 — `portfolio_snapshots.cost_basis_method`: closing D041's single tracked follow-on, on the write path and in the historical record**
+Date: 2026-08-30
+Numbering note: developed in parallel with sibling Phase 37 in a separate
+worktree, both branched from the same `main` (D043, the last entry on that
+branch). Phase 37 is frontend-only (`apps/web`, Playwright E2E) and had
+claimed no D-number at the time this was written — checked directly rather
+than assumed — so a collision is unlikely; if one occurred anyway, the
+content, not the digits, is the record.
+Decision: migration `0011_portfolio_snapshots_cost_basis_method.py` adds
+`cost_basis_method VARCHAR(16) NOT NULL DEFAULT 'average'` to
+`portfolio_snapshots` (`PortfolioSnapshotRow` in
+`apps/api/app/db/models.py`). `persist_portfolio_snapshot()` takes a
+keyword-only `cost_basis_method` (default AVERAGE) and stores its `.value`.
+`POST /brokers/{broker_id}/portfolio/snapshots` takes an optional
+`cost_basis_method` in its **request body** (new
+`PortfolioSnapshotCaptureRequest`, which extends `PortfolioMarksRequest`),
+threads that one variable into both `compute_portfolio_snapshot()` and
+`persist_portfolio_snapshot()`, and echoes it back.
+`PortfolioSnapshotHistoryEntry` gains a `cost_basis_method` field, so
+`GET .../portfolio/history` names the method behind every row. The
+scheduler (`apps/api/app/portfolio/scheduler.py`) threads the same value
+through `run_snapshot_cycle()` / `capture_scheduled_snapshot()` /
+`PortfolioSnapshotScheduler`, sourced from a new
+`portfolio_snapshot_cost_basis_method` setting that **defaults to
+`average`** — the scheduler's behaviour is unchanged unless an operator
+opts in.
+Reason: D041 rejected exactly this on the write path — its alternative (c),
+"the load-bearing scope decision" — because `portfolio_snapshots` had no
+column recording which method produced a row, so a persisted FIFO snapshot
+would read back through `GET .../history` as though it were average-cost,
+silently mixing incomparable numbers in a single append-only time series.
+D041 named the fix precisely: "That needs a migration adding the column,
+not a query parameter." This phase is that migration and nothing more
+ambitious; the FIFO/LIFO lot math is D041's, unchanged and untouched, and
+the new tests assert the persisted figures against the same
+independently-hand-computed answers (225/250/200 realized on buy 10 @ 100,
+buy 10 @ 110, sell 15 @ 120) rather than against whatever the code stored.
+`NOT NULL` with `server_default='average'` rather than a nullable column
+is the load-bearing choice here. Every pre-existing row was written by the
+average-only write path D041 deliberately scoped it to, so backfilling
+them as `average` records a fact we actually have; a nullable column would
+have made them read as "method unknown", which is *less* true than what is
+known and would push a decision onto every future reader of the series.
+The default is kept on the column rather than dropped after the backfill,
+so an INSERT from any code path predating the model change still lands a
+truthful non-null value instead of failing. This is verified explicitly
+rather than asserted: a test INSERTs a row omitting the column entirely —
+the exact shape of a pre-migration write — and asserts both the raw
+Postgres value and the HTTP response read `average`, never null.
+The method is a **body field on the POST but stays a query parameter on
+the GET**. That asymmetry was chosen over uniformity: the GET's query
+parameter is its shipped D041 contract and its body is entirely optional,
+while the POST already has a body that this belongs in, next to the marks
+the figures are computed against. The residual footgun — a caller copying
+`?cost_basis_method=fifo` onto the POST, where FastAPI ignores it — is
+answered by the response now echoing the method actually used, so the
+mistake is visible instead of silently mislabelling stored history. That
+is asserted by a test, not left to documentation.
+The scheduler setting was the phase's genuinely optional item, and it was
+added rather than deferred because it turned out to be threading one
+default-preserving keyword argument through three call sites with no new
+failure mode: the default is AVERAGE at every level, so an unconfigured
+deployment is byte-identical to D030, and typing the setting as the real
+`CostBasisMethod` enum (not `str`) makes a typo'd
+`PORTFOLIO_SNAPSHOT_COST_BASIS_METHOD` fail at app startup rather than
+producing a run of rows labelled with a method nothing can read back. That
+import makes `core/config.py` depend on `portfolio/models.py`, which is
+pure Pydantic/enum with no config, DB or I/O, so it cannot cycle back.
+Alternatives: (a) a Postgres `ENUM` type for the column — rejected, every
+other enum in this schema (`orders.side`, `orders.status`) persists as a
+plain string, and adding a fourth method later would then be a migration
+mutating a type every existing row depends on rather than an application
+change. (b) backfilling with `NULL` and treating null as "legacy/unknown"
+— rejected as above; it discards information we have. (c) adding
+`cost_basis_method` to the `PortfolioSnapshot` response of the read-only
+GET as well, making that endpoint self-describing — rejected, still:
+D041's compatibility guarantee is asserted as *full response-object
+equality* between the no-parameter and `average` responses, and adding a
+field would break the default response bytes for every existing caller of
+a read-only endpoint that gains nothing from it (the caller already knows
+what it asked for). Persisted rows are different: nobody remembers what a
+row from three weeks ago was captured under. (d) rewriting existing rows
+when the scheduler's configured method changes — rejected,
+`orders`/`fills` and these tables are append-only (D006/D027); each row
+records the method it was captured under, so a series that changes method
+mid-life stays honest and readable rather than being retroactively
+falsified.
+Consequences: `GET .../history` can now legitimately return a series whose
+rows are not comparable to each other. That is strictly better than the
+pre-D044 state, where the same thing could not happen only because the
+choice was withheld — but it does move an obligation onto the client, so
+docs/API.md states it as a requirement ("a client must group or filter by
+this field before treating the series as one equity curve") rather than a
+note. Nothing in `persist_portfolio_snapshot()` can detect a caller that
+computes under FIFO and persists under AVERAGE; both callers thread a
+single variable into both calls specifically so the two cannot drift, and
+that module's docstring says so for the next caller.
+Status: Implemented, tested, verified live. **359/359 pytest passing**
+(349 D043-confirmed merged baseline + 10 net new: 6 in
+`tests/api/test_portfolio.py` — which also *replaced* the now-obsolete
+`test_persisted_snapshots_stay_average_cost_regardless_of_the_query_param`,
+D041's guard against the very behaviour this phase deliberately adds,
+hence 6 new for +5 net — 3 DB-backed scheduler tests in
+`tests/api/test_snapshot_scheduler.py`, and 2 settings tests in
+`tests/test_config.py`). `ruff check .` and `mypy apps` clean (75 source
+files). Verified live against this worktree's own Docker Postgres/Redis
+and a rebuilt API container (host ports remapped to 5452/6399/8020 via an
+untracked `docker-compose.override.yml` using `!override`, to avoid both
+the user's own dev stack and the sibling Phase 37 worktree; torn down
+afterwards, and `docker-compose.yml` itself never modified). All eleven
+migrations ran clean from empty, and `\d portfolio_snapshots` confirmed
+`cost_basis_method | character varying(16) | not null | 'average'`. Over
+real HTTP against the running container, on a real multi-lot history
+seeded through the real trade endpoint (buy 10 @ 100, buy 10 @ 110, sell
+15 @ 120, marked at 130): the default POST persisted and read back
+`average` basis 105 / realized 225 / unrealized 125; `fifo` 110 / 250 /
+100; `lifo` 100 / 200 / 150 — each matching D041's already-verified
+hand-computed figure — with `cash` 99700 and `total_equity` 100350
+identical across all three, `GET .../history` naming each row's method,
+`cost_basis_method=hifo` rejected 422 with nothing written, a row INSERTed
+without the column reading back `average` in both Postgres and the HTTP
+response, the startup log line reporting
+`portfolio_snapshot_cost_basis_method: average`, and
+`GET .../portfolio?cost_basis_method=fifo` still returning D041's 250 with
+no new field on its response. Every seeded row was deleted afterwards; the
+`.venv36`, `.env`, `docker-compose.override.yml` and the containers/volume
+created for this verification were removed.

@@ -27,6 +27,7 @@ from apps.api.app.db.base import get_session_factory
 from apps.api.app.db.models import PortfolioSnapshotRow
 from apps.api.app.marketdata.provider import DataUnavailableError
 from apps.api.app.marketdata.router import MarketDataRouter
+from apps.api.app.portfolio.models import CostBasisMethod
 from apps.api.app.portfolio.scheduler import (
     PortfolioSnapshotScheduler,
     ScheduledSnapshotStatus,
@@ -35,6 +36,7 @@ from apps.api.app.portfolio.scheduler import (
     open_position_symbols,
     run_snapshot_cycle,
 )
+from tests.api.test_portfolio import _seed_multi_lot_history
 from tests.api.test_trades import _get_token as get_token
 from tests.api.test_trades import (
     active_user,
@@ -430,3 +432,106 @@ async def test_eligible_brokers_are_exactly_those_with_a_broker_accounts_row():
         assert traded_broker_id in eligible
         assert untouched_broker_id not in eligible
         assert all(isinstance(b, uuid.UUID) for b in eligible)
+
+
+# --------------------------------------------------------------------------
+# Phase 36 (D044): the scheduler's cost-basis method. Default behaviour is
+# unchanged (average); the configurable path is exercised end to end against
+# real Postgres because the point of the change is what lands in the row.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_cycle_defaults_to_average_and_records_that_method():
+    """D044 must not change D030's behaviour for anyone who does not set the
+    new setting - the row is average-cost AND now says so."""
+    async with (
+        db_session() as session,
+        active_user(session, permissions=ALL_PERMS) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            await _seed_multi_lot_history(
+                client, broker_id, {"Authorization": f"Bearer {token}"}
+            )
+
+        router = MarketDataRouter([FakeSymbolProvider({"AAPL": Decimal("130")})])
+        result = await run_snapshot_cycle(get_session_factory(), market_data_router=router)
+        assert result.captured_count >= 1
+
+        rows = await _snapshot_rows(session, broker_id)
+        assert len(rows) == 1
+        assert rows[0].cost_basis_method == "average"
+        # Average's hand-computed figures, not FIFO's or LIFO's.
+        assert rows[0].total_realized_pnl == Decimal("225")
+        assert rows[0].positions[0].avg_cost == Decimal("105")
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_cycle_can_be_configured_to_capture_fifo_and_labels_the_row():
+    """The configurable half. The row must carry FIFO's own numbers and the
+    `fifo` label together - a row labelled fifo holding average numbers, or
+    the reverse, would be worse than not offering the setting at all."""
+    async with (
+        db_session() as session,
+        active_user(session, permissions=ALL_PERMS) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            await _seed_multi_lot_history(
+                client, broker_id, {"Authorization": f"Bearer {token}"}
+            )
+
+        router = MarketDataRouter([FakeSymbolProvider({"AAPL": Decimal("130")})])
+        result = await run_snapshot_cycle(
+            get_session_factory(),
+            market_data_router=router,
+            cost_basis_method=CostBasisMethod.FIFO,
+        )
+        assert result.captured_count >= 1
+
+        rows = await _snapshot_rows(session, broker_id)
+        assert len(rows) == 1
+        assert rows[0].cost_basis_method == "fifo"
+        assert rows[0].total_realized_pnl == Decimal("250")
+        assert rows[0].total_unrealized_pnl == Decimal("100")
+        assert rows[0].positions[0].avg_cost == Decimal("110")
+
+
+@pytest.mark.asyncio
+async def test_the_scheduler_object_threads_its_configured_method_into_the_row():
+    """The setting reaches the row through PortfolioSnapshotScheduler, not
+    just through the loose run_snapshot_cycle() function main.py does not
+    call."""
+    async with (
+        db_session() as session,
+        active_user(session, permissions=ALL_PERMS) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            await _seed_multi_lot_history(
+                client, broker_id, {"Authorization": f"Bearer {token}"}
+            )
+
+        scheduler = PortfolioSnapshotScheduler(
+            get_session_factory(),
+            market_data_router=MarketDataRouter(
+                [FakeSymbolProvider({"AAPL": Decimal("130")})]
+            ),
+            interval_seconds=3600,
+            cost_basis_method=CostBasisMethod.LIFO,
+        )
+        result = await scheduler.run_once()
+        assert result.captured_count >= 1
+
+        rows = await _snapshot_rows(session, broker_id)
+        assert len(rows) == 1
+        assert rows[0].cost_basis_method == "lifo"
+        assert rows[0].total_realized_pnl == Decimal("200")
+        assert rows[0].positions[0].avg_cost == Decimal("100")

@@ -328,6 +328,24 @@ class PortfolioSnapshotRow(Base):
     total_equity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     total_unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     total_realized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    cost_basis_method: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="average"
+    )
+    """Which `CostBasisMethod` (apps/api/app/portfolio/models.py) produced
+    this row's `avg_cost`/`unrealized_pnl`/`realized_pnl` figures
+    (docs/DECISIONS.md D044). Stored as the enum's plain string *value*,
+    not a Postgres ENUM type, matching how every other enum in this schema
+    is persisted (`orders.side`, `orders.status`, ...) - adding a method
+    later is then an application change, not a migration that mutates a
+    type every existing row depends on.
+
+    NOT NULL with `server_default='average'` so every row written before
+    D044's migration reads back as `average` - which is exactly what those
+    rows are, since the write path was average-only until then (D041 scope
+    decision (c)). A nullable column would have made the historical rows
+    read as "unknown method", which is strictly less true than the fact we
+    actually have.
+    """
 
     positions: Mapped[list["PortfolioSnapshotPositionRow"]] = relationship(
         order_by="PortfolioSnapshotPositionRow.symbol"

@@ -15,6 +15,18 @@ cleanly carry an arbitrary symbol->price mapping, and neither endpoint
 has any other use for a body. A missing mark for a currently-held symbol
 is a 400 DATA_UNAVAILABLE, never a guessed price (spec Sec57), exactly
 like the trades endpoint.
+
+Cost basis (D041, extended by D044): the read-only GET takes
+`?cost_basis_method=` as a *query* parameter; the POST takes it as a
+*body* field alongside `marks`. That asymmetry is deliberate rather than
+sloppy - the GET keeps its query param because that is its shipped
+contract and its body is entirely optional, whereas the POST already has
+a body that this belongs in, right next to the marks the figures are
+computed against. A `cost_basis_method` mistakenly placed in the POST's
+*query* string is ignored by FastAPI, so the POST's response - and every
+`GET .../history` entry - now echoes the method actually used: a caller
+can verify what it got rather than having to trust that its parameter
+landed.
 """
 
 import uuid
@@ -63,6 +75,17 @@ class PortfolioMarksRequest(BaseModel):
     mark fails the request rather than guessing a stale price."""
 
 
+class PortfolioSnapshotCaptureRequest(PortfolioMarksRequest):
+    """The POST body: the same `marks` as the GET, plus the cost-basis
+    method to compute *and record* the snapshot under (D044)."""
+
+    cost_basis_method: CostBasisMethod = CostBasisMethod.AVERAGE
+    """Defaults to AVERAGE, so a body that predates D044 (or omits the
+    field) persists exactly the row it always did. An unrecognised value is
+    a 422, never a silent fallback - same posture as the GET's query
+    param."""
+
+
 class PortfolioSnapshotHistoryEntry(BaseModel):
     id: uuid.UUID
     broker_id: uuid.UUID
@@ -72,6 +95,14 @@ class PortfolioSnapshotHistoryEntry(BaseModel):
     total_equity: Decimal
     total_unrealized_pnl: Decimal
     total_realized_pnl: Decimal
+    cost_basis_method: CostBasisMethod
+    """Which method produced this row's basis-derived figures (D044).
+    Surfaced on every history entry because a FIFO row and an average row
+    carry incomparable realized-P&L numbers, and a time series mixing them
+    without saying so is precisely the misreporting hazard D041 refused to
+    create. Rows written before D044's migration read `average` from the
+    column's server_default - which is what they are, since the write path
+    was average-only until then, not a guess."""
 
 
 class PortfolioSnapshotHistoryResponse(BaseModel):
@@ -106,6 +137,7 @@ def _to_history_entry(row: PortfolioSnapshotRow) -> PortfolioSnapshotHistoryEntr
         total_equity=row.total_equity,
         total_unrealized_pnl=row.total_unrealized_pnl,
         total_realized_pnl=row.total_realized_pnl,
+        cost_basis_method=CostBasisMethod(row.cost_basis_method),
     )
 
 
@@ -124,12 +156,11 @@ async def get_portfolio_endpoint(
     The same fill history legitimately yields three different realized-P&L
     numbers - that is the point of the parameter, not an inconsistency.
 
-    This read-only endpoint is the only place the choice is offered.
-    Persisted snapshots (D027) and the scheduler (D030) stay average-only
-    on purpose: `portfolio_snapshots` has no column recording which method
-    produced a row, so a stored FIFO snapshot would be indistinguishable
-    from an average one in GET .../history - a real misreporting hazard,
-    and one that needs a migration to fix rather than a query param."""
+    D041 scoped this to the read-only endpoint only, because
+    `portfolio_snapshots` had no column recording which method produced a
+    row. Phase 36/D044 added that column, so the choice is now offered on
+    the write path too - as a body field on POST .../snapshots, echoed back
+    on every persisted row."""
     del authorized  # required for the auth+grant check only; unused otherwise
 
     try:
@@ -149,7 +180,9 @@ async def get_portfolio_endpoint(
 @router.post("/snapshots", response_model=PortfolioSnapshotHistoryEntry, status_code=201)
 async def create_portfolio_snapshot_endpoint(
     broker_id: uuid.UUID,
-    body: PortfolioMarksRequest = Body(default_factory=PortfolioMarksRequest),
+    body: PortfolioSnapshotCaptureRequest = Body(
+        default_factory=PortfolioSnapshotCaptureRequest
+    ),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
     authorized: AuthorizedBroker = Depends(require_broker_access(Permission.VIEW_PORTFOLIO)),
@@ -166,7 +199,14 @@ async def create_portfolio_snapshot_endpoint(
 
     Same MissingMarkError/BrokerAccountNotFoundError -> 400
     DATA_UNAVAILABLE discipline as the read endpoint - a snapshot is never
-    persisted from a guessed or partial valuation."""
+    persisted from a guessed or partial valuation.
+
+    `cost_basis_method` in the body (D044, default `average`) selects how
+    the basis-derived figures are computed AND is stored on the row, so
+    `GET .../history` can say which method each entry used. The single
+    local variable is threaded into both the compute call and the persist
+    call so the recorded method cannot disagree with the one the numbers
+    were actually produced under."""
     del authorized  # required for the auth+grant check only; unused otherwise
 
     try:
@@ -175,6 +215,7 @@ async def create_portfolio_snapshot_endpoint(
             session,
             marks=body.marks,
             default_starting_cash=settings.paper_broker_starting_cash,
+            cost_basis_method=body.cost_basis_method,
         )
     except MissingMarkError as exc:
         raise HTTPException(status_code=400, detail=f"DATA_UNAVAILABLE: {exc}") from None
@@ -184,7 +225,9 @@ async def create_portfolio_snapshot_endpoint(
     # Phase 27 (D030) moved the row-building into
     # apps/api/app/portfolio/persistence.py so this route and the scheduled
     # capture write identical rows through one code path.
-    row = await persist_portfolio_snapshot(session, broker_id, computed)
+    row = await persist_portfolio_snapshot(
+        session, broker_id, computed, cost_basis_method=body.cost_basis_method
+    )
     return _to_history_entry(row)
 
 
@@ -199,7 +242,13 @@ async def get_portfolio_history_endpoint(
     """Returns persisted snapshots for a broker, oldest-to-newest by
     `captured_at` (docs/DECISIONS.md D027), paginated via `limit`
     (default 50, max 500) and `offset` (default 0) - never the full,
-    unbounded history in one response."""
+    unbounded history in one response.
+
+    Every entry carries the `cost_basis_method` it was captured under
+    (D044). Without that, an average row and a FIFO row in the same series
+    would be indistinguishable despite carrying incomparable realized-P&L
+    figures - a client is expected to group or filter by this field before
+    treating the series as one curve."""
     del authorized  # required for the auth+grant check only; unused otherwise
 
     rows = (

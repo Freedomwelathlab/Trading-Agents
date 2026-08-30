@@ -249,11 +249,15 @@ research debate. Order not finalized. FIFO/LIFO cost-basis reporting is
 no longer planned work — Phase 34/D041 built it as an optional
 `?cost_basis_method=` on `GET /brokers/{id}/portfolio` (average stays the
 default and is unchanged), deriving lots from the append-only
-`orders`/`fills` history with no migration. Its one follow-on: persisted
-snapshots (D027) and the scheduler (D030) still capture average-cost
-only, because `portfolio_snapshots` has no column recording which method
-produced a row; offering the choice on the write path needs that column
-first. Both the trade-path Portfolio
+`orders`/`fills` history with no migration. Its one follow-on is now done
+too: Phase 36/D044 added `portfolio_snapshots.cost_basis_method`
+(`NOT NULL DEFAULT 'average'`, so every pre-existing row reads as
+`average` rather than unknown), so `POST .../portfolio/snapshots` takes
+the method as a body field, `GET .../portfolio/history` reports the
+method behind every row, and the scheduler can be pointed at a method via
+`PORTFOLIO_SNAPSHOT_COST_BASIS_METHOD` - still `average` by default, so
+its behaviour is unchanged unless configured. No cost-basis follow-on
+remains. Both the trade-path Portfolio
 Manager (Phase 26/D029) and automatic/scheduled portfolio snapshotting
 (Phase 27/D030) are now done — remaining follow-ons: `backtesting/` has
 gated on the Portfolio Manager since Phase 30/D035, the backtest panel

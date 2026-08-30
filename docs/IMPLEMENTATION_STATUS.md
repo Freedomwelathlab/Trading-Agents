@@ -854,12 +854,12 @@ Update this after meaningful implementation work — not for every commit.
   `?cost_basis_method=` query param; **omitting it is byte-identical to
   the D022 response** (a test asserts full response equality, not just
   matching numbers), and an unrecognised value is a 422, never a silent
-  fallback. **Deliberate non-scope:** the persisted-snapshot POST (D027)
-  and the scheduler (D030) remain average-cost only — `portfolio_snapshots`
-  records no method column, so a stored FIFO row would be
-  indistinguishable from an average one in `GET .../history`; a test
-  asserts a `cost_basis_method` in the POST's query string does not change
-  what gets stored. **317/317 pytest tests passing** (304 D040-confirmed
+  fallback. **Deliberate non-scope at the time:** the persisted-snapshot
+  POST (D027) and the scheduler (D030) remained average-cost only —
+  `portfolio_snapshots` recorded no method column, so a stored FIFO row
+  would have been indistinguishable from an average one in
+  `GET .../history`. **Superseded by Phase 36/D044**, which added that
+  column and opened the write path. **317/317 pytest tests passing** (304 D040-confirmed
   merged baseline + 13 new: 10 pure lot-math unit tests in
   `tests/portfolio/test_snapshot.py`, 3 DB-backed HTTP tests in
   `tests/api/test_portfolio.py`), `ruff check .` and `mypy apps` clean (74
@@ -874,6 +874,50 @@ Update this after meaningful implementation work — not for every commit.
   identical across all three and `?cost_basis_method=hifo` rejected 422.
   See D041.
 
+- **Phase 36 — `cost_basis_method` recorded on every persisted snapshot
+  (2026-08-30, D044).** Closes the single tracked follow-on D041 left
+  open. Migration `0011_portfolio_snapshots_cost_basis_method.py` adds
+  `cost_basis_method VARCHAR(16) NOT NULL DEFAULT 'average'` to
+  `portfolio_snapshots` — the column whose absence was D041's stated
+  reason for keeping the write path average-only.
+  `POST /brokers/{broker_id}/portfolio/snapshots` now takes an optional
+  `cost_basis_method` **in its request body** (default `average`, same
+  `average`/`fifo`/`lifo` enum, 422 on anything else with nothing
+  written), threads one variable into both `compute_portfolio_snapshot()`
+  and `persist_portfolio_snapshot()` so the recorded method cannot
+  disagree with the numbers, and echoes it back.
+  `GET /brokers/{broker_id}/portfolio/history` surfaces it on every entry,
+  so a FIFO row's realized P&L can no longer be misread as average-cost.
+  The scheduler (D030) gains the same capability via a new
+  `portfolio_snapshot_cost_basis_method` setting that **defaults to
+  `average` — its behaviour is unchanged unless explicitly configured**,
+  and is typed as the real enum so a typo fails at app startup.
+  **Backward compatibility is the load-bearing constraint:** every row
+  written before the migration reads `average` from the column's
+  `server_default`, never null — that is a recorded fact (the write path
+  was average-only until now), not a stand-in for "unknown" — and a test
+  INSERTs a row omitting the column entirely, asserting both the raw
+  Postgres value and the HTTP response read `average`.
+  **359/359 pytest tests passing** (349 D043-confirmed merged baseline +
+  10 net new: 6 in `tests/api/test_portfolio.py`, which also replaced
+  D041's now-obsolete `test_persisted_snapshots_stay_average_cost_...`
+  guard against the very behaviour this phase adds; 3 DB-backed scheduler
+  tests in `tests/api/test_snapshot_scheduler.py`; 2 settings tests in
+  `tests/test_config.py`). `ruff check .` and `mypy apps` clean (75 source
+  files). **Verified live** against this worktree's own Docker
+  Postgres/Redis and a rebuilt API container (ports remapped to
+  5452/6399/8020 via an untracked compose override to avoid the user's dev
+  stack and the sibling Phase 37 worktree; torn down afterwards): all
+  eleven migrations clean from empty with `\d portfolio_snapshots`
+  confirming the NOT NULL default, then over real HTTP on a real seeded
+  multi-lot history (buy 10 @ 100, buy 10 @ 110, sell 15 @ 120, marked at
+  130) the default POST stored and read back `average` 105 / 225 / 125,
+  `fifo` 110 / 250 / 100 and `lifo` 100 / 200 / 150 — each matching
+  D041's already-verified hand-computed figures — with `cash` 99700 and
+  `total_equity` 100350 identical across all three, history naming each
+  row's method, `hifo` rejected 422, and a column-less INSERT reading back
+  `average`. See D044.
+
 ## In Progress
 
 Nothing currently mid-implementation.
@@ -887,10 +931,9 @@ Nothing currently blocked.
 Phase 20+ (order not finalized): the rest of the parallel analyst layer
 (fundamental/news/sentiment — each blocked on a real, wired data source)
 and research debate. FIFO/LIFO cost-basis reporting is now DONE (Phase
-34/D041) - remaining follow-on there: persisted snapshots (D027) and the
-scheduler (D030) still capture average-cost only, since
-`portfolio_snapshots` has no column recording which method produced a
-row; offering the choice on the write path needs that migration first.
+34/D041), and its one tracked follow-on - offering the choice on the
+write path, which needed a migration recording which method produced each
+row - is now DONE too (Phase 36/D044). No cost-basis follow-on remains.
 Automatic/scheduled
 portfolio snapshotting is now DONE (Phase 27/D030) - remaining follow-ons
 there: market-hours awareness is now PARTIALLY addressed (Phase 35/D042
