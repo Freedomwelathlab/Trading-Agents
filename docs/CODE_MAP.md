@@ -351,8 +351,12 @@ broker-scoped route uses. Current marks travel as a JSON body on the
 GET/POST (`{"marks": {symbol: price}}`, same shape as
 `TradeSubmissionRequest.marks`) since a query string can't cleanly carry
 an arbitrary symbol->price map. Realized P&L and `avg_cost` use
-average-cost basis (not FIFO/LIFO — this schema has no per-lot data to
-support that; see D022's alternatives), replayed from `orders`/`fills` in
+the cost-basis method selected per request (D041): average-cost by
+default — unchanged from D022 — or FIFO/LIFO lot tracking via the GET's
+optional `?cost_basis_method=` query param, whose lots are derived from
+the append-only fill history rather than any new per-lot table (which is
+why D022's "no per-lot data" objection no longer applies and no migration
+was needed). All three replay `orders`/`fills` in
 `filled_at` order; current open quantity comes from `BrokerPosition` (the
 execution layer's own authoritative current state, D014), not the fills
 replay, so a snapshot's position sizes always match what the execution

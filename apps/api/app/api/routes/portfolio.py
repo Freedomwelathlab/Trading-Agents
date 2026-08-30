@@ -33,7 +33,11 @@ from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import PortfolioSnapshotRow
 from apps.api.app.portfolio.errors import BrokerAccountNotFoundError, MissingMarkError
-from apps.api.app.portfolio.models import PortfolioPosition, PortfolioSnapshot
+from apps.api.app.portfolio.models import (
+    CostBasisMethod,
+    PortfolioPosition,
+    PortfolioSnapshot,
+)
 from apps.api.app.portfolio.persistence import persist_portfolio_snapshot
 from apps.api.app.portfolio.snapshot import compute_portfolio_snapshot
 
@@ -109,10 +113,23 @@ def _to_history_entry(row: PortfolioSnapshotRow) -> PortfolioSnapshotHistoryEntr
 async def get_portfolio_endpoint(
     broker_id: uuid.UUID,
     body: PortfolioMarksRequest = Body(default_factory=PortfolioMarksRequest),
+    cost_basis_method: CostBasisMethod = Query(default=CostBasisMethod.AVERAGE),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
     authorized: AuthorizedBroker = Depends(require_broker_access(Permission.VIEW_PORTFOLIO)),
 ) -> PortfolioSnapshot:
+    """`?cost_basis_method=` selects average (default), fifo or lifo for the
+    basis-derived figures (D041). Omitting it reproduces the D022 response
+    exactly; an unrecognised value is a 422 rather than a silent fallback.
+    The same fill history legitimately yields three different realized-P&L
+    numbers - that is the point of the parameter, not an inconsistency.
+
+    This read-only endpoint is the only place the choice is offered.
+    Persisted snapshots (D027) and the scheduler (D030) stay average-only
+    on purpose: `portfolio_snapshots` has no column recording which method
+    produced a row, so a stored FIFO snapshot would be indistinguishable
+    from an average one in GET .../history - a real misreporting hazard,
+    and one that needs a migration to fix rather than a query param."""
     del authorized  # required for the auth+grant check only; unused otherwise
 
     try:
@@ -121,6 +138,7 @@ async def get_portfolio_endpoint(
             session,
             marks=body.marks,
             default_starting_cash=settings.paper_broker_starting_cash,
+            cost_basis_method=cost_basis_method,
         )
     except MissingMarkError as exc:
         raise HTTPException(status_code=400, detail=f"DATA_UNAVAILABLE: {exc}") from None

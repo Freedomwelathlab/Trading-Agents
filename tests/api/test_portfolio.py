@@ -486,3 +486,182 @@ async def test_snapshot_post_without_broker_grant_gets_403():
                 json={"marks": {}},
             )
     assert response.status_code == 403
+
+
+# --- Selectable cost-basis method (D041) -------------------------------
+#
+# One shared multi-lot fill history, three methods, three different but
+# individually hand-verified answers. Sequence (each trade fills at its
+# estimated_price under the paper broker):
+#   buy  10 AAPL @ 100  -> cash 100000 - 1000 =  99000
+#   buy  10 AAPL @ 110  -> cash  99000 - 1100 =  97900
+#   sell 15 AAPL @ 120  -> cash  97900 + 1800 =  99700
+# leaving 5 shares open, valued at the supplied mark of 130 -> 650, so
+# total_equity is 99700 + 650 = 100350 under every method (cash, quantity
+# and current_value are method-independent - only the basis moves).
+#
+#   AVERAGE: basis (10*100 + 10*110)/20 = 105
+#            realized (120-105)*15                    = 225
+#            unrealized (130-105)*5                   = 125
+#   FIFO:    sell eats 10 @ 100 then 5 @ 110; 5 @ 110 left -> basis 110
+#            realized (120-100)*10 + (120-110)*5      = 250
+#            unrealized (130-110)*5                   = 100
+#   LIFO:    sell eats 10 @ 110 then 5 @ 100; 5 @ 100 left -> basis 100
+#            realized (120-110)*10 + (120-100)*5      = 200
+#            unrealized (130-100)*5                   = 150
+
+
+async def _seed_multi_lot_history(client, broker_id, headers):
+    """buy 10 @ 100, buy 10 @ 110, sell 15 @ 120 - the shared fixture the
+    three cost-basis assertions below all read back."""
+    for side, quantity, price, stop in (
+        ("buy", "10", "100", "95"),
+        ("buy", "10", "110", "104"),
+        ("sell", "15", "120", "126"),
+    ):
+        response = await client.post(
+            f"/brokers/{broker_id}/trades",
+            headers=headers,
+            json={
+                "symbol": "AAPL",
+                "side": side,
+                "quantity": quantity,
+                "estimated_price": price,
+                "stop_price": stop,
+            },
+        )
+        assert response.status_code in (200, 201), response.text
+
+
+@pytest.mark.asyncio
+async def test_each_cost_basis_method_reports_its_own_hand_verified_pnl():
+    async with (
+        db_session() as session,
+        active_user(
+            session,
+            permissions=(Permission.SUBMIT_PAPER_TRADE.value, Permission.VIEW_PORTFOLIO.value),
+        ) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            headers = {"Authorization": f"Bearer {token}"}
+            await _seed_multi_lot_history(client, broker_id, headers)
+
+            bodies = {}
+            for label, params in (
+                ("default", None),
+                ("average", {"cost_basis_method": "average"}),
+                ("fifo", {"cost_basis_method": "fifo"}),
+                ("lifo", {"cost_basis_method": "lifo"}),
+            ):
+                response = await client.request(
+                    "GET",
+                    f"/brokers/{broker_id}/portfolio",
+                    headers=headers,
+                    params=params,
+                    json={"marks": {"AAPL": "130"}},
+                )
+                assert response.status_code == 200, (label, response.text)
+                bodies[label] = response.json()
+
+        expected = {
+            "average": (Decimal("105"), Decimal("225"), Decimal("125")),
+            "fifo": (Decimal("110"), Decimal("250"), Decimal("100")),
+            "lifo": (Decimal("100"), Decimal("200"), Decimal("150")),
+        }
+        for label, (basis, realized, unrealized) in expected.items():
+            body = bodies[label]
+            assert len(body["positions"]) == 1, label
+            position = body["positions"][0]
+            assert position["symbol"] == "AAPL", label
+            assert Decimal(position["quantity"]) == Decimal("5"), label
+            assert Decimal(position["avg_cost"]) == basis, label
+            assert Decimal(position["realized_pnl"]) == realized, label
+            assert Decimal(position["unrealized_pnl"]) == unrealized, label
+            assert Decimal(body["total_realized_pnl"]) == realized, label
+            assert Decimal(body["total_unrealized_pnl"]) == unrealized, label
+            # Method-independent figures must be identical across all three.
+            assert Decimal(position["current_value"]) == Decimal("650"), label
+            assert Decimal(body["cash"]) == Decimal("99700"), label
+            assert Decimal(body["total_equity"]) == Decimal("100350"), label
+
+        # Omitting the parameter entirely must be byte-identical to the old
+        # endpoint - this is the backward-compatibility guarantee, not just
+        # "numerically close".
+        assert bodies["default"] == bodies["average"]
+
+        # And the three must genuinely differ, or the parameter does nothing.
+        realized_figures = {
+            bodies[label]["total_realized_pnl"] for label in ("average", "fifo", "lifo")
+        }
+        assert len(realized_figures) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognised_cost_basis_method_is_422_not_a_silent_default():
+    """Fail closed: a typo'd method must be rejected outright rather than
+    quietly answered with average-cost numbers the caller did not ask for."""
+    async with (
+        db_session() as session,
+        active_user(session, permissions=(Permission.VIEW_PORTFOLIO.value,)) as (
+            user_id,
+            email,
+        ),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            response = await client.request(
+                "GET",
+                f"/brokers/{broker_id}/portfolio",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"cost_basis_method": "hifo"},
+            )
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_persisted_snapshots_stay_average_cost_regardless_of_the_query_param():
+    """D041 deliberately scopes the choice to the read-only GET. The POST
+    has no cost_basis_method, and passing one in its query string must not
+    change what gets stored - `portfolio_snapshots` records no method, so a
+    non-average row would be indistinguishable in GET .../history."""
+    async with (
+        db_session() as session,
+        active_user(
+            session,
+            permissions=(Permission.SUBMIT_PAPER_TRADE.value, Permission.VIEW_PORTFOLIO.value),
+        ) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            headers = {"Authorization": f"Bearer {token}"}
+            await _seed_multi_lot_history(client, broker_id, headers)
+
+            response = await client.post(
+                f"/brokers/{broker_id}/portfolio/snapshots",
+                headers=headers,
+                params={"cost_basis_method": "fifo"},
+                json={"marks": {"AAPL": "130"}},
+            )
+            assert response.status_code == 201, response.text
+            posted = response.json()
+
+            history = await client.get(
+                f"/brokers/{broker_id}/portfolio/history", headers=headers
+            )
+
+        # Average-cost numbers (225/125/105), NOT FIFO's (250/100/110).
+        assert Decimal(posted["total_realized_pnl"]) == Decimal("225")
+        assert Decimal(posted["total_unrealized_pnl"]) == Decimal("125")
+        assert Decimal(posted["positions"][0]["avg_cost"]) == Decimal("105")
+
+        assert history.status_code == 200, history.text
+        stored = history.json()["snapshots"][0]
+        assert Decimal(stored["total_realized_pnl"]) == Decimal("225")
+        assert Decimal(stored["positions"][0]["avg_cost"]) == Decimal("105")

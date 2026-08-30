@@ -235,17 +235,46 @@ Response (200, `PortfolioSnapshot`):
   "total_realized_pnl": "0"
 }
 ```
-`avg_cost`/`realized_pnl` use average-cost basis (not FIFO/LIFO —
-see docs/DECISIONS.md D022), replayed from that symbol's `orders`/`fills`
+`avg_cost`/`realized_pnl` are replayed from that symbol's `orders`/`fills`
 history; `quantity` itself is the execution layer's current
 `broker_positions` row, not a replay total. `total_realized_pnl` includes
 every symbol ever traded on this broker, even ones with no position open
 right now (a closed-out symbol's realized P&L isn't lost).
 
+Optional query parameter `cost_basis_method` (D041) selects how those two
+figures — and `unrealized_pnl`, which derives from the basis — are
+computed:
+
+| value | method |
+| --- | --- |
+| `average` (default) | Average-cost basis, the D022 behaviour: one running weighted-average cost per symbol, never moved by a sell. |
+| `fifo` | Lot tracking, oldest open lot consumed first. |
+| `lifo` | Lot tracking, newest open lot consumed first. |
+
+Omitting the parameter returns exactly the D022 response, unchanged. An
+unrecognised value is a **422**, never a silent fallback to `average`.
+
+The same fill history gives three different `realized_pnl` figures — that
+is correct, not an inconsistency. For buy 10 @ 100, buy 10 @ 110, sell
+15 @ 120: `average` realizes 225 (basis 105), `fifo` 250 (basis 110),
+`lifo` 200 (basis 100). `cash`, `quantity`, `current_value` and
+`total_equity` are identical under all three; only the basis-derived
+figures move. Under `fifo`/`lifo`, `avg_cost` is the weighted-average
+price of the lots still open, so it does change as sells consume lots, and
+is `0` once the position is fully closed (no held quantity, no basis) —
+whereas `average` carries its last running average forward.
+
+This parameter is accepted on this read-only endpoint only.
+`POST .../portfolio/snapshots` and the snapshot scheduler always persist
+average-cost figures, because `portfolio_snapshots` records no method
+column and a stored FIFO row would be indistinguishable from an average
+one in `GET .../portfolio/history` (see D041).
+
 Error responses: 401 (no/invalid token), 403 (missing `VIEW_PORTFOLIO` or
-no `BrokerGrant` for this broker), 404 (unknown `broker_id`), 400
-`DATA_UNAVAILABLE:` if a currently-held symbol's mark is missing from the
-request body — never a guessed or stale price.
+no `BrokerGrant` for this broker), 404 (unknown `broker_id`), 422
+(unrecognised `cost_basis_method`), 400 `DATA_UNAVAILABLE:` if a
+currently-held symbol's mark is missing from the request body — never a
+guessed or stale price.
 
 ## `POST /backtests`
 
