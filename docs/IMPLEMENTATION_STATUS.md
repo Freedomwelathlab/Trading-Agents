@@ -942,9 +942,11 @@ holidays are still NOT checked, and closing that needs a real
 trading-calendar port over the Longbridge SDK's `trading_session()` /
 `trading_days()`, plus a market-timezone source this repo does not have -
 see D042's Alternatives for the three concrete blockers and the
-fail-open requirement), and multi-worker safety (each API worker process
-runs its own independent loop, so >1 worker would multiply rows - see
-D030's Consequences), which is untouched. If a second analyst is
+fail-open requirement). Multi-worker safety is now DONE (Phase 38/D047:
+a non-blocking Postgres advisory lock per cycle, so >1 uvicorn/gunicorn
+worker yields one row per interval instead of one per worker); no
+scheduler follow-on remains apart from the intraday/holiday half of
+market-hours awareness above. If a second analyst is
 ever added, revisit whether
 parallel-execution infrastructure across analysts is now warranted
 (deliberately not built in Phase 16 — one analyst has nothing to
@@ -1058,6 +1060,49 @@ optimization.
   same process and broker with the gate off → 6 real captures at
   `total_equity = 100100`. Weekday behavior in tests uses an **injected**
   Monday instant, not a real one.
+
+- Phase 38: multi-worker safety for the portfolio snapshot scheduler
+  (2026-08-30). `apps/api/app/portfolio/cycle_lock.py` (new) +
+  `PORTFOLIO_SNAPSHOT_CYCLE_LOCK_ENABLED` (new setting, **default true**)
+  + `cycle_lock=` on `run_snapshot_cycle()` and
+  `PortfolioSnapshotScheduler`, wired in `main.py`. Closes the last open
+  consequence D030 recorded: the scheduler's lifespan-owned loop runs once
+  per worker process, so `uvicorn --workers N` used to append N
+  near-simultaneous rows per interval to an **append-only** table. A cycle
+  now takes a non-blocking session-level
+  `pg_try_advisory_lock(1953653092, 1936613744)` — two fixed int4 keys
+  (ASCII `trad`/`snap`), not `hashtext()`, so the pair is stable across
+  Postgres major versions and greppable in `pg_locks` — before enumerating
+  any broker, and releases it with `pg_advisory_unlock` in a `finally` on
+  every path including an exception. A worker that cannot get it records
+  the new typed `SnapshotCycleLockDecision.SKIPPED_LOCK_HELD` (an ordinary
+  outcome, logged at info, **not** an error) and skips without one broker
+  query or one vendor call. The lock is taken *after* D042's weekend gate,
+  so a gated weekend cycle still costs zero DB round-trips.
+  **No new dependency**: Redis is provisioned in `docker-compose.yml` and
+  named by `Settings.redis_url` but is still unwired in Python as of this
+  phase, and Postgres is the one service the cycle cannot run without
+  anyway — so the lock adds nothing that can fail independently of the
+  work it guards. No new table and no migration either: a session-level
+  advisory lock dies with its connection, so a SIGKILLed worker cannot
+  wedge the schedule. Single-worker behaviour is unchanged (the lock is
+  always acquired) and `=false` restores D030's exact unguarded path.
+  **379/379 pytest tests passing** (359 D046-confirmed baseline + 20 new:
+  8 unit in `tests/portfolio/test_cycle_lock.py`, 2 settings tests in
+  `tests/test_config.py`, 10 DB-backed in
+  `tests/api/test_snapshot_scheduler_multiworker.py` where the contending
+  "other worker" is a genuinely separate real session really holding the
+  real lock). `ruff check .` and `mypy apps` clean (76 source files).
+  **Verified live** against this worktree's own Docker Postgres (isolated
+  compose project `tos38`, ports remapped to 55432/56379 so the user's dev
+  stack on 5432/6379 was untouched; torn down afterwards) with
+  `scripts/seed_e2e.py` fixtures: **two separate OS processes** each
+  running one real cycle, released at the same instant against the same
+  database — with the lock on, one process captured and the other logged
+  `portfolio_snapshot_cycle_lock_not_acquired` and returned
+  `skipped_lock_held`, leaving **1 row**; the identical race with the lock
+  off produced **2 rows**, reproducing the pre-D047 bug live as a control.
+  See D047.
 
 - Phase 37: Playwright e2e coverage for `apps/web/` (2026-08-30).
   `apps/web/playwright.config.ts` + `apps/web/e2e/` (`fixtures.ts`,

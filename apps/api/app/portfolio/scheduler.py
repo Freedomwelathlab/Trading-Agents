@@ -62,6 +62,20 @@ and it can be disabled with
 docstring before assuming it knows anything about holidays or session
 times; it does not, on purpose.
 
+MULTI-WORKER SAFETY (Phase 38, D047)
+------------------------------------
+The "one loop per process" consequence D030 recorded is now closed. After
+the market-hours gate but before any broker is enumerated, a cycle takes a
+non-blocking Postgres session-level advisory lock
+(`apps/api/app/portfolio/cycle_lock.py`). Under `uvicorn --workers N` only
+the worker that wins the lock does the work; the rest record
+`SnapshotCycleLockDecision.SKIPPED_LOCK_HELD` and skip cleanly, so the
+append-only series gets one row per interval rather than N. With a single
+worker the lock is always acquired and the cycle below is unchanged. No new
+dependency was added; see that module's docstring for why Postgres advisory
+locks were chosen over Redis, a leader-election library, or a scheduler
+library.
+
 COST BASIS (Phase 36, D044)
 ---------------------------
 Scheduled rows are computed and recorded under
@@ -87,6 +101,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.models import BrokerAccount, BrokerPosition
 from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
+from apps.api.app.portfolio.cycle_lock import SnapshotCycleLock, SnapshotCycleLockDecision
 from apps.api.app.portfolio.errors import BrokerAccountNotFoundError, MissingMarkError
 from apps.api.app.portfolio.market_hours import (
     MarketHoursDecision,
@@ -164,7 +179,8 @@ class ScheduledSnapshotOutcome:
 @dataclass(frozen=True)
 class SnapshotCycleResult:
     """One full pass over every eligible broker - or, when the market-hours
-    gate suppressed the pass, a record of that with no outcomes at all."""
+    gate or the cross-process lock suppressed the pass, a record of that
+    with no outcomes at all."""
 
     outcomes: tuple[ScheduledSnapshotOutcome, ...] = field(default=())
     market_hours: MarketHoursDecision = MarketHoursDecision.RUN_GATE_DISABLED
@@ -172,6 +188,16 @@ class SnapshotCycleResult:
     RUN_GATE_DISABLED so a `SnapshotCycleResult()` built directly in a test
     or a caller predating Phase 35 keeps meaning exactly what it used to:
     "a cycle that ran with no market-hours consideration"."""
+    lock: SnapshotCycleLockDecision = SnapshotCycleLockDecision.LOCK_DISABLED
+    """Whether this process held the cross-worker advisory lock for this
+    cycle (D047). Defaults to LOCK_DISABLED for the same reason
+    `market_hours` defaults as it does: a `SnapshotCycleResult()` built by
+    a test or a caller predating Phase 38 keeps meaning "a cycle that ran
+    with nobody checking for other workers".
+
+    SKIPPED_LOCK_HELD is a normal outcome, not an error: it is what every
+    worker except the winner records on every interval under
+    `uvicorn --workers N`."""
 
     @property
     def gated(self) -> bool:
@@ -179,6 +205,22 @@ class SnapshotCycleResult:
         database or the vendor. Distinct from `skipped_count`, which counts
         brokers skipped *within* a cycle that did run."""
         return not self.market_hours.should_run
+
+    @property
+    def lock_skipped(self) -> bool:
+        """True when another process held the snapshot lock, so this cycle
+        did no work (D047). Deliberately a separate property from `gated`:
+        both mean "no outcomes", but a weekend hole in the series is
+        expected everywhere, while a lock hole means a sibling worker
+        filled that interval instead - and only one of those is worth
+        looking for a row from another process for."""
+        return not self.lock.should_run
+
+    @property
+    def ran(self) -> bool:
+        """True when this cycle actually enumerated brokers - i.e. neither
+        the market-hours gate nor the cross-worker lock suppressed it."""
+        return not self.gated and not self.lock_skipped
 
     @property
     def captured_count(self) -> int:
@@ -347,8 +389,18 @@ async def run_snapshot_cycle(
     market_hours_gate: MarketHoursGate | None = None,
     as_of: datetime | None = None,
     cost_basis_method: CostBasisMethod = CostBasisMethod.AVERAGE,
+    cycle_lock: SnapshotCycleLock | None = None,
 ) -> SnapshotCycleResult:
     """One full pass: snapshot every eligible broker, independently.
+
+    D047: after the gate and before the broker query, the cycle takes a
+    non-blocking Postgres advisory lock on a dedicated session held open
+    for the whole pass. If another process holds it, this cycle returns
+    immediately with `lock=SKIPPED_LOCK_HELD` and no outcomes - that is how
+    running more than one uvicorn worker stops multiplying rows in an
+    append-only table. `cycle_lock=None` means "no locking", which is what
+    every pre-Phase-38 caller got. The lock is taken AFTER the gate so a
+    weekend cycle still costs zero database round-trips.
 
     D042: the market-hours gate is evaluated FIRST, before the broker
     query. A gated cycle therefore issues no SQL and makes no vendor call
@@ -387,39 +439,55 @@ async def run_snapshot_cycle(
         )
         return SnapshotCycleResult(outcomes=(), market_hours=decision)
 
-    async with session_factory() as session:
-        broker_ids = await eligible_broker_ids(session)
+    lock = cycle_lock if cycle_lock is not None else SnapshotCycleLock(enabled=False)
+    # A session of its own, opened solely to own the advisory lock and held
+    # for the whole pass. It is never committed and issues no other
+    # statement: a session-level advisory lock belongs to the backend
+    # connection, so releasing that connection early would release the
+    # lock mid-cycle. The per-broker sessions below are unchanged and stay
+    # independent of it, so one broker's failed commit still cannot poison
+    # another's - or the lock.
+    async with session_factory() as lock_session, lock.hold(lock_session) as lock_decision:
+        if not lock_decision.should_run:
+            return SnapshotCycleResult(
+                outcomes=(), market_hours=decision, lock=lock_decision
+            )
 
-    outcomes: list[ScheduledSnapshotOutcome] = []
-    for broker_id in broker_ids:
         async with session_factory() as session:
-            outcome = await capture_scheduled_snapshot(
-                broker_id,
-                session,
-                market_data_router=market_data_router,
-                cost_basis_method=cost_basis_method,
-            )
-        outcomes.append(outcome)
+            broker_ids = await eligible_broker_ids(session)
 
-        if outcome.captured:
-            logger.info(
-                "portfolio_snapshot_captured",
-                broker_id=str(outcome.broker_id),
-                snapshot_id=str(outcome.snapshot_id),
-            )
-        else:
-            # Deliberately warning, not debug: a skipped cycle leaves a
-            # permanent hole in an append-only time series. It must be
-            # visible, and it must say which symbols and why.
-            logger.warning(
-                "portfolio_snapshot_skipped",
-                broker_id=str(outcome.broker_id),
-                status=outcome.status.value,
-                unpriced_symbols=list(outcome.unpriced_symbols),
-                detail=outcome.detail,
-            )
+        outcomes: list[ScheduledSnapshotOutcome] = []
+        for broker_id in broker_ids:
+            async with session_factory() as session:
+                outcome = await capture_scheduled_snapshot(
+                    broker_id,
+                    session,
+                    market_data_router=market_data_router,
+                    cost_basis_method=cost_basis_method,
+                )
+            outcomes.append(outcome)
 
-    return SnapshotCycleResult(outcomes=tuple(outcomes), market_hours=decision)
+            if outcome.captured:
+                logger.info(
+                    "portfolio_snapshot_captured",
+                    broker_id=str(outcome.broker_id),
+                    snapshot_id=str(outcome.snapshot_id),
+                )
+            else:
+                # Deliberately warning, not debug: a skipped cycle leaves a
+                # permanent hole in an append-only time series. It must be
+                # visible, and it must say which symbols and why.
+                logger.warning(
+                    "portfolio_snapshot_skipped",
+                    broker_id=str(outcome.broker_id),
+                    status=outcome.status.value,
+                    unpriced_symbols=list(outcome.unpriced_symbols),
+                    detail=outcome.detail,
+                )
+
+        return SnapshotCycleResult(
+            outcomes=tuple(outcomes), market_hours=decision, lock=lock_decision
+        )
 
 
 class PortfolioSnapshotScheduler:
@@ -444,6 +512,14 @@ class PortfolioSnapshotScheduler:
     it means the first weekday cycle fires within one interval of the
     market reopening instead of being scheduled from a computed
     next-open time this module has no authoritative source for.
+
+    D047: one loop still starts per worker process - the lifespan runs in
+    each - but only the worker holding the Postgres advisory lock does a
+    cycle's work, so N workers produce one row per interval rather than N.
+    The losing workers' loops keep ticking cheaply and take over
+    automatically if the winner dies, since a session-level advisory lock
+    is released with its connection. See
+    apps/api/app/portfolio/cycle_lock.py.
     """
 
     def __init__(
@@ -455,6 +531,7 @@ class PortfolioSnapshotScheduler:
         market_hours_gate: MarketHoursGate | None = None,
         clock: Callable[[], datetime] = utc_now,
         cost_basis_method: CostBasisMethod = CostBasisMethod.AVERAGE,
+        cycle_lock: SnapshotCycleLock | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError(
@@ -474,6 +551,12 @@ class PortfolioSnapshotScheduler:
         # D044: AVERAGE unless an operator opts out, so an existing
         # deployment's history keeps being written exactly as before.
         self._cost_basis_method = cost_basis_method
+        # D047: None means "no cross-worker locking", the pre-Phase-38
+        # behaviour every existing construction site got; the app wires a
+        # real lock in main.py.
+        self._cycle_lock = (
+            cycle_lock if cycle_lock is not None else SnapshotCycleLock(enabled=False)
+        )
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -492,6 +575,11 @@ class PortfolioSnapshotScheduler:
                 "weekend_utc" if self._market_hours_gate.enabled else "DISABLED"
             ),
             cost_basis_method=self._cost_basis_method.value,
+            cycle_lock=(
+                f"pg_advisory:{self._cycle_lock.classid}/{self._cycle_lock.objid}"
+                if self._cycle_lock.enabled
+                else "DISABLED"
+            ),
         )
 
     async def stop(self) -> None:
@@ -523,6 +611,7 @@ class PortfolioSnapshotScheduler:
             market_hours_gate=self._market_hours_gate,
             as_of=self._clock(),
             cost_basis_method=self._cost_basis_method,
+            cycle_lock=self._cycle_lock,
         )
 
     async def _run(self) -> None:

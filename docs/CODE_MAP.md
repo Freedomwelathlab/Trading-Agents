@@ -322,7 +322,13 @@ scheduler, extracted in D030 so the two cannot drift),
 `capture_scheduled_snapshot()`, `resolve_marks()`,
 `eligible_broker_ids()`, `open_position_symbols()`, and the typed
 `ScheduledSnapshotOutcome`/`ScheduledSnapshotStatus`/`SnapshotCycleResult`
-results)
+results), `apps/api/app/portfolio/market_hours.py` (D042 —
+`MarketHoursGate`/`MarketHoursDecision`, an I/O-free UTC **weekend** check
+only, not an exchange calendar), `apps/api/app/portfolio/cycle_lock.py`
+(D047 — `SnapshotCycleLock`/`SnapshotCycleLockDecision`, a non-blocking
+Postgres session-level `pg_try_advisory_lock` taken per cycle so >1
+uvicorn/gunicorn worker writes one row per interval instead of one each;
+no new dependency, table, or migration)
 Dependencies: `apps.api.app.db.models` (`BrokerAccount`, `BrokerPosition`,
 `Order`, `Fill` — read-only for the GET; `PortfolioSnapshotRow`/
 `PortfolioSnapshotPositionRow` — written by the POST, read by the history
@@ -341,7 +347,16 @@ boundary, the interval guards, and the scheduler-disabled-by-default
 guard), `tests/api/test_snapshot_scheduler.py` (12 integration tests
 against real Postgres — capture, each typed skip reason, "one unpriceable
 symbol blocks the whole snapshot", a mixed multi-broker cycle, and the
-running asyncio task writing a real row on its timer)
+running asyncio task writing a real row on its timer),
+`tests/portfolio/test_cycle_lock.py` (8 unit tests — the pinned lock key
+constants, the decision enum, and the release discipline including the
+exception path, with a recording stand-in for the session so the exact
+SQL sequence is assertable), `tests/api/test_snapshot_scheduler_multiworker.py`
+(10 integration tests against real Postgres — a contending real second
+session really holding the real advisory lock, two concurrent cycles
+yielding exactly one row, release-then-recapture, the disabled and
+omitted escape hatches, and the weekend gate short-circuiting before the
+lock is ever reached)
 Important: `Permission.VIEW_PORTFOLIO` is deliberately separate from
 `Permission.SUBMIT_PAPER_TRADE` — this module is read-only with respect
 to capital/orders (persisting a snapshot doesn't change that — see D027),
