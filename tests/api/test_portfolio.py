@@ -9,6 +9,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 
 from apps.api.app.auth.permissions import Permission
 from tests.api.test_trades import _get_token as get_token
@@ -623,12 +624,43 @@ async def test_an_unrecognised_cost_basis_method_is_422_not_a_silent_default():
     assert response.status_code == 422, response.text
 
 
+# ---------------------------------------------------------------------------
+# Phase 36 (D044): the persisted write path now carries the cost-basis method
+# too. The figures asserted below are the same hand-computed ones the read
+# endpoint's tests above use (see the comment block preceding
+# _seed_multi_lot_history) - deliberately, so a persisted FIFO snapshot is
+# checked against FIFO's independently-derived answer rather than against
+# whatever the code happened to store.
+# ---------------------------------------------------------------------------
+
+EXPECTED_BY_METHOD = {
+    # method -> (avg_cost/basis, total_realized_pnl, total_unrealized_pnl)
+    "average": (Decimal("105"), Decimal("225"), Decimal("125")),
+    "fifo": (Decimal("110"), Decimal("250"), Decimal("100")),
+    "lifo": (Decimal("100"), Decimal("200"), Decimal("150")),
+}
+
+
+def _assert_entry_matches(entry, method, label=""):
+    """One POST response or history entry must both carry `method` and carry
+    the numbers that method actually produces. Asserting the label alone
+    would pass on a row that recorded `fifo` next to average-cost figures,
+    which is the exact mislabelling this phase exists to prevent."""
+    basis, realized, unrealized = EXPECTED_BY_METHOD[method]
+    assert entry["cost_basis_method"] == method, (label, entry)
+    assert Decimal(entry["positions"][0]["avg_cost"]) == basis, label
+    assert Decimal(entry["total_realized_pnl"]) == realized, label
+    assert Decimal(entry["total_unrealized_pnl"]) == unrealized, label
+    # Method-independent figures are identical whatever the method.
+    assert Decimal(entry["cash"]) == Decimal("99700"), label
+    assert Decimal(entry["total_equity"]) == Decimal("100350"), label
+
+
 @pytest.mark.asyncio
-async def test_persisted_snapshots_stay_average_cost_regardless_of_the_query_param():
-    """D041 deliberately scopes the choice to the read-only GET. The POST
-    has no cost_basis_method, and passing one in its query string must not
-    change what gets stored - `portfolio_snapshots` records no method, so a
-    non-average row would be indistinguishable in GET .../history."""
+async def test_a_posted_snapshot_defaults_to_average_and_records_that_method():
+    """A body with no cost_basis_method must persist exactly the row it
+    persisted before D044 - average numbers - and must now say so rather
+    than leaving the method implicit."""
     async with (
         db_session() as session,
         active_user(
@@ -643,25 +675,208 @@ async def test_persisted_snapshots_stay_average_cost_regardless_of_the_query_par
             headers = {"Authorization": f"Bearer {token}"}
             await _seed_multi_lot_history(client, broker_id, headers)
 
-            response = await client.post(
+            posted = await client.post(
+                f"/brokers/{broker_id}/portfolio/snapshots",
+                headers=headers,
+                json={"marks": {"AAPL": "130"}},
+            )
+            assert posted.status_code == 201, posted.text
+
+            history = await client.get(
+                f"/brokers/{broker_id}/portfolio/history", headers=headers
+            )
+            assert history.status_code == 200, history.text
+
+        _assert_entry_matches(posted.json(), "average", "posted")
+        entries = history.json()["snapshots"]
+        assert len(entries) == 1
+        _assert_entry_matches(entries[0], "average", "history")
+
+
+@pytest.mark.asyncio
+async def test_a_fifo_snapshot_persists_fifo_numbers_and_reads_back_as_fifo():
+    """The gap D041 left open: FIFO on the write path, with the row saying
+    which method produced it so GET .../history cannot be misread."""
+    async with (
+        db_session() as session,
+        active_user(
+            session,
+            permissions=(Permission.SUBMIT_PAPER_TRADE.value, Permission.VIEW_PORTFOLIO.value),
+        ) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            headers = {"Authorization": f"Bearer {token}"}
+            await _seed_multi_lot_history(client, broker_id, headers)
+
+            posted = await client.post(
+                f"/brokers/{broker_id}/portfolio/snapshots",
+                headers=headers,
+                json={"marks": {"AAPL": "130"}, "cost_basis_method": "fifo"},
+            )
+            assert posted.status_code == 201, posted.text
+
+            history = await client.get(
+                f"/brokers/{broker_id}/portfolio/history", headers=headers
+            )
+            assert history.status_code == 200, history.text
+
+        _assert_entry_matches(posted.json(), "fifo", "posted")
+        _assert_entry_matches(history.json()["snapshots"][0], "fifo", "history")
+
+
+@pytest.mark.asyncio
+async def test_history_distinguishes_snapshots_captured_under_different_methods():
+    """The whole point of the column: three rows off one identical fill
+    history, carrying three different realized-P&L figures, each labelled
+    with the method that produced it. Without the label these would be an
+    incoherent equity series."""
+    async with (
+        db_session() as session,
+        active_user(
+            session,
+            permissions=(Permission.SUBMIT_PAPER_TRADE.value, Permission.VIEW_PORTFOLIO.value),
+        ) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            headers = {"Authorization": f"Bearer {token}"}
+            await _seed_multi_lot_history(client, broker_id, headers)
+
+            for method in ("average", "fifo", "lifo"):
+                posted = await client.post(
+                    f"/brokers/{broker_id}/portfolio/snapshots",
+                    headers=headers,
+                    json={"marks": {"AAPL": "130"}, "cost_basis_method": method},
+                )
+                assert posted.status_code == 201, (method, posted.text)
+
+            history = await client.get(
+                f"/brokers/{broker_id}/portfolio/history", headers=headers
+            )
+            assert history.status_code == 200, history.text
+
+        entries = history.json()["snapshots"]
+        assert len(entries) == 3
+        by_method = {entry["cost_basis_method"]: entry for entry in entries}
+        assert set(by_method) == {"average", "fifo", "lifo"}
+        for method, entry in by_method.items():
+            _assert_entry_matches(entry, method, method)
+
+        # And they genuinely differ, or the field is decorative.
+        assert len({entry["total_realized_pnl"] for entry in entries}) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_cost_basis_method_in_the_posts_query_string_is_ignored_and_said_so():
+    """D044 put the method in the POST *body*, not its query string (see the
+    route module docstring). A caller copying the GET's `?cost_basis_method=`
+    onto the POST gets average - which was already true pre-D044 and stays
+    true - but the response now names the method used, so the mistake is
+    visible instead of silently mislabelling the stored history."""
+    async with (
+        db_session() as session,
+        active_user(
+            session,
+            permissions=(Permission.SUBMIT_PAPER_TRADE.value, Permission.VIEW_PORTFOLIO.value),
+        ) as (user_id, email),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            headers = {"Authorization": f"Bearer {token}"}
+            await _seed_multi_lot_history(client, broker_id, headers)
+
+            posted = await client.post(
                 f"/brokers/{broker_id}/portfolio/snapshots",
                 headers=headers,
                 params={"cost_basis_method": "fifo"},
                 json={"marks": {"AAPL": "130"}},
             )
-            assert response.status_code == 201, response.text
-            posted = response.json()
+            assert posted.status_code == 201, posted.text
 
+        _assert_entry_matches(posted.json(), "average", "query-string ignored")
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognised_cost_basis_method_in_the_post_body_is_422():
+    """Fail closed on the write path too: a typo must never quietly persist
+    a row of numbers the caller did not ask for."""
+    async with (
+        db_session() as session,
+        active_user(session, permissions=(Permission.VIEW_PORTFOLIO.value,)) as (
+            user_id,
+            email,
+        ),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        async with api_client() as client:
+            token = await get_token(client, email)
+            response = await client.post(
+                f"/brokers/{broker_id}/portfolio/snapshots",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"marks": {}, "cost_basis_method": "hifo"},
+            )
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_a_row_written_without_the_new_column_reads_back_as_average_never_null():
+    """The migration's backward-compatibility guarantee (D044), exercised
+    against the real column rather than asserted in prose.
+
+    The INSERT below deliberately omits `cost_basis_method` entirely - which
+    is precisely the shape of every row written before the migration - so
+    the value under test is Postgres's own server_default, not anything the
+    application supplied. It must read back as the string `average` and must
+    be non-null: a null would surface as "method unknown", which is strictly
+    less true than what we actually know about those rows (the write path
+    was average-only until this phase).
+    """
+    snapshot_id = uuid.uuid4()
+    async with (
+        db_session() as session,
+        active_user(session, permissions=(Permission.VIEW_PORTFOLIO.value,)) as (
+            user_id,
+            email,
+        ),
+        paper_broker_row(session) as broker_id,
+        broker_grant(session, user_id=user_id, broker_id=broker_id),
+    ):
+        await session.execute(
+            text(
+                "INSERT INTO portfolio_snapshots "
+                "(id, broker_id, cash, total_equity, total_unrealized_pnl, "
+                " total_realized_pnl) "
+                "VALUES (:id, :broker_id, 100000, 100000, 0, 0)"
+            ),
+            {"id": snapshot_id, "broker_id": broker_id},
+        )
+        await session.commit()
+
+        stored = (
+            await session.execute(
+                text("SELECT cost_basis_method FROM portfolio_snapshots WHERE id = :id"),
+                {"id": snapshot_id},
+            )
+        ).scalar_one()
+        assert stored is not None
+        assert stored == "average"
+
+        async with api_client() as client:
+            token = await get_token(client, email)
             history = await client.get(
-                f"/brokers/{broker_id}/portfolio/history", headers=headers
+                f"/brokers/{broker_id}/portfolio/history",
+                headers={"Authorization": f"Bearer {token}"},
             )
 
-        # Average-cost numbers (225/125/105), NOT FIFO's (250/100/110).
-        assert Decimal(posted["total_realized_pnl"]) == Decimal("225")
-        assert Decimal(posted["total_unrealized_pnl"]) == Decimal("125")
-        assert Decimal(posted["positions"][0]["avg_cost"]) == Decimal("105")
-
         assert history.status_code == 200, history.text
-        stored = history.json()["snapshots"][0]
-        assert Decimal(stored["total_realized_pnl"]) == Decimal("225")
-        assert Decimal(stored["positions"][0]["avg_cost"]) == Decimal("105")
+        entries = history.json()["snapshots"]
+        assert len(entries) == 1
+        assert entries[0]["cost_basis_method"] == "average"

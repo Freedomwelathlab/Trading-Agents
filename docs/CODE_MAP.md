@@ -356,7 +356,12 @@ default — unchanged from D022 — or FIFO/LIFO lot tracking via the GET's
 optional `?cost_basis_method=` query param, whose lots are derived from
 the append-only fill history rather than any new per-lot table (which is
 why D022's "no per-lot data" objection no longer applies and no migration
-was needed). All three replay `orders`/`fills` in
+was needed for the read path). Phase 36/D044 extended the choice to the
+write path: the POST takes `cost_basis_method` as a *body* field and
+`portfolio_snapshots.cost_basis_method` (migration `0011`, `NOT NULL
+DEFAULT 'average'`) records which method produced each persisted row, so
+`GET .../history` reports it back rather than leaving a FIFO row
+indistinguishable from an average one. All three replay `orders`/`fills` in
 `filled_at` order; current open quantity comes from `BrokerPosition` (the
 execution layer's own authoritative current state, D014), not the fills
 replay, so a snapshot's position sizes always match what the execution

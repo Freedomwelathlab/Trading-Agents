@@ -67,6 +67,10 @@ async def lifespan(app: FastAPI):
             market_hours_gate=MarketHoursGate(
                 enabled=settings.portfolio_snapshot_market_hours_gate_enabled
             ),
+            # Phase 36 (D044): average unless explicitly configured
+            # otherwise. Whichever method is used is recorded on every row,
+            # so GET .../history never mixes incomparable P&L silently.
+            cost_basis_method=settings.portfolio_snapshot_cost_basis_method,
         )
         scheduler.start()
         app.state.portfolio_snapshot_scheduler = scheduler
@@ -93,6 +97,9 @@ async def lifespan(app: FastAPI):
             "weekend_utc"
             if settings.portfolio_snapshot_market_hours_gate_enabled
             else "DISABLED"
+        ),
+        portfolio_snapshot_cost_basis_method=(
+            settings.portfolio_snapshot_cost_basis_method.value
         ),
     )
     yield

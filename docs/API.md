@@ -264,11 +264,12 @@ price of the lots still open, so it does change as sells consume lots, and
 is `0` once the position is fully closed (no held quantity, no basis) —
 whereas `average` carries its last running average forward.
 
-This parameter is accepted on this read-only endpoint only.
-`POST .../portfolio/snapshots` and the snapshot scheduler always persist
-average-cost figures, because `portfolio_snapshots` records no method
-column and a stored FIFO row would be indistinguishable from an average
-one in `GET .../portfolio/history` (see D041).
+On this endpoint the method travels as a **query parameter**. The write
+path takes it as a **body field** instead — see
+`POST .../portfolio/snapshots` below. D041 originally scoped the choice to
+this read-only endpoint because `portfolio_snapshots` recorded no method
+column; Phase 36/D044 added that column, so the write path now offers it
+too and every persisted row names the method that produced it.
 
 Error responses: 401 (no/invalid token), 403 (missing `VIEW_PORTFOLIO` or
 no `BrokerGrant` for this broker), 404 (unknown `broker_id`), 422
@@ -368,7 +369,26 @@ explicitly POSTed here). Gated by the same `Permission.VIEW_PORTFOLIO` +
 a persisted record of the current state is still a "view" capability,
 not a stronger one.
 
-Request body: identical `PortfolioMarksRequest` shape as the GET above.
+Request body (`PortfolioSnapshotCaptureRequest`): the GET's `marks` plus an
+optional `cost_basis_method` (D044):
+```json
+{
+  "marks": {"AAPL": "130"},
+  "cost_basis_method": "fifo"
+}
+```
+`cost_basis_method` takes the same `average` (default) / `fifo` / `lifo`
+values as the GET's query parameter, computes the snapshot under that
+method **and records it on the persisted row**, so
+`GET .../portfolio/history` can never present a FIFO row's realized P&L
+as though it were average-cost. Omitting it persists exactly the
+average-cost row this endpoint has always persisted. An unrecognised value
+is a **422** and nothing is written.
+
+Note it is a **body field here, not a query parameter** (the GET's is a
+query parameter). A `?cost_basis_method=` on this POST's query string is
+ignored — but the response echoes the method actually used, so the mistake
+is visible rather than silently mislabelling stored history.
 
 Response (201, `PortfolioSnapshotHistoryEntry`):
 ```json
@@ -389,7 +409,8 @@ Response (201, `PortfolioSnapshotHistoryEntry`):
   ],
   "total_equity": "100200.00000000",
   "total_unrealized_pnl": "200.00000000",
-  "total_realized_pnl": "0"
+  "total_realized_pnl": "0",
+  "cost_basis_method": "average"
 }
 ```
 
@@ -413,6 +434,14 @@ Response (200, `PortfolioSnapshotHistoryResponse`):
   "offset": 0
 }
 ```
+
+Every entry carries the `cost_basis_method` it was captured under (D044).
+**A client must group or filter by this field before treating the series
+as one equity curve** — an `average` row and a `fifo` row off the same
+fill history carry incomparable `realized_pnl`/`avg_cost` figures. Rows
+written before D044's migration read `average`, which is what they are:
+the write path was average-only until that phase, so this is a recorded
+fact, not a default standing in for an unknown.
 
 Error responses: 401, 403 (same as the GET above), 404 (unknown
 `broker_id`). An empty `snapshots` list (200, not an error) means no

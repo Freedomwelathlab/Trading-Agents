@@ -61,6 +61,16 @@ and it can be disabled with
 `PORTFOLIO_SNAPSHOT_MARKET_HOURS_GATE_ENABLED=false`. Read that module's
 docstring before assuming it knows anything about holidays or session
 times; it does not, on purpose.
+
+COST BASIS (Phase 36, D044)
+---------------------------
+Scheduled rows are computed and recorded under
+`PORTFOLIO_SNAPSHOT_COST_BASIS_METHOD`, which defaults to `average` - the
+D030 behaviour, unchanged. This became safe to offer only because
+`portfolio_snapshots` now records the method per row (D044's migration);
+before that, a non-average scheduled row would have been silently
+indistinguishable from an average one in `GET .../history`, which is
+exactly why D041 refused to expose the choice here.
 """
 
 import asyncio
@@ -83,6 +93,7 @@ from apps.api.app.portfolio.market_hours import (
     MarketHoursGate,
     utc_now,
 )
+from apps.api.app.portfolio.models import CostBasisMethod
 from apps.api.app.portfolio.persistence import persist_portfolio_snapshot
 from apps.api.app.portfolio.snapshot import compute_portfolio_snapshot
 
@@ -236,6 +247,7 @@ async def capture_scheduled_snapshot(
     session: AsyncSession,
     *,
     market_data_router: MarketDataRouter | None,
+    cost_basis_method: CostBasisMethod = CostBasisMethod.AVERAGE,
 ) -> ScheduledSnapshotOutcome:
     """Attempts one broker's automatic snapshot. Never raises for a data
     gap; returns a typed outcome instead.
@@ -248,6 +260,12 @@ async def capture_scheduled_snapshot(
     number into append-only history would be manufacturing a permanent
     record of a cash balance no `broker_accounts` row ever asserted - so
     here it skips instead (SKIPPED_NO_BROKER_ACCOUNT).
+
+    `cost_basis_method` (D044) is threaded into both the compute and the
+    persist call from one variable, so the row can never record a method
+    other than the one its figures were produced under. It defaults to
+    AVERAGE - D030's behaviour exactly - and only changes if an operator
+    sets PORTFOLIO_SNAPSHOT_COST_BASIS_METHOD.
     """
     symbols = await open_position_symbols(session, broker_id)
 
@@ -282,6 +300,7 @@ async def capture_scheduled_snapshot(
             session,
             marks=marks,
             default_starting_cash=None,
+            cost_basis_method=cost_basis_method,
         )
     except BrokerAccountNotFoundError as exc:
         return ScheduledSnapshotOutcome(
@@ -296,7 +315,9 @@ async def capture_scheduled_snapshot(
             detail=str(exc),
         )
 
-    row = await persist_portfolio_snapshot(session, broker_id, computed)
+    row = await persist_portfolio_snapshot(
+        session, broker_id, computed, cost_basis_method=cost_basis_method
+    )
     return ScheduledSnapshotOutcome(
         broker_id=broker_id,
         status=ScheduledSnapshotStatus.CAPTURED,
@@ -325,6 +346,7 @@ async def run_snapshot_cycle(
     market_data_router: MarketDataRouter | None,
     market_hours_gate: MarketHoursGate | None = None,
     as_of: datetime | None = None,
+    cost_basis_method: CostBasisMethod = CostBasisMethod.AVERAGE,
 ) -> SnapshotCycleResult:
     """One full pass: snapshot every eligible broker, independently.
 
@@ -372,7 +394,10 @@ async def run_snapshot_cycle(
     for broker_id in broker_ids:
         async with session_factory() as session:
             outcome = await capture_scheduled_snapshot(
-                broker_id, session, market_data_router=market_data_router
+                broker_id,
+                session,
+                market_data_router=market_data_router,
+                cost_basis_method=cost_basis_method,
             )
         outcomes.append(outcome)
 
@@ -429,6 +454,7 @@ class PortfolioSnapshotScheduler:
         interval_seconds: int,
         market_hours_gate: MarketHoursGate | None = None,
         clock: Callable[[], datetime] = utc_now,
+        cost_basis_method: CostBasisMethod = CostBasisMethod.AVERAGE,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError(
@@ -445,6 +471,9 @@ class PortfolioSnapshotScheduler:
             market_hours_gate if market_hours_gate is not None else MarketHoursGate(enabled=False)
         )
         self._clock = clock
+        # D044: AVERAGE unless an operator opts out, so an existing
+        # deployment's history keeps being written exactly as before.
+        self._cost_basis_method = cost_basis_method
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -462,6 +491,7 @@ class PortfolioSnapshotScheduler:
             market_hours_gate=(
                 "weekend_utc" if self._market_hours_gate.enabled else "DISABLED"
             ),
+            cost_basis_method=self._cost_basis_method.value,
         )
 
     async def stop(self) -> None:
@@ -492,6 +522,7 @@ class PortfolioSnapshotScheduler:
             market_data_router=self._market_data_router,
             market_hours_gate=self._market_hours_gate,
             as_of=self._clock(),
+            cost_basis_method=self._cost_basis_method,
         )
 
     async def _run(self) -> None:
