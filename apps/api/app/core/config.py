@@ -181,6 +181,31 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
 
+    auth_max_failed_login_attempts: int = 5
+    """Phase 39 (docs/DECISIONS.md D049): how many CONSECUTIVE failed
+    password attempts against one existing, active account before that
+    account is locked for `auth_lockout_duration_minutes`. A successful
+    login resets the counter to zero, so this only ever fires on a run of
+    failures, never on an ordinary user who mistypes once a week.
+
+    Five is the threshold because it is far above the realistic
+    human-typo rate for a password manager era login and far below the
+    number of guesses that makes an online dictionary attack worthwhile;
+    combined with a 15-minute lock it caps an attacker at 20 guesses an
+    hour per account. Set to 0 to disable the lockout entirely (the route
+    then behaves exactly as it did before Phase 39) - negative values are
+    rejected at startup."""
+
+    auth_lockout_duration_minutes: int = 15
+    """Phase 39 (docs/DECISIONS.md D049): how long an account stays locked
+    once `auth_max_failed_login_attempts` consecutive failures are
+    reached. The lock expires on its own - there is no unlock endpoint and
+    no email flow, so a duration long enough to require one would strand a
+    legitimate user with no recourse. Fifteen minutes is short enough to
+    be a nuisance rather than a lockout-as-denial-of-service against the
+    real account holder, and long enough to make sustained guessing
+    pointless. Must be positive whenever the lockout is enabled."""
+
     @model_validator(mode="after")
     def _enforce_fail_closed_live_gate(self) -> "Settings":
         """Fail closed: LIVE mode requires the explicit enable flag (spec §46/§56).
@@ -206,6 +231,26 @@ class Settings(BaseSettings):
                 "PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS must be positive. A zero or "
                 "negative interval would busy-loop the snapshot cycle against the "
                 "database and the market data vendor."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_sane_login_lockout(self) -> "Settings":
+        """A negative attempt threshold or a non-positive lock duration is
+        always a configuration mistake, and both fail in the dangerous
+        direction (no lockout at all, or a lock that expires the instant it
+        is set). Caught at startup rather than at the first failed login."""
+        if self.auth_max_failed_login_attempts < 0:
+            raise ValueError(
+                "AUTH_MAX_FAILED_LOGIN_ATTEMPTS must be >= 0. Use 0 to disable the "
+                "login lockout deliberately; a negative value is never meaningful."
+            )
+        if self.auth_max_failed_login_attempts > 0 and self.auth_lockout_duration_minutes <= 0:
+            raise ValueError(
+                "AUTH_LOCKOUT_DURATION_MINUTES must be positive when "
+                "AUTH_MAX_FAILED_LOGIN_ATTEMPTS is greater than 0. A zero or negative "
+                "duration would lock an account and immediately unlock it, which is "
+                "no protection at all."
             )
         return self
 

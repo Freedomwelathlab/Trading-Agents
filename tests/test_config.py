@@ -81,3 +81,43 @@ def test_the_snapshot_cycle_lock_can_be_disabled_to_restore_d030_behaviour():
         portfolio_snapshot_cycle_lock_enabled=False,
     )
     assert settings.portfolio_snapshot_cycle_lock_enabled is False
+
+
+def test_the_login_lockout_defaults_to_five_attempts_and_fifteen_minutes():
+    """D049's defaults are part of the security posture, not an arbitrary
+    pair - an operator who never sets these must still get a real lockout."""
+    settings = Settings(
+        _env_file=None, jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256"
+    )
+    assert settings.auth_max_failed_login_attempts == 5
+    assert settings.auth_lockout_duration_minutes == 15
+
+
+def test_the_login_lockout_can_be_disabled_with_zero_attempts():
+    settings = Settings(
+        _env_file=None,
+        jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
+        auth_max_failed_login_attempts=0,
+    )
+    assert settings.auth_max_failed_login_attempts == 0
+
+
+def test_a_negative_failed_login_threshold_fails_at_config_load():
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
+            auth_max_failed_login_attempts=-1,
+        )
+
+
+def test_a_non_positive_lockout_duration_fails_while_the_lockout_is_enabled():
+    """A zero-minute lock would set and expire in the same instant, which
+    reads as protection in the config file and is none in practice."""
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
+            auth_max_failed_login_attempts=5,
+            auth_lockout_duration_minutes=0,
+        )

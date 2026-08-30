@@ -10,6 +10,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
@@ -70,6 +71,21 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     role_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("roles.id"))
     role: Mapped[Role | None] = relationship()
+
+    failed_login_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    """CONSECUTIVE failed password attempts since the last successful login
+    (docs/DECISIONS.md D049). Reset to 0 on every success, so this is a run
+    length, not a lifetime total - it is not an audit trail and must not be
+    read as one."""
+
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When set and in the future, POST /auth/login refuses this account even
+    with the correct password (docs/DECISIONS.md D049). NULL means never
+    locked; a past value means a lock that has since expired, which the
+    login route treats as a clean slate rather than clearing eagerly."""
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
