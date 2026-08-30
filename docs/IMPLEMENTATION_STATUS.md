@@ -952,9 +952,10 @@ parallelize against). Frontend candidates remaining after Phase 20/D023
 and Phase 24/D026, now further reduced by Phase 28/D031/D032 (the
 historical performance chart, the users/roles/grants listing UI, and
 session expiry UX are all built) and by Phase 29/D034 (broker discovery,
-backend and UI): what remains is Playwright e2e coverage — the latter
-deliberately skipped in Phase 28 because it needs a new tool dependency,
-open pending explicit permission to add one. Re-verify D018/D019's LLM-completion path
+backend and UI): Playwright e2e coverage — deliberately skipped in
+Phase 28 because it needed a new tool dependency — is now DONE too
+(Phase 37/D045, 11/11 specs passing against a real backend). No frontend
+candidates remain. Re-verify D018/D019's LLM-completion path
 once OmniRoute (or another Anthropic-Messages-API-compatible endpoint) is
 reachable — D021 confirmed the Longbridge/history side works with real
 data, but no real LLM completion has been exercised yet, only fakes.
