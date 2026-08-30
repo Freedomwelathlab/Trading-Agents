@@ -3942,3 +3942,65 @@ control proving the lock is what prevents it. In both runs the
 market-data-less broker was skipped honestly with
 `skipped_market_data_not_configured`, never valued.
 Status: Implemented and verified as above.
+
+---
+
+**D048 — Full post-merge integration verification (Phase 38): clean run, real merged test count confirmed at 379**
+
+Date: 2026-08-30
+Decision: Ran a from-scratch full backend integration verification of the
+fully-merged main branch at `b0040ea` (Phase 38's multi-worker
+snapshot-scheduler advisory-lock code, D047, merged), following the exact
+D028/D033/D036/D040/D043/D046 precedent: fresh Python venv (discarded
+after the run), `pip install -e ".[dev]"`, `ruff check .`, `mypy apps`, a
+real Postgres 16 (timescaledb image) and Redis 7 via a standalone
+throwaway `docker-compose.verify38.yml` (not an override of the base
+compose file, per D040's port-merge lesson) under its own compose project
+name `tosverify38` on remapped host ports 15532/16479, `alembic upgrade
+head` against that database, then `pytest tests/ -q` with `DATABASE_URL`
+and `REDIS_URL` exported directly in-shell (no throwaway `.env` file
+needed, since `apps/api/app/core/config.py`'s `Settings` reads environment
+variables ahead of its `.env` file). The user's own dev stack
+(`trading-os-postgres-1`/`trading-os-redis-1` on default ports 5432/6379,
+a uvicorn process on port 8000, a Next.js dev server on port 3005, all
+using the real root `.env`) was left running and untouched throughout,
+confirmed still up both before and after this pass via `docker ps` and
+live HTTP checks against 8000 and 3005; no bare `docker compose down` was
+run and the real `.env` file was never read or written.
+Verified live: `ruff check .` reported "All checks passed!" with zero
+findings. `mypy apps` reported "Success: no issues found in 76 source
+files" (76 vs. D046's 75 reflects Phase 38's new
+`apps/api/app/portfolio/cycle_lock.py`) with zero findings. `alembic
+upgrade head` applied all eleven migrations in sequence — 0001 through
+Phase 36's `0011_portfolio_snapshots_cost_basis_method`, still the
+current head — against a real, freshly created database with no manual
+intervention and no new migration from Phase 38, exactly as expected for
+an advisory-lock feature that adds no schema. `pytest tests/ -q` collected
+and ran the entire suite against that same real Postgres/Redis pair:
+**379 tests, all passing**, 3 warnings (the same two
+`InsecureKeyLengthWarning`s and one `StarletteDeprecationWarning` seen in
+every prior verification pass — neither new nor actionable), zero
+failures, zero errors, in a clean run. One transient failure surfaced on
+the first attempt (`test_missing_jwt_secret_key_fails_closed`) — the same
+recurring D036/D040/D043/D046 shell-environment-leakage artifact: this
+verification's own shell had exported `JWT_SECRET_KEY` ahead of `alembic
+upgrade head` and the first `pytest` run, which leaked into that one
+test's `Settings(_env_file=None)` construction; unsetting
+`JWT_SECRET_KEY` (keeping only `DATABASE_URL`/`REDIS_URL` exported) and
+re-running reproduced the clean 379-pass result with no code changes
+required. This is not a cross-phase integration bug and nothing in
+`apps/` was touched.
+Reason: this pass found no real cross-phase integration bug in Phase 38's
+advisory-lock cycle guard (D047) against any earlier phase's work — ruff,
+mypy, all eleven migrations, and the full backend test suite were all
+clean once the verification's own environment leakage was corrected (the
+same class of leakage D036, D040, D043, and D046 already documented, now
+confirmed to recur a fifth time with the same fix). The confirmed 379
+matches Phase 38's own independently-reported total exactly, since no
+other phase merged in between D047 and this verification.
+Alternatives: none considered — this is a verification pass, not a
+design decision; the only question was whether Phase 38's independently-
+reported 379 total held up in a real from-scratch clean-room run against
+merged `main`, and a clean-room run was the only way to be sure rather
+than assume from the phase's own report alone.
+Status: Implemented and verified as above.

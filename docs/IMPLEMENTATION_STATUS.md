@@ -1302,6 +1302,42 @@ verified live by Phase 37's own agent) — build succeeded, and **99 Vitest
 tests, all passing**, exactly matching Phase 37's own report, unchanged.
 See docs/DECISIONS.md D046 for the full verification record.
 
+A full from-scratch backend verification run 2026-08-30 against `main` at
+`b0040ea` (Phase 38's multi-worker snapshot-scheduler advisory lock
+merged) confirmed the true post-merge total is **379 tests, all
+passing** — exactly Phase 38's own independently-reported 379, since
+Phase 38 added its new coverage on top of the 359 D046-confirmed
+baseline and no other phase landed in between. Following the same
+D028/D033/D036/D040/D043/D046 precedent: fresh Python venv, `pip install
+-e ".[dev]"`, `ruff check .` (clean, "All checks passed!"), `mypy apps`
+(clean, "Success: no issues found in 76 source files" — 76 vs. D046's 75
+reflects Phase 38's new `apps/api/app/portfolio/cycle_lock.py`), a
+separately-named throwaway Postgres/Redis pair on remapped host ports
+15532/16479 under its own compose project name `tosverify38` (the user's
+own default-port 5432/6379 dev stack, plus their uvicorn on 8000 and
+Next.js dev server on 3005, was left completely untouched and confirmed
+still running via `docker ps` and live HTTP checks against 8000/3005
+before and after), `alembic upgrade head` — all eleven migrations (0001
+through Phase 36's `0011_portfolio_snapshots_cost_basis_method`, still
+the current head) applied cleanly in sequence against a real Postgres 16
+(timescaledb image) database with no manual intervention and no new
+migration from Phase 38, exactly as expected for an advisory-lock feature
+that adds no schema — and `pytest tests/ -q` against that same real
+database: 379 passed, 3 pre-existing warnings (the same two
+`InsecureKeyLengthWarning`s and one `StarletteDeprecationWarning` seen in
+every prior verification pass — neither new nor actionable), zero
+failures, zero errors, in the clean run. One transient failure surfaced
+on the first attempt (`test_missing_jwt_secret_key_fails_closed`) — the
+same recurring D036/D040/D043/D046 shell-environment-leakage artifact:
+this verification's own shell had exported `JWT_SECRET_KEY` ahead of
+`alembic upgrade head` and the first `pytest` run, which leaked into that
+one test's `Settings(_env_file=None)` construction; re-running with only
+`DATABASE_URL`/`REDIS_URL` set (and `JWT_SECRET_KEY` unset) reproduced
+the clean 379-pass result with no code changes required. No real
+cross-phase integration bug was found between Phase 38's advisory-lock
+cycle guard (D047) and any earlier phase's work. See docs/DECISIONS.md
+D048 for the full verification record.
+
 
 208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real
