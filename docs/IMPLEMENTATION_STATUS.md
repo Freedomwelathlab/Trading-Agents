@@ -1222,6 +1222,40 @@ integration bug was found between Phase 34's cost-basis method (D041) and
 Phase 35's scheduler gate (D042). See docs/DECISIONS.md D043 for the full
 verification record.
 
+A full from-scratch backend verification run 2026-08-30 against `main` at
+`034f4c3` (Phase 36 FIFO/LIFO-aware portfolio-snapshot cost-basis
+persistence and Phase 37 frontend-only work both merged) confirmed the
+true post-merge total is unchanged at **359 tests, all passing** — Phase
+36's own report of 359, independently reconfirmed, since Phase 37 shipped
+no backend changes and no new `tests/*.py` files. Following the same
+D028/D033/D036/D040/D043 precedent: fresh Python venv, `pip install -e
+".[dev]"`, `ruff check .` (clean, "All checks passed!"), `mypy apps`
+(clean, "Success: no issues found in 75 source files"), a separately-named
+throwaway Postgres/Redis pair on remapped host ports 15432/16379 under its
+own compose project name `tos-verify` (the user's own default-port
+5432/6379 dev stack, plus their uvicorn on 8000 and Next.js dev server on
+3005, was left completely untouched and confirmed still running before
+and after), `alembic upgrade head` — all eleven migrations (0001 through
+Phase 36's `0011_portfolio_snapshots_cost_basis_method`) applied cleanly
+in sequence against a real Postgres 16 (timescaledb image) database with
+no manual intervention and no new migration beyond 0011, as expected —
+and `pytest tests/ -q` against that same real database: 359 passed, 3
+pre-existing warnings (the same two `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass), zero
+failures, zero errors. One transient failure surfaced on the first
+attempt (`test_missing_jwt_secret_key_fails_closed`) — the same shell-
+environment-leakage artifact documented in D036, D040, and D043, this
+time from this verification's own shell exporting `JWT_SECRET_KEY` via its
+throwaway `.env` file; re-running with that variable unset reproduced the
+clean 359-pass result with no code changes required. No real cross-phase
+integration bug was found. A separate frontend check was also run:
+`cd apps/web && npm install && npm run build && npm test` (Vitest unit
+tests only, per this pass's scope — the new Playwright e2e suite added in
+Phase 37 needs its own real backend/DB setup and was skipped here, already
+verified live by Phase 37's own agent) — build succeeded, and **99 Vitest
+tests, all passing**, exactly matching Phase 37's own report, unchanged.
+See docs/DECISIONS.md D046 for the full verification record.
+
 
 208 tests, all passing - confirmed 2026-08-29 by a full from-scratch
 backend verification (fresh venv, `ruff check .`, `mypy apps`, real

@@ -3750,3 +3750,72 @@ suit a test; using `localhost` costs nothing. (d) Folding e2e into
 `npm test` — rejected: it would make the unit suite unrunnable without
 Docker, a database, and a browser.
 Status: Implemented and verified as above.
+
+---
+
+**D046 — Full post-merge integration verification (Phases 36/37): clean run, real merged test count confirmed at 359 backend / 99 Vitest**
+
+Date: 2026-08-30
+Decision: Ran a from-scratch full backend integration verification of the
+fully-merged main branch at `034f4c3` (Phase 36's new migration 0011,
+`portfolio_snapshots.cost_basis_method`, and Phase 37's frontend-only
+Playwright e2e suite both merged), following the exact
+D028/D033/D036/D040/D043 precedent: fresh Python venv (discarded after
+the run), `pip install -e ".[dev]"`, `ruff check .`, `mypy apps`, a real
+Postgres 16 (timescaledb image) and Redis 7 via a standalone throwaway
+`docker-compose.verify.yml` (not an override of the base compose file,
+per D040's port-merge lesson) under its own compose project name
+`tos-verify` on remapped host ports 15432/16379, `alembic upgrade head`
+against that database, then `pytest tests/ -q` with a throwaway
+`.env.verify` pointing `DATABASE_URL`/`REDIS_URL` at the remapped pair.
+The user's own dev stack (`trading-os-postgres-1`/`trading-os-redis-1` on
+default ports 5432/6379, a uvicorn process on port 8000, a Next.js dev
+server on port 3005, all using the real root `.env`) was left running and
+untouched throughout, confirmed still up both before and after this pass
+via `docker ps` and live HTTP checks against 8000 and 3005; no bare
+`docker compose down` was run and the real `.env` file was never read or
+written. Separately, `cd apps/web && npm install && npm run build && npm
+test` was run to check the frontend, deliberately skipping `npm run
+test:e2e` per this task's scope — that Playwright suite needs its own
+real backend/DB setup and was already verified live by Phase 37's own
+agent (see D045).
+Verified live: `ruff check .` reported "All checks passed!" with zero
+findings. `mypy apps` reported "Success: no issues found in 75 source
+files" with zero findings. `alembic upgrade head` applied all eleven
+migrations in sequence — 0001 through Phase 36's
+`0011_portfolio_snapshots_cost_basis_method` — against a real, freshly
+created database with no manual intervention and no migration beyond
+0011, as expected. `pytest tests/ -q` collected and ran the entire suite
+against that same real Postgres/Redis pair: **359 tests, all passing**, 3
+warnings (the same two pre-existing `InsecureKeyLengthWarning`s and one
+`StarletteDeprecationWarning` seen in every prior verification pass —
+neither new nor actionable), zero failures, zero errors, in a clean run.
+One transient failure surfaced on the first attempt
+(`test_missing_jwt_secret_key_fails_closed`) — the same recurring
+D036/D040/D043 shell-environment-leakage artifact: this verification's
+own shell had exported `JWT_SECRET_KEY` via `set -a; source .env.verify`,
+which leaked into that one test's `Settings(_env_file=None)`
+construction; unsetting `JWT_SECRET_KEY` and re-running reproduced the
+clean 359-pass result with no code changes required. This is not a
+cross-phase integration bug and nothing in `apps/` was touched. On the
+frontend: `npm install` and `npm run build` both succeeded with zero
+type errors, and `npm test` (Vitest only) reported **99 tests, all
+passing** across 12 test files — exactly Phase 37's own reported count,
+unchanged, since Phase 37 added no new Vitest test file.
+Reason: this pass found no real cross-phase integration bug between
+Phase 36's cost-basis-method persistence (migration 0011, D044) and Phase
+37's frontend-only e2e work — ruff, mypy, all eleven migrations, and the
+full backend test suite were all clean once the verification's own
+environment leakage was corrected (the same class of leakage D036, D040,
+and D043 already documented, now confirmed to recur a fourth time with
+the same fix). The confirmed 359 matches Phase 36's own independently-
+reported total exactly, since Phase 37 shipped no backend code and no new
+`tests/*.py` file; the confirmed 99 Vitest tests likewise match Phase
+37's own report exactly.
+Alternatives: none considered — this is a verification pass, not a
+design decision; the only question was whether Phase 36's independently-
+reported 359 total held up in a real from-scratch clean-room run against
+merged `main`, and whether Phase 37's frontend build and Vitest suite
+still passed unchanged, and a clean-room run was the only way to be sure
+rather than assume from either phase's own report alone.
+Status: Implemented and verified as above.
