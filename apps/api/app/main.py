@@ -10,6 +10,7 @@ from apps.api.app.api.routes.backtests import router as backtests_router
 from apps.api.app.api.routes.brokers import router as brokers_router
 from apps.api.app.api.routes.emergency_stop import router as emergency_stop_router
 from apps.api.app.api.routes.emergency_stop import status_router as emergency_stop_status_router
+from apps.api.app.api.routes.health import router as health_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
@@ -135,12 +136,8 @@ app.include_router(marketdata_router)
 app.include_router(portfolio_router)
 app.include_router(backtests_router)
 app.include_router(brokers_router)
-
-
-@app.get("/health")
-async def health() -> dict:
-    return {
-        "status": "ok",
-        "trading_mode": settings.trading_mode.value,
-        "live_trading_enabled": settings.live_trading_enabled,
-    }
+# Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
+# readiness probe (`/health/ready`) moved out of this module into their own
+# router - see apps/api/app/api/routes/health.py for why the two are
+# separate endpoints rather than one endpoint that checks the database.
+app.include_router(health_router)

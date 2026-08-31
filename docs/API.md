@@ -1,10 +1,57 @@
 # API
 
-## `GET /health`
+## `GET /health` — liveness
 
 Returns `{"status": "ok", "trading_mode": "<research|paper|live>", "live_trading_enabled": <bool>}`.
-No auth yet (no auth exists in the codebase). Reflects the actual configured
-`Settings`, never a fabricated value.
+No auth. Reflects the actual configured `Settings`, never a fabricated value.
+Body shape unchanged since Phase 1.
+
+This is a **liveness** probe (Phase 41, D054): it answers "is this process
+alive", performs no I/O, checks no dependency, and therefore stays 200 even
+while the database is unreachable. That is deliberate — an orchestrator
+restarts a container whose liveness probe fails, and restarting the process
+does not fix a down database. Do not use this endpoint to decide whether the
+instance can serve traffic; use `/health/ready` for that.
+
+## `GET /health/ready` — readiness
+
+No auth. Runs a real `SELECT 1` against Postgres through the application's
+own SQLAlchemy engine (so it exercises the same connection pool real
+requests draw from), bounded by `HEALTH_READINESS_TIMEOUT_SECONDS`
+(default `3.0`).
+
+`200` when the database answered:
+
+```json
+{"status": "ready", "checks": {"database": {"status": "ok"}}}
+```
+
+`503` when it did not — same body shape, never FastAPI's `{"detail": ...}`,
+so a consumer parses one schema in both cases:
+
+```json
+{"status": "not_ready",
+ "checks": {"database": {"status": "error", "reason": "connection_failed",
+                         "error_type": "ConnectionRefusedError"}}}
+```
+
+```json
+{"status": "not_ready",
+ "checks": {"database": {"status": "error", "reason": "timeout",
+                         "timeout_seconds": 3.0}}}
+```
+
+`reason` is a fixed vocabulary: `connection_failed` or `timeout`. On
+`connection_failed` the exception's **type name** is reported and its
+message never is — a driver error message can carry the DSN, and the DSN
+carries the database password (spec §38, `docs/TRADING_SAFETY.md`).
+
+**No Redis check.** Redis is provisioned in `docker-compose.yml` and
+`REDIS_URL` exists, but no Python code in this repository opens a Redis
+connection yet — the `redis` package is an unused declared dependency.
+Checking a connection the app never makes would be fabricated signal and
+could fail the service over a dependency no request path needs. The check
+belongs here when the first real Redis client lands, and not before.
 
 ## `POST /auth/login`
 

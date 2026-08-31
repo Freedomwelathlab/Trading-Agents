@@ -1,6 +1,11 @@
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
 
 from apps.api.app.core.config import get_settings
@@ -27,3 +32,17 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     share one engine and one connection pool rather than the scheduler
     quietly opening a second pool of its own."""
     return _session_factory
+
+
+def get_engine() -> AsyncEngine:
+    """The one process-wide engine, for callers that need a connection
+    without a session on top of it.
+
+    Phase 41 (D054)'s readiness probe is the only such caller today: it
+    wants to know whether *this app's own connection pool* can reach
+    Postgres, so it must use this exact engine rather than dialling the
+    database independently - a probe that opened its own connection could
+    report "ready" while the pool every real request draws from is
+    exhausted or broken, which is precisely the false-positive the probe
+    exists to prevent."""
+    return _engine

@@ -39,6 +39,22 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://trading_os:trading_os@localhost:5432/trading_os"
     redis_url: str = "redis://localhost:6379/0"
 
+    health_readiness_timeout_seconds: float = 3.0
+    """Hard wall-clock cap on the database check behind `GET /health/ready`
+    (Phase 41, docs/DECISIONS.md D054).
+
+    A readiness probe that can hang is worse than one that fails: an
+    orchestrator polling a probe which never answers gets a timeout at ITS
+    layer, on ITS schedule, and in the meantime the probe is holding a
+    pooled connection that real requests want. Bounding the check here
+    means a wedged database produces a fast, explicit 503 with
+    `reason: "timeout"` rather than a hung request.
+
+    Deliberately shorter than any sane orchestrator probe timeout (K8s
+    `timeoutSeconds` defaults to 1s but is commonly raised to 5-10s), so
+    this app is the thing that decides the check failed, not the caller.
+    Does NOT apply to `GET /health`, which performs no I/O at all."""
+
     emergency_stop_active: bool = False
     """BOOTSTRAP DEFAULT ONLY as of Phase 33 (docs/DECISIONS.md D039).
 

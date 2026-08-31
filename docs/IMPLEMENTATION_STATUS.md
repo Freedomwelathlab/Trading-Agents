@@ -1061,6 +1061,38 @@ optimization.
   `total_equity = 100100`. Weekday behavior in tests uses an **injected**
   Monday instant, not a real one.
 
+- Phase 41: production readiness — a real readiness probe and a
+  multi-stage, non-root API image (2026-08-31, D054). **(1) `GET /health`
+  was fake.** It reported `"status": "ok"` from in-process `Settings`
+  alone and never checked whether the app could reach Postgres, so an
+  instance with an unreachable database advertised itself as healthy and
+  an orchestrator would have kept routing traffic to it. `/health` is now
+  explicitly the **liveness** probe (unchanged body, no I/O — deliberately
+  stays 200 during a database outage, because restarting a process does
+  not fix a down database and a dependency-checking liveness probe would
+  crash-loop every replica). The new **`GET /health/ready`** runs a real
+  `SELECT 1` through the app's own engine, bounded by
+  `HEALTH_READINESS_TIMEOUT_SECONDS` (default 3.0), and returns 503 with a
+  fixed-vocabulary `reason` (`connection_failed` / `timeout`) and the same
+  body shape as its 200. Exception *type names* only, never messages — a
+  DSN error carries the password and this endpoint is unauthenticated.
+  **No Redis check**: Redis is provisioned but still unwired in any Python
+  code (re-confirmed this phase), so checking it would be fabricated
+  signal. **(2) `apps/api/Dockerfile` was single-stage and ran as root.**
+  Now `builder` (deps → `/opt/venv`) + `runtime` (venv, app code,
+  `packages/`, `migrations/`, `alembic.ini`), `USER appuser` before `CMD`,
+  pip/setuptools/wheel removed from both the venv and `/usr/local`. Port,
+  CMD, and env-var contract unchanged; no new dependency; no migration.
+  Image **373MB → 354MB** (an intermediate version was briefly *larger*
+  at 387MB — see D054). **404 backend tests passing** over the measured
+  400 baseline, `ruff check .` clean, `mypy apps` clean (78 source files,
+  77 before). Live-verified by actually running the rebuilt image: `whoami`
+  → `appuser`, `alembic current` → `0012 (head)` from inside it, and the
+  full probe cycle against a real isolated Postgres — healthy 200/200,
+  Postgres stopped → `/health` still 200 while `/health/ready` → 503
+  `reason: "timeout"`, Postgres back → `/health/ready` 200 again with the
+  API container never restarted.
+
 - Phase 40: CI hardening — a frontend job, two long-standing CI-breaking
   bugs fixed, migration round-trip confirmed sound (2026-08-31, D052).
   **(1) `apps/web` now has CI at all.** A second `web` job in

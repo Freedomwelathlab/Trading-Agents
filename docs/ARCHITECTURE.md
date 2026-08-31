@@ -316,6 +316,27 @@ body on GET/HEAD at all; that one call goes through `node:http`/
 ## Deployment
 
 `docker-compose.yml` runs Postgres, Redis, and the API locally. No
-staging/production deployment config exists yet. `apps/web/` is not yet
+staging/production deployment config exists yet.
+
+`apps/api/Dockerfile` is **multi-stage and runs as a non-root user** since
+Phase 41 (D054). A `builder` stage resolves dependencies from
+`pyproject.toml` into `/opt/venv`; the `runtime` stage copies that venv plus
+the app code, `packages/`, `migrations/`, and `alembic.ini`, then drops to
+`appuser` before `CMD`. The exposed port (8000), the uvicorn command, and
+the environment-variable contract are unchanged. Nothing in the image runs
+migrations on start — `docker-compose.yml`'s `api` service starts uvicorn
+directly and expects `alembic upgrade head` to have been run out-of-band —
+but `alembic.ini`/`migrations/` ship anyway so
+`docker compose run --rm api alembic upgrade head` works from the same
+image.
+
+Two probes, split along Kubernetes liveness/readiness lines but not
+Kubernetes-specific (D054): `GET /health` is liveness (no dependency
+check, so a database outage never triggers a restart loop) and
+`GET /health/ready` is readiness (real `SELECT 1`, 503 when the database is
+unreachable, so a degraded instance leaves the rotation instead of
+advertising itself as healthy).
+
+`apps/web/` is not yet
 part of `docker-compose.yml` — it runs via `npm run dev`/`npm run build`
 + `npm run start` against `API_BASE_URL` (see `apps/web/README.md`).
