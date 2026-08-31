@@ -4653,3 +4653,76 @@ Cleanup: the `tradingos-p41` stack was torn down with `-v`,
 `docker-compose.p41.yml`, `.venv-p41`, and the `tradingos-p41-api` images
 were removed. No `.env` file was created at any point — every variable was
 shell-exported for this session only.
+
+**D055 — Independent full from-scratch integration re-verification of Phase 41: readiness probe and multi-stage non-root image both confirmed genuinely working**
+
+Date: 2026-08-31
+Decision: Ran a third, fully independent from-scratch integration
+verification of the merged `main` branch at `db36ba8` (Phase 41's
+production-readiness work — the real `/health`/`/health/ready` split and
+the multi-stage, non-root API image, D054 — already merged), specifically
+to independently rebuild D054's own artifacts and confirm its two headline
+claims rather than trust its self-report, following the same
+D028/D033/D036/D040/D043/D046/D048/D051/D053 precedent. This pass used its
+own fresh Python 3.13 venv (`.venv-verify41`, 3.11/3.12 unavailable on the
+host, 3.13 satisfies the project's `>=3.11` floor and every dependency
+built clean wheels), its own docker compose project (`verify41`, a
+standalone `docker-compose.verify41.yml` rather than an override of the
+base file) on remapped host ports 55432/56379, and its own throwaway
+`.env.verify41` — never the repo's real `.env`. The user's own dev stack
+(`trading-os-postgres-1`/`trading-os-redis-1` on default ports 5432/6379, a
+uvicorn `--reload` process on port 8000, a Next.js dev server on port 3005,
+all against the real root `.env`) was confirmed healthy and running via
+`docker ps` and `netstat` both before this pass touched anything and again
+after cleanup — untouched throughout, no `docker compose down` without `-p`
+was ever run against it.
+Verified live:
+- `bash scripts/secret_scan.sh` — "Secret scan clean.", exit 0.
+- `ruff check .` — "All checks passed!"
+- `mypy apps` — "Success: no issues found in 78 source files" (unchanged
+  from D054 — this pass touched no `apps/**` source).
+- `alembic upgrade head` against the isolated Postgres — all twelve
+  migrations applied cleanly, `alembic current` reported `0012 (head)`,
+  independently reconfirming Phase 41 adds no migration.
+- `pytest tests/ -q` with the throwaway env exported in-shell — **404
+  passed**, the same 3 pre-existing warnings seen in every prior pass, zero
+  failures, zero errors — exactly D054's own reported total.
+- **The Dockerfile was rebuilt from scratch, not reused.** `docker build -f
+  apps/api/Dockerfile -t tradingos-verify41 .` completed cleanly through
+  both the `builder` and `runtime` stages on a build that had never seen
+  D054's own image or layer cache assumptions beyond Docker's normal layer
+  reuse.
+- **The non-root claim was re-checked against this independently-built
+  image.** `docker run --rm tradingos-verify41 whoami` → **`appuser`**.
+- **The image's migration path was re-checked against this independently-
+  built image.** `docker run --rm --network verify41_default
+  tradingos-verify41 alembic current` (with `DATABASE_URL` pointed at the
+  isolated Postgres over the shared compose network and `JWT_SECRET_KEY`
+  supplied, since `Settings()` fails closed without it — expected, not a
+  bug) → **`0012 (head)`**, confirming the shipped `migrations/`/
+  `alembic.ini` make the image independently migration-capable.
+- **End-to-end probe semantics, from a real container started from this
+  image against the isolated Postgres**: `GET /health` →
+  `{"status":"ok","trading_mode":"research","live_trading_enabled":false}`
+  (200); `GET /health/ready` →
+  `{"status":"ready","checks":{"database":{"status":"ok"}}}` (200). Then,
+  with the database made unreachable (a second container pointed at a bad
+  Postgres port, no restart of any running container), `GET /health`
+  **stayed 200** with the identical body (liveness correctly indifferent to
+  the dependency) while `GET /health/ready` returned **503**
+  `{"status":"not_ready","checks":{"database":{"status":"error","reason":"connection_failed","error_type":"ConnectionRefusedError"}}}`
+  — the readiness contract working exactly as D054 designed it, verified
+  from an image this pass built itself.
+No real cross-phase integration bug was found anywhere in this pass. Both
+of D054's headline claims — the fake-`/health` fix and the non-root
+multi-stage image — are independently confirmed genuinely fixed, not
+merely self-reported.
+Cleanup: the `verify41` compose stack was torn down with `-v` (removing its
+named Postgres volume), the `tradingos-verify41` image was removed with
+`docker rmi`, `docker-compose.verify41.yml` and `.env.verify41` were
+deleted, and the `.venv-verify41` venv was removed. No `.env` file was
+created at any point — every variable was shell-exported or drawn from the
+throwaway file for this session only. The user's own
+`trading-os-postgres-1`/`trading-os-redis-1` containers and their uvicorn
+(8000) and Next.js (3005) dev servers were confirmed still running via
+`docker ps` and `netstat` after cleanup completed.
