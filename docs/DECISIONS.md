@@ -4272,3 +4272,123 @@ created (env vars were shell-exported for this session only, never
 written to disk). The user's own stack
 (`trading-os-postgres-1`/`trading-os-redis-1`, uvicorn on 8000, Next.js
 dev server on 3005) was left exactly as found.
+
+**D052 — CI hardening (Phase 40): a frontend job for `apps/web`, two long-standing CI-breaking bugs fixed, and the migration round-trip confirmed genuinely sound**
+
+Date: 2026-08-31
+Decision: Four related changes to `.github/workflows/ci.yml` and the code
+it exercises, plus one deliberate scope cut. All of them came out of
+actually running every CI step locally against a real Postgres rather than
+reading the workflow and assuming it worked.
+
+**1. The migration round-trip was already fine — no bug, and this is
+recorded so nobody re-investigates it.** The suspicion going in was that
+`alembic downgrade base` had never been exercised end-to-end since the
+later migrations were added, and that one of the twelve `downgrade()`
+functions would fail or leave residue. It does not. Against a real
+`timescale/timescaledb:2.15.3-pg16` instance, `upgrade head` →
+`downgrade base` → `upgrade head` → `downgrade base` → `upgrade head` all
+completed cleanly, in order, with no manual intervention. More than "it
+did not error": after `downgrade base` the `public` schema was verified by
+direct `psql` to contain exactly one table (`alembic_version`), zero enum
+types, and one index — every table, every composite index from 0007/0008/
+0010, and all four enums (`assetclass`, `brokerkind`, `side`,
+`orderstatus`) were genuinely removed, and the re-upgrade rebuilt the full
+13-table schema. The `postgresql.ENUM(...).drop(..., checkfirst=True)`
+calls in 0001 and 0002 are what make the re-upgrade work, since a leftover
+type would collide with the recreate. No migration was changed.
+
+**2. The secret-scan step has been failing every build since Phase 1/7,
+and is now fixed.** The step inlined its own regex into the workflow file
+and then ran `git grep` for it across the repo excluding only `*.md`. That
+matched two lines: `.github/workflows/ci.yml` itself (a scanner cannot
+spell out the pattern it looks for and then search itself for it), and
+`tests/test_logging.py`, whose redaction test necessarily carries an
+`sk-live-`-shaped `api_key` fixture — that string existing in the source
+is the entire point of the test. `git grep` exited 0 on both, so the
+`if ...; then exit 1` fired and the job died before ruff ever ran. The
+pattern was never wrong; the harness around it was. The scan now lives in
+`scripts/secret_scan.sh`, which excludes only itself by path and skips any
+single line carrying a `pragma: allowlist secret` marker. Per-line rather
+than per-file on purpose: excluding `tests/test_logging.py` wholesale
+would blind the scan to a real credential added to that file later.
+`tests/test_logging.py` gained that marker on the one line that needs it.
+Verified in both directions locally: clean on the current tree, and a
+throwaway `packages/_scan_probe.py` containing `sk-live-deadbeefcafe` was
+correctly reported and exited 1.
+
+**3. `tests/test_config.py::test_missing_jwt_secret_key_fails_closed` was
+also failing under CI's own environment, and is now hermetic.**
+`Settings(_env_file=None)` suppresses the `.env` file but not the process
+environment, and pydantic-settings still reads `JWT_SECRET_KEY` from
+there. The CI job sets `JWT_SECRET_KEY` at job level for every step, so
+the "fails closed when the key is missing" assertion ran against an
+environment where the key was present, and the expected `ValueError` never
+arrived. The test now calls `monkeypatch.delenv("JWT_SECRET_KEY",
+raising=False)` and arranges the absence it is asserting about instead of
+assuming it. This is the same shell-environment-leakage class of artifact
+D036/D040/D043/D051 noted in passing during verification passes — the
+difference is that it is not an artifact of the verifier's shell, it is a
+real property of the CI job, so it is fixed in the test rather than
+worked around in the runner.
+
+**4. `apps/web` now has a CI job.** Twenty-plus phases of frontend work
+had zero automated coverage on push or PR. A second `web` job was added to
+the existing `ci.yml` rather than a separate `ci-web.yml`: one workflow,
+one status check, and the two jobs are visibly siblings under the same
+trigger. It runs `npm ci`, `npm run build`, `npm test` on Node 22 with
+`working-directory: apps/web` and npm caching keyed on
+`apps/web/package-lock.json`. It declares no `services` and no `env`,
+because none of those three commands touch Postgres, Redis, or the API —
+Vitest mocks `fetch`. It is intentionally not `needs:` the backend job, so
+a Python failure does not hide a frontend failure or vice versa. No new
+SaaS, no new secrets, GitHub-hosted runners only.
+
+**Deliberate scope cut: the Playwright e2e suite is NOT in CI.** This is
+an explicit omission, not an oversight. Wiring it up needs a running
+uvicorn backend, a migrated Postgres, `npx playwright install chromium`,
+and `scripts/seed_e2e.py` against that database — a materially bigger CI
+task than the three commands above, and one whose failure modes (the
+`localhost`-not-`127.0.0.1` hydration trap and the serial, no-retry,
+real-broker-state-mutating design documented in
+`docs/DEVELOPMENT_WORKFLOW.md`) are exactly the kind that produce a job
+that is green for the wrong reason or flaky for a real one. `act` was not
+available here, and a CI-equivalent run could not be genuinely verified
+end to end, so the honest choice was the safe cut over an unverified
+guess. It remains an open item.
+
+**Also noted, also deliberately not done: `npm run lint` is not in the
+web job.** It currently fails — two `react-hooks/set-state-in-effect`
+errors in `apps/web/components/SessionStatus.tsx` and one
+`@next/next/no-location-assign-relative-destination` warning in
+`apps/web/lib/session.ts`. Adding a step known to be red would make the
+new job useless on arrival. Fixing those is real frontend work and belongs
+in its own change; recorded here so it is not rediscovered as a surprise.
+
+Verified live, every CI step run locally with its exact command, against a
+private `tradingos-p40` docker compose stack on remapped ports
+(55432/56379) so the user's own stack on 5432/6379 was never touched, and
+a throwaway `.venv_p40`:
+- `pip install -e ".[dev]"` — succeeded, resolving and installing every
+  runtime and dev dependency (alembic 1.19.1, ruff 0.16.5, mypy 2.3.1,
+  pytest 9.1.1, pytest-asyncio 1.4.0). Nothing added across forty phases
+  needs a dependency the `[dev]` extra does not already cover. Note the
+  local interpreter is Python 3.14, not the 3.11 CI pins; the install and
+  the whole suite pass on both sides of that gap, so the pin is a floor
+  the code clears, not a requirement it depends on.
+- `bash scripts/secret_scan.sh` — clean (exit 0), and correctly exit 1 on
+  the planted probe.
+- `ruff check .` — "All checks passed!"
+- `mypy apps` — "Success: no issues found in 77 source files".
+- `alembic upgrade head` / `alembic downgrade base` / `alembic upgrade
+  head` — all twelve migrations, both directions, twice, as described
+  above.
+- `pytest` — **400 passed**, 287 warnings, zero failures, run with
+  `JWT_SECRET_KEY` exported exactly as the CI job sets it (the run that
+  exposed bug 3; before the fix this was 399 passed / 1 failed).
+- `cd apps/web && npm ci` (0 vulnerabilities) `&& npm run build`
+  (Next.js 16.3.3, TypeScript clean, all 22 routes generated) `&& npm test`
+  — **102 tests across 13 files, all passing**.
+Cleanup: the `tradingos-p40` compose stack was torn down with `-v`, the
+`.venv_p40` venv was removed, and no `.env` file was created at any point
+(env vars were shell-exported for this session only).
