@@ -4392,3 +4392,80 @@ a throwaway `.venv_p40`:
 Cleanup: the `tradingos-p40` compose stack was torn down with `-v`, the
 `.venv_p40` venv was removed, and no `.env` file was created at any point
 (env vars were shell-exported for this session only).
+
+**D053 — Independent full from-scratch integration re-verification of Phase 40: CI secret-scan fix and JWT test fix both confirmed genuinely working**
+
+Date: 2026-08-31
+Decision: Ran a second, fully independent from-scratch integration
+verification of the merged `main` branch at `cd847ea` (Phase 40's CI
+hardening — secret-scan fix, JWT test fix, new `apps/web` CI job, D052 —
+already merged), specifically to confirm D052's own self-reported results
+rather than trust them, following the same
+D028/D033/D036/D040/D043/D046/D048/D051 precedent. This pass used its own
+fresh Python 3.13 venv (`.venv-verify40`, 3.11/3.12 unavailable on the
+host, 3.13 satisfies the project's `>=3.11` floor and every dependency
+built clean wheels), its own docker compose project (`trading-os-verify40`,
+a standalone `docker-compose.verify40.yml` rather than an override of the
+base file, per D040's port-merge lesson) on remapped host ports
+15432/16380, and its own throwaway `.env.verify40` — never the repo's real
+`.env`. The user's own dev stack (`trading-os-postgres-1`/
+`trading-os-redis-1` on default ports 5432/6379, a uvicorn `--reload`
+process on port 8000, a Next.js dev server on port 3005, all against the
+real root `.env`) was confirmed healthy and running via `docker ps` and
+`netstat` both before this pass touched anything and again after cleanup —
+untouched throughout, no `docker compose down` without `-p` was ever run
+against it.
+Verified live:
+- `bash scripts/secret_scan.sh` — "Secret scan clean.", exit 0. This is
+  the exact newly-fixed CI step from D052 bug 2; it ran clean here with no
+  modification, confirming the fix holds independent of D052's own run.
+- `ruff check .` — "All checks passed!"
+- `mypy apps` — "Success: no issues found in 77 source files" (unchanged
+  from D051/D052 — Phase 40 touched CI/test/docs files only, no
+  `apps/**` source).
+- `alembic upgrade head` → `alembic downgrade base` → `alembic upgrade
+  head` — all twelve migrations (0001 through Phase 39's
+  `0012_users_login_lockout`, still head — Phase 40 added none, as
+  expected for a CI-only phase) applied cleanly in both directions against
+  a real Postgres 16 (timescaledb image), independently reconfirming
+  D052's bug-1 finding that the round-trip was never actually broken.
+- `pytest tests/ -q` with `JWT_SECRET_KEY` exported in-shell exactly as
+  the CI job does (via `.env.verify40`, sourced into the environment) —
+  **400 passed**, 3 warnings (the same two `InsecureKeyLengthWarning`s and
+  one `StarletteDeprecationWarning` seen in every prior verification
+  pass), zero failures, zero errors, on the first attempt — no transient
+  `test_missing_jwt_secret_key_fails_closed` failure this time, which is
+  exactly what D052 bug 3's fix predicts: that test now calls
+  `monkeypatch.delenv("JWT_SECRET_KEY", raising=False)` instead of relying
+  on the key being absent from the ambient shell, so exporting it for the
+  whole run — the CI-realistic condition that broke the test before the
+  fix — no longer breaks it. Re-ran `tests/test_config.py` alone under the
+  same exported `JWT_SECRET_KEY` as an extra check: 12 passed, confirming
+  the fix in isolation as well as inside the full suite.
+- `cd apps/web && npm ci` — 462 packages installed, 0 vulnerabilities.
+  Run in an isolated copy of `apps/web` (source files only, `node_modules`
+  and `.next` excluded) rather than in place, because `apps/web`'s real
+  `node_modules` is shared with the user's live Next.js dev server on
+  3005 and `npm ci`'s delete-and-reinstall step hit a live file lock on
+  the first in-place attempt (`EPERM` unlinking
+  `lightningcss-win32-x64-msvc`) — proof the server was still actively
+  running, and reason enough to move the whole frontend check to a copy
+  rather than risk that server's state.
+- `npm run build` — Next.js 16.3.3 (Turbopack), compiled successfully,
+  TypeScript checked clean, all 16 routes generated.
+- `npm test` (`vitest run`) — **102 tests across 13 files, all passing**,
+  exactly matching D051's and D052's own reports, unchanged.
+No real cross-phase integration bug was found anywhere in this pass. Both
+of D052's headline claims — the secret-scan fix and the JWT test fix — are
+independently confirmed to work exactly as claimed, not just self-reported.
+Status: Verified, no code changes required. Cleanup completed: the
+`trading-os-verify40` compose stack was torn down with
+`docker compose -p trading-os-verify40 -f docker-compose.verify40.yml down
+-v`, `docker-compose.verify40.yml` and `.env.verify40` were deleted, the
+`.venv-verify40` venv was removed, and the isolated `apps/web` copy used
+for the frontend check was deleted from the scratch directory it lived in
+— none of it ever touched the tracked working tree (`git status --short`
+was empty throughout). The user's own stack
+(`trading-os-postgres-1`/`trading-os-redis-1`, uvicorn on 8000, Next.js
+dev server on 3005) was confirmed still running and untouched after
+cleanup.

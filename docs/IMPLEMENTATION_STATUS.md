@@ -1518,6 +1518,48 @@ Phase 39's own report, and a standalone `npm audit` confirmed 0
 vulnerabilities, verifying Phase 39's CVE-clearing claim. See
 docs/DECISIONS.md D051 for the full verification record.
 
+A second, fully independent full from-scratch integration verification
+run 2026-08-31 against `main` at `cd847ea` (Phase 40's CI hardening —
+secret-scan fix, JWT test fix, new `apps/web` CI job, D052 — already
+merged) re-confirmed the true post-merge total unchanged at **400 tests,
+all passing**, and specifically set out to independently verify D052's
+two headline self-reported fixes rather than take them on trust.
+Following the same D028/D033/D036/D040/D043/D046/D048/D051 precedent:
+fresh Python 3.13 venv, `pip install -e ".[dev]"`, `bash
+scripts/secret_scan.sh` (clean, exit 0 — the exact newly-fixed CI step,
+confirmed working independent of D052's own run), `ruff check .` (clean,
+"All checks passed!"), `mypy apps` (clean, "Success: no issues found in
+77 source files", unchanged from D051/D052 since Phase 40 touched no
+`apps/**` source), a separately-named throwaway Postgres/Redis pair on
+remapped host ports 15432/16380 under its own compose project name
+`trading-os-verify40` (the user's own default-port 5432/6379 dev stack,
+plus their uvicorn on 8000 and Next.js dev server on 3005, was confirmed
+running via `docker ps`/`netstat` before and after, and left completely
+untouched throughout), `alembic upgrade head` → `alembic downgrade base`
+→ `alembic upgrade head` (all twelve migrations, still headed at Phase
+39's `0012_users_login_lockout` since Phase 40 added none, cleanly in
+both directions against a real Postgres 16 database — independently
+reconfirming D052's finding that the round-trip was never actually
+broken), and `pytest tests/ -q` with `JWT_SECRET_KEY` exported in-shell
+exactly as CI does: 400 passed, 3 pre-existing warnings, zero failures,
+zero errors, on the first attempt — no transient
+`test_missing_jwt_secret_key_fails_closed` failure this time, which is
+exactly what D052's `monkeypatch.delenv`-based fix predicts under the
+CI-realistic condition (the key exported for the whole run) that broke
+that test before the fix; `tests/test_config.py` was also re-run alone
+under the same exported key as an extra check (12 passed). A separate
+frontend check was run in an isolated copy of `apps/web` (source only,
+`node_modules`/`.next` excluded) rather than in place, because the real
+`apps/web/node_modules` is shared with the user's live Next.js dev server
+and an in-place `npm ci` hit a live file lock on the first attempt
+(`EPERM` unlinking a lightningcss binary) — confirming that server was
+still genuinely running, and reason enough to isolate the whole frontend
+check: `npm ci` (462 packages, 0 vulnerabilities), `npm run build`
+(Next.js 16.3.3 Turbopack, TypeScript clean, all 16 routes generated),
+`npm test` (**102 tests across 13 files, all passing**, exactly matching
+D051/D052, unchanged). No real cross-phase integration bug was found.
+See docs/DECISIONS.md D053 for the full verification record.
+
 ## Known Issues
 
 None open.
