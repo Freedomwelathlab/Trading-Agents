@@ -136,7 +136,8 @@ def test_the_id_reaches_every_log_line_of_one_request(capsys):
     async def _multi_log_lines() -> dict[str, str]:
         logger.info("risk_decision", verdict="approved")
         logger.info("portfolio_decision", verdict="sized")
-        logger.info("fill_recorded", api_key="sk-live-should-not-appear")
+        secret = "sk-live-should-not-appear"  # pragma: allowlist secret
+        logger.info("fill_recorded", api_key=secret)
         return {"ok": "true"}
 
     try:

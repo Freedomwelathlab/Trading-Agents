@@ -1696,6 +1696,52 @@ record.
   verification venv deleted; no `.env` was created at any point. See
   docs/DECISIONS.md D056.
 
+A fourth, fully independent full from-scratch integration verification run
+2026-08-31 against `main` (Phase 42's request-ID middleware and ordered
+shutdown, D056, already merged) re-confirmed the true post-merge total
+unchanged at **424 tests, all passing**, and specifically set out to
+independently exercise both of D056's headline behaviors live rather than
+take them on trust. Following the same
+D028/D033/D036/D040/D043/D046/D048/D051/D053/D055 precedent: fresh Python
+3.13 venv, `pip install -e ".[dev]"`, `bash scripts/secret_scan.sh` (failed
+once — see the real bug below — then clean, exit 0), `ruff check .` (clean,
+"All checks passed!"), `mypy apps` (clean, "Success: no issues found in 79
+source files", unchanged from D056), a separately-named throwaway
+Postgres/Redis pair on remapped host ports 55432/56379 under its own
+compose project name `trading-os-verify` (the user's own default-port
+5432/6379 dev stack, plus their uvicorn on 8000 and Next.js dev server on
+3005, was confirmed running via `docker ps`/`netstat` before and after, and
+left completely untouched throughout), `alembic upgrade head` (all twelve
+migrations, headed at `0012` since Phase 42 added none, cleanly against a
+real Postgres 16 database), and `pytest tests/ -q` with the throwaway env
+exported in-shell: 424 passed, the same 3 pre-existing warnings, zero
+failures, zero errors. **One real cross-phase bug was found and fixed**:
+Phase 42's own `tests/core/test_request_id.py` added a deliberate
+secret-look-alike fixture (`api_key="sk-live-should-not-appear"`) without
+the `pragma: allowlist secret` marker the D052 secret-scan convention
+requires, breaking `scripts/secret_scan.sh`; fixed by naming the literal and
+appending the marker on the same matched line. Live request-ID behavior was
+then verified against the real multi-stage API image run as a container on
+port 58000 (a bare `uvicorn` process was tried first, but Windows has no way
+to deliver a true, handler-invoking SIGTERM cross-process, so the container
+path was used for a genuine signal test): two plain `GET /health` calls
+returned two different `x-request-id` headers; a supplied
+`X-Request-ID: my-test-id-12345` came back unchanged; a malformed
+`X-Request-ID: a` was replaced with a fresh UUID4 and the request still
+returned 200, exactly matching the documented behavior in `docs/API.md`; the
+container's stdout showed the matching `request_id_header_rejected` warning
+carrying the same `request_id` as the response header, with only
+`supplied_length` logged, never the offending value. A real SIGTERM
+(`docker stop`) on the running container produced, in order, `Shutting
+down` → `Waiting for application shutdown.` → `trading_os_shutdown_complete`
+→ `Application shutdown complete.` → `Finished server process [1]`, exit
+code 0, no unhandled exception. Cleanup was verified complete: the isolated
+compose stack, its volume, the built image, the throwaway `.env`, and the
+verification venv were all removed, and the user's own
+`trading-os-postgres-1`/`trading-os-redis-1` containers plus their uvicorn
+(8000) and Next.js (3005) dev servers were confirmed still running and
+untouched. See docs/DECISIONS.md D057 for the full verification record.
+
 ## Known Issues
 
 None open.

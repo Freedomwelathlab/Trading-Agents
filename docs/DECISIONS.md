@@ -4865,3 +4865,91 @@ Cleanup: the `phase42` compose stack was torn down with `-v`, the image it
 built was removed, and `docker-compose.phase42.yml` plus the verification
 venv were deleted. No `.env` file was created at any point — every variable
 was shell-exported or set inline in the throwaway compose file.
+
+**D057 — Independent full from-scratch integration re-verification of Phase 42: request-ID middleware and ordered shutdown both confirmed genuinely working, one real cross-phase bug found and fixed**
+
+Date: 2026-08-31
+Decision: Ran a fourth, fully independent from-scratch integration
+verification of the merged `main` branch (Phase 42's request-correlation-ID
+middleware and ordered graceful shutdown, D056, already merged), following
+the same D028/D033/D036/D040/D043/D046/D048/D051/D053/D055 precedent. This
+pass used its own fresh Python 3.13 venv (`.venv_verify`, 3.11/3.12
+unavailable on the host, 3.13 satisfies the project's `>=3.11` floor and
+every dependency built clean wheels), its own docker compose project
+(`trading-os-verify`, a standalone `docker-compose.verify.yml`) on remapped
+host ports 55432/56379/58000, and its own throwaway `.env.verify` — never
+the repo's real `.env`. The user's own dev stack
+(`trading-os-postgres-1`/`trading-os-redis-1` on default ports 5432/6379, a
+uvicorn `--reload` process on port 8000, a Next.js dev server on port 3005,
+all against the real root `.env`) was confirmed healthy and running via
+`docker ps`/`netstat` both before this pass touched anything and again after
+cleanup — untouched throughout, no `docker compose down` without `-p` was
+ever run against it.
+
+**One real cross-phase bug was found and fixed.** `bash scripts/
+secret_scan.sh` failed on its first run: Phase 42's own
+`tests/core/test_request_id.py` added a fixture value
+`api_key="sk-live-should-not-appear"` to prove the redactor still runs
+alongside a bound request ID, but never added the `pragma: allowlist
+secret` marker the scan script (D052) requires for a deliberate look-alike
+fixture — the same convention the existing `tests/test_logging.py`
+redaction fixture already follows. Fixed by assigning the literal to a
+named `secret` variable and appending `# pragma: allowlist secret` on that
+same line (the marker must sit on the exact matched line, not a preceding
+comment line, and the original single line would have exceeded the
+100-column `ruff` limit once the marker was appended). Re-ran clean after
+the fix.
+
+Verified live:
+- `bash scripts/secret_scan.sh` — failed once (bug above), then "Secret scan
+  clean.", exit 0 after the fix.
+- `ruff check .` — "All checks passed!"
+- `mypy apps` — "Success: no issues found in 79 source files" (unchanged
+  from D056).
+- `alembic upgrade head` against the isolated Postgres — all twelve
+  migrations applied cleanly, confirming Phase 42 adds no migration.
+- `pytest tests/ -q` with the throwaway env exported in-shell — **424
+  passed**, 3 pre-existing warnings (the same `httpx`/`starlette` deprecation
+  and two `InsecureKeyLengthWarning`s seen in every prior pass), zero
+  failures, zero errors — exactly matching Phase 42's own reported total.
+- **Live request-ID behavior**, first against a bare `uvicorn` process and
+  then (after Windows was confirmed to have no way to deliver a true,
+  handler-invoking SIGTERM cross-process — `os.kill(pid, SIGTERM)` on
+  Windows calls `TerminateProcess`, which bypasses Python's signal handler
+  entirely) against the real multi-stage API image run as a container on
+  port 58000, so the later SIGTERM test would be genuine: two plain
+  `GET /health` calls returned two different `x-request-id` headers; a
+  supplied `X-Request-ID: my-test-id-12345` came back unchanged, byte for
+  byte; a malformed `X-Request-ID: a` was replaced with a freshly generated
+  UUID4 and the request still returned 200 — exactly the documented
+  behavior in `docs/API.md` ("discarded and replaced with a freshly
+  generated UUID4. The request is not rejected"). The container's captured
+  stdout showed the matching `request_id_header_rejected` warning line
+  carrying `"request_id"` equal to that response's header and
+  `"supplied_length": 1` rather than the offending value itself, confirming
+  the field reaches the logs without leaking the malformed input.
+- **Graceful shutdown under a real SIGTERM.** With the container healthy
+  and serving, `docker stop trading-os-verify-api-1` produced, in order,
+  `Shutting down` → `Waiting for application shutdown.` →
+  `{"event": "trading_os_shutdown_complete", "level": "info", "timestamp": "2026-08-31T02:25:17.517794Z"}`
+  → `Application shutdown complete.` → `Finished server process [1]`, with
+  container exit code **0** and no unhandled exception anywhere in the log.
+
+No other cross-phase integration bug was found. Both of D056's headline
+claims — request-ID propagation/generation semantics and the ordered,
+engine-disposing shutdown — are independently confirmed genuinely working,
+not merely self-reported; the one real defect found (the missing secret-scan
+pragma on Phase 42's own new test fixture) has been fixed and is included in
+this verification's commit.
+
+Cleanup: the `trading-os-verify` compose stack (postgres, redis, and the
+built api container) was torn down with `-v` (removing its anonymous
+volume), the `trading-os-verify-api` image was removed with `docker rmi`,
+`docker-compose.verify.yml`, `.env.verify`, and the stray local
+`uvicorn_verify.log`/`.pid` files were deleted, and the `.venv_verify` venv
+was removed. No `.env` file was created at any point — every variable was
+shell-exported or drawn from the throwaway file for this session only. The
+user's own `trading-os-postgres-1`/`trading-os-redis-1` containers and their
+uvicorn (8000) and Next.js (3005) dev servers were confirmed still running,
+healthy, and untouched via `docker ps` and `netstat` after cleanup
+completed.
