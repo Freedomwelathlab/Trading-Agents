@@ -19,7 +19,8 @@ from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.auth.routes.session import router as session_router
 from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
-from apps.api.app.db.base import get_session_factory
+from apps.api.app.core.request_id import RequestIDMiddleware
+from apps.api.app.db.base import get_engine, get_session_factory
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_history_provider,
     build_longbridge_provider,
@@ -117,11 +118,35 @@ async def lifespan(app: FastAPI):
     )
     yield
 
+    # Phase 42 (D056): explicit, ORDERED shutdown. Application-level
+    # background work is stopped FIRST, then the database engine it depends
+    # on is disposed. The order is not cosmetic: `stop()` cancels the
+    # scheduler task and then `await`s it to completion (see
+    # PortfolioSnapshotScheduler.stop), so by the time it returns no cycle
+    # can still be holding a session from the pool. Disposing first would
+    # race a mid-flight cycle against a closing pool.
     if app.state.portfolio_snapshot_scheduler is not None:
         await app.state.portfolio_snapshot_scheduler.stop()
 
+    # The engine created at import time in apps/api/app/db/base.py owns a
+    # live asyncpg connection pool. Process exit reclaims those sockets
+    # anyway, but that is the OS cleaning up after us, not the service
+    # shutting down. Under an orchestrator issuing SIGTERM with a grace
+    # period, disposing explicitly returns connections to Postgres
+    # deterministically instead of leaving them for the server's own
+    # timeout to reap. `get_engine()` (Phase 41/D054) is reused rather than
+    # constructing a second engine, so this disposes the exact pool every
+    # request and the readiness probe draw from.
+    await get_engine().dispose()
+    logger.info("trading_os_shutdown_complete")
+
 
 app = FastAPI(title="Trading OS API", version="0.1.0", lifespan=lifespan)
+# Phase 42 (D056): outermost middleware, so the correlation ID is bound
+# before any routing, auth, or exception handling runs and is therefore
+# present on every log line those layers emit too - including the lines
+# describing a request that never reaches a route handler at all.
+app.add_middleware(RequestIDMiddleware)
 app.include_router(auth_router)
 app.include_router(session_router)
 app.include_router(trades_router)

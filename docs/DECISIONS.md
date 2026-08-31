@@ -4726,3 +4726,142 @@ throwaway file for this session only. The user's own
 `trading-os-postgres-1`/`trading-os-redis-1` containers and their uvicorn
 (8000) and Next.js (3005) dev servers were confirmed still running via
 `docker ps` and `netstat` after cleanup completed.
+
+**D056 — Observability and lifecycle (Phase 42): per-request correlation IDs bound into structlog, and an explicit ordered shutdown that disposes the DB engine**
+
+Two independent gaps, both found by review of the merged Phase 41 state,
+both fixed here because both are about the service being *operable*, not
+merely functional.
+
+**(1) Structured logs were unlinkable to the request that produced them.**
+Every line this service emits is JSON, but none carried a correlation key.
+One trade submission can emit a risk decision, a portfolio decision, and a
+fill on three separate lines; in a production stream those three are
+interleaved with every other concurrent request's lines and nothing
+distinguishes them. The most common production question — "the user says
+their order was rejected at 14:03, what happened?" — was therefore
+unanswerable from the log stream alone.
+
+`apps/api/app/core/request_id.py` adds `RequestIDMiddleware`, registered as
+the outermost middleware in `main.py` so the ID is bound before routing,
+auth, or exception handling runs and is present even on requests that never
+reach a route handler. It binds the ID under the log key `request_id` via
+`structlog.contextvars.bind_contextvars`. **No call site changed.** That
+works because `configure_logging()` has had
+`structlog.contextvars.merge_contextvars` as its *first* processor since the
+logging pipeline was written, so a contextvar-bound key is merged into every
+event dict automatically. The installed structlog is **26.1.0** — verified
+against the installed package's own API, not from memory
+(`bind_contextvars` / `unbind_contextvars` / `get_contextvars` all present),
+well past the 20.1 that introduced `contextvars`. **No new dependency was
+added**: this is structlog, Starlette's own ASGI protocol, and stdlib
+`uuid`.
+
+*Pure ASGI, not `BaseHTTPMiddleware`.* `BaseHTTPMiddleware` runs the
+downstream app in a child anyio task; a contextvar bound before
+`call_next()` does reach that child (the task copies the context at spawn),
+but the bind and its cleanup then straddle two contexts. A pure ASGI
+middleware keeps the whole request in one context, so bind/unbind are
+exactly paired, and it rewrites response headers directly from the
+`http.response.start` message. Cleanup is `unbind_contextvars`, not
+reset-by-token, because uvicorn reuses a task context across requests on a
+connection — leaving the key bound would stamp one request's ID onto the
+next one's lines and onto background work that has no request at all.
+
+*Caller-supplied IDs are honored when well-formed; a bad one is replaced,
+not rejected.* An inbound `X-Request-ID` is reused verbatim when it matches
+`^[A-Za-z0-9._-]{8,128}$`, so a load balancer, ingress, or the Next.js
+frontend can propagate one ID across a hop and have both sides' logs join.
+Anything else — too short, too long, whitespace, control characters, CR/LF
+— is discarded and a fresh UUID4 substituted, with a single
+`request_id_header_rejected` warning so a misconfigured upstream is visible
+rather than silent. The rejected value is *not* echoed into that log line;
+repeating unvalidated caller-controlled text into the log stream is
+precisely what the rejection just prevented.
+
+Replace-don't-reject is the defensible direction because this value is a
+correlation label and nothing else: it grants no access, gates no code
+path, and is never compared against anything. It is emphatically **not an
+auth token** and must never be treated as one. Failing a real trading
+request because a proxy sent an oddly-shaped header would convert a
+cosmetic observability concern into an outage. The narrow charset is what
+makes it safe to echo into a response header at all (no CR/LF injection),
+and the length bound is what stops a hostile caller writing unbounded
+attacker-controlled text into every log line of a request.
+
+*The redaction processor still runs, and there is no field-name collision.*
+`_SECRET_KEY_PATTERN` in `core/logging.py` matches
+`secret|password|passwd|api_key|token|private_key|access_key`. `request_id`
+matches none of them — asserted explicitly in
+`tests/core/test_request_id.py`, not assumed, because a collision would
+deliver every correlation ID to the sink as `***REDACTED***` and render the
+whole mechanism silently useless. The same test confirms an `api_key` field
+logged *alongside* a bound request ID is still redacted, i.e. the two
+processors compose correctly.
+
+**(2) The async SQLAlchemy engine was never explicitly disposed.** The
+lifespan's shutdown half stopped the portfolio snapshot scheduler and
+nothing else. The process-wide engine created at import time in
+`apps/api/app/db/base.py` owns a live asyncpg pool; process exit reclaims
+those sockets, but that is the OS cleaning up after us, not the service
+shutting down. Under an orchestrator issuing SIGTERM with a grace period,
+"probably fine because the OS handles it" is not a shutdown contract.
+
+The lifespan now performs an explicit ordered teardown — **stop background
+work, then dispose the engine** — and logs `trading_os_shutdown_complete`.
+It reuses Phase 41/D054's `get_engine()` accessor rather than constructing
+a second engine, so it disposes the exact pool every request and the
+readiness probe draw from.
+
+*The order is load-bearing, and was traced rather than assumed.*
+`PortfolioSnapshotScheduler.stop()` cancels its task and then `await`s it
+to completion (`await self._task`, catching `CancelledError`) — it does not
+merely signal. So by the time `stop()` returns, no cycle can still hold a
+session from the pool, and disposing afterwards cannot race a mid-flight
+cycle. Reversing the order would dispose the pool out from under a running
+cycle. `tests/core/test_shutdown.py` pins this at the seam that encodes it:
+spies on `stop()` and `dispose()` share one call log, so the assertion is
+on the real relative order of the two real calls the teardown block makes;
+a separate test drives the *real* `stop()` against a task that needs a loop
+turn to unwind and asserts it is genuinely finished on return. A full
+SIGTERM cannot be asserted on from inside the process being terminated, so
+that half was verified live instead (below).
+
+**Verification.** **424 backend tests passing** (404 baseline plus **20
+new**: 14 in `tests/core/test_request_id.py`, 6 in
+`tests/core/test_shutdown.py`), `ruff check .` and `mypy apps` clean (79
+source files). Live-verified against an isolated docker compose stack
+(project `phase42`; Postgres on 55432, Redis on 56379, the real multi-stage
+API image on 58000 — the user's own 5432/6379/8000/3005 dev stack was never
+touched):
+
+- Two consecutive `GET /health` calls returned **two different**
+  `x-request-id` response headers:
+  `683e9914-aa16-405f-94c0-afbd1c9a1823`, then
+  `220c42b6-2e34-4f72-a122-8f31a3f81290`.
+- A caller-supplied `X-Request-ID: lb-edge-phase42-abc123` came back
+  **unchanged**. A malformed `X-Request-ID: bad` was **replaced** with
+  `23d09c56-a118-44f3-a6b2-29017ebf9c84` and the request still returned
+  **200** — the documented replace-don't-reject contract.
+- **Correlation across modules within one request, from real container
+  logs.** A single `GET /health/ready` (Postgres deliberately stopped, a
+  malformed ID supplied) produced two lines from two different modules
+  carrying the same ID, matching that response's
+  `x-request-id: 6d1f0a5e-596a-4d49-8662-dcfc493705a8`:
+
+  ```
+  {"supplied_length": 2, "reason": "malformed", "event": "request_id_header_rejected", "request_id": "6d1f0a5e-596a-4d49-8662-dcfc493705a8", "level": "warning", "timestamp": "2026-08-31T02:09:54.107936Z"}
+  {"check": "database", "reason": "timeout", "error_type": null, "event": "readiness_check_failed", "request_id": "6d1f0a5e-596a-4d49-8662-dcfc493705a8", "level": "warning", "timestamp": "2026-08-31T02:09:57.111063Z"}
+  ```
+
+- **Graceful shutdown under a real SIGTERM.** With Postgres healthy and
+  `GET /health/ready` returning 200, `docker stop` on the API container
+  produced `Waiting for application shutdown.` →
+  `{"event": "trading_os_shutdown_complete", "level": "info", "timestamp": "2026-08-31T02:10:43.874641Z"}`
+  → `Application shutdown complete.` and a clean exit inside the grace
+  period, with no error output.
+
+Cleanup: the `phase42` compose stack was torn down with `-v`, the image it
+built was removed, and `docker-compose.phase42.yml` plus the verification
+venv were deleted. No `.env` file was created at any point — every variable
+was shell-exported or set inline in the throwaway compose file.

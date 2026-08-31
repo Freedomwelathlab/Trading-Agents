@@ -1637,6 +1637,65 @@ uvicorn (8000) and Next.js (3005) dev servers were confirmed still running
 and untouched. See docs/DECISIONS.md D055 for the full verification
 record.
 
+- Phase 42: observability and lifecycle — per-request correlation IDs and
+  an explicit ordered shutdown (2026-08-31, D056). **(1) Structured logs
+  carried no correlation key.** A single trade submission emits its risk
+  decision, portfolio decision, and fill on three separate JSON lines, and
+  in a production stream interleaved across concurrent requests nothing
+  grouped them back into one request — making "what happened to the order
+  the user says was rejected at 14:03?" unanswerable from the logs alone.
+  The new `RequestIDMiddleware` (`apps/api/app/core/request_id.py`,
+  registered outermost in `main.py`) assigns every HTTP request a UUID4,
+  binds it under the `request_id` key with
+  `structlog.contextvars.bind_contextvars`, and returns it as an
+  `X-Request-ID` response header on every response including 401s, 404s,
+  and validation errors. **No existing `logger.info(...)` call site
+  changed** — `merge_contextvars` was already the first processor in
+  `configure_logging()`, so the key is merged into every event dict
+  automatically. An inbound `X-Request-ID` is honored verbatim when it
+  matches `^[A-Za-z0-9._-]{8,128}$` (so a load balancer or the frontend can
+  propagate one ID across a hop); a malformed one is **replaced with a
+  fresh UUID4 rather than rejected**, because the value is a correlation
+  label — never an auth input — and a misconfigured proxy must not be able
+  to fail a real trading request. The `request_id` key was explicitly
+  asserted not to collide with the secret-redaction patterns in
+  `core/logging.py`, and a credential logged alongside a bound ID is still
+  redacted. It is pure-ASGI middleware, not `BaseHTTPMiddleware`, so bind
+  and unbind stay in one context; cleanup unbinds rather than leaving the
+  key set, since uvicorn reuses a task context across requests.
+  **(2) The async SQLAlchemy engine was never explicitly disposed.** The
+  lifespan stopped only the snapshot scheduler; the process-wide asyncpg
+  pool was left for process exit — the OS cleaning up after us rather than
+  the service shutting down. Shutdown is now explicit and ordered:
+  background work is stopped first (`PortfolioSnapshotScheduler.stop()`
+  cancels **and awaits** its task, traced and separately tested, so no
+  cycle can still hold a pooled session), then Phase 41/D054's
+  `get_engine()` is disposed — never the reverse, which would tear the pool
+  out from under a running cycle — followed by a
+  `trading_os_shutdown_complete` line. **No new external dependency**:
+  structlog's contextvars (installed 26.1.0, API verified against the
+  installed package), Starlette's own ASGI protocol, and stdlib `uuid`.
+  **424 backend tests passing** over a measured 404 baseline (20 new),
+  `ruff check .` and `mypy apps` clean (79 source files). Live-verified
+  against an isolated docker compose stack on non-default ports (Postgres
+  55432, Redis 56379, the real multi-stage API image on 58000; the user's
+  own 5432/6379/8000/3005 dev stack untouched): two `GET /health` calls
+  returned two different `x-request-id` headers
+  (`683e9914-…` then `220c42b6-…`); a supplied
+  `X-Request-ID: lb-edge-phase42-abc123` came back unchanged; a malformed
+  `X-Request-ID: bad` was replaced with `23d09c56-…` and still returned
+  200. Real container logs for one `GET /health/ready` showed two lines
+  from two different modules (`request_id_header_rejected` from the
+  middleware and `readiness_check_failed` from the health route) both
+  carrying `"request_id": "6d1f0a5e-596a-4d49-8662-dcfc493705a8"`, matching
+  that response's header. A real SIGTERM (`docker stop`) produced
+  `Waiting for application shutdown.` → `trading_os_shutdown_complete` →
+  `Application shutdown complete.` with a clean exit inside the grace
+  period. Cleanup was verified complete: the compose stack was torn down
+  with `-v`, the built image removed, and the throwaway compose file and
+  verification venv deleted; no `.env` was created at any point. See
+  docs/DECISIONS.md D056.
+
 ## Known Issues
 
 None open.
