@@ -1,5 +1,41 @@
 # API
 
+## `X-Request-ID` — correlation header (all endpoints)
+
+Applies to **every** endpoint below, including error responses, 401s, 404s,
+and validation failures (Phase 42, D056).
+
+**Response.** Every response carries `X-Request-ID`. Its value is the
+correlation ID that was bound into structlog for the whole of that
+request's handling, so every structured log line the server emitted while
+serving it carries the same value under the `request_id` key. Given an
+`X-Request-ID` from a failed response, `request_id="<value>"` retrieves
+that request's complete server-side log trail.
+
+**Request (optional).** A caller may supply `X-Request-ID` to propagate an
+ID it already assigned — a load balancer, an ingress, or the frontend's
+route handlers. It is reused verbatim **only if well-formed**:
+
+```
+^[A-Za-z0-9._-]{8,128}$
+```
+
+A supplied value that does not match — too short, too long, containing
+whitespace, control characters, or CR/LF — is **discarded and replaced with
+a freshly generated UUID4. The request is not rejected** and its status
+code is unaffected; the substitution is recorded once as a
+`request_id_header_rejected` warning (the offending value itself is not
+logged). When no header is supplied, a UUID4 is generated.
+
+This value is a **correlation label only**. It is never an authentication
+or authorization input, is never compared against anything, and grants no
+access — do not treat it as a token. The narrow charset exists so the value
+can be safely echoed into a response header (no CR/LF injection) and so a
+hostile caller cannot write unbounded text into every log line of a
+request. The `request_id` log key is deliberately outside the secret
+redaction patterns in `apps/api/app/core/logging.py`, so correlation IDs
+reach the log sink intact while credentials are still redacted.
+
 ## `GET /health` — liveness
 
 Returns `{"status": "ok", "trading_mode": "<research|paper|live>", "live_trading_enabled": <bool>}`.
