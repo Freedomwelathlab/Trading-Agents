@@ -32,7 +32,13 @@ def test_live_mode_with_flag_set_is_allowed_to_construct():
     assert settings.trading_mode is TradingMode.LIVE
 
 
-def test_missing_jwt_secret_key_fails_closed():
+def test_missing_jwt_secret_key_fails_closed(monkeypatch: pytest.MonkeyPatch):
+    """`_env_file=None` only suppresses the .env file, not the process
+    environment — pydantic-settings still reads JWT_SECRET_KEY from there.
+    Any shell (or CI job) that exports it therefore made this test assert
+    the opposite of what it claims, so the absence has to be arranged
+    explicitly rather than assumed. See docs/DECISIONS.md D052."""
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     with pytest.raises(ValueError, match="jwt_secret_key"):
         Settings(_env_file=None)
 
