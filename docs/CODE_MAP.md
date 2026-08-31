@@ -54,8 +54,16 @@ pytest-asyncio default of one loop per test (see D007).
 
 Purpose: HTTP entrypoint.
 Main file: `apps/api/app/main.py`
-Interface: `GET /health`
+Interface: router registration + lifespan (agents, market data, snapshot
+scheduler). Owns no route of its own since Phase 41.
 Tests: `tests/test_health.py`
+
+`apps/api/app/api/routes/health.py` — Phase 41 (D054). `GET /health`
+(liveness: config only, no I/O, contract unchanged from Phase 1) and
+`GET /health/ready` (readiness: real `SELECT 1` through
+`db.base.get_engine()` under `HEALTH_READINESS_TIMEOUT_SECONDS`, 503 with a
+named reason on failure). No Redis check — Redis is still unwired in this
+repo (see the module docstring).
 
 ## Migrations
 

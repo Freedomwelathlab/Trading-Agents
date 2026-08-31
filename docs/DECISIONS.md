@@ -4469,3 +4469,187 @@ was empty throughout). The user's own stack
 (`trading-os-postgres-1`/`trading-os-redis-1`, uvicorn on 8000, Next.js
 dev server on 3005) was confirmed still running and untouched after
 cleanup.
+
+**D054 — Production readiness (Phase 41): the fake `/health` replaced by a real liveness/readiness split, and the API image made multi-stage and non-root**
+
+Date: 2026-08-31
+Decision: Two independent production-readiness gaps found by review, fixed
+together because both are about what happens to this service when it is
+run by something other than a developer's laptop.
+
+**(1) `GET /health` was a confident wrong answer.** Since Phase 1 it
+returned `{"status": "ok", ...}` built entirely from in-process `Settings`,
+touching no dependency. An instance whose Postgres was unreachable
+advertised itself as healthy, so any orchestrator, load balancer, or
+uptime monitor wired to it would have kept routing traffic to an instance
+that could not serve a single database-backed request. That is strictly
+worse than having no probe at all: a missing probe is a known unknown,
+whereas this one answered the question wrong with full confidence.
+
+The fix is a split, not a patch. `/health` stays exactly as it was — same
+three fields, same values, docs/API.md's documented shape untouched
+because `apps/web/app/api/health/route.ts` and `tests/test_health.py`
+already depend on it — and is now explicitly the **liveness** probe. A new
+`GET /health/ready` is the **readiness** probe: it runs a real `SELECT 1`
+through the application's own engine and returns 503 when it cannot.
+
+Why not simply make `/health` check the database, which was the obvious
+one-line fix: an orchestrator *restarts* a container whose liveness probe
+fails. Restarting a Python process does not repair an unreachable
+Postgres, so a dependency-checking liveness probe converts a database
+outage into an unbounded crash-loop across every replica simultaneously —
+and destroys the in-process state and log continuity needed to diagnose
+the outage. Readiness is the probe that is supposed to fail on a
+dependency outage: it removes the instance from rotation and puts it back,
+with no restart, the moment the dependency returns. The semantics are
+Kubernetes-shaped but nothing in the implementation is Kubernetes-specific;
+both are plain HTTP endpoints that work for a compose healthcheck or an
+ALB target group equally well.
+
+Three implementation choices worth recording:
+
+- **The probe uses `db.base.get_engine()`, the app's own engine, not a
+  connection of its own.** A probe that dialled Postgres independently
+  could report "ready" while the pool every real request draws from was
+  exhausted or broken — the same class of false positive this whole entry
+  is about. `get_engine()` is new (previously only `get_session` and
+  `get_session_factory` were exposed) and returns the same singleton.
+- **`HEALTH_READINESS_TIMEOUT_SECONDS` (default 3.0) hard-caps the
+  check.** A readiness probe that can hang is nearly as bad as one that
+  lies: the caller then times out at *its* layer on *its* schedule, while
+  the hung probe holds a pooled connection real requests want. Bounding it
+  here means the app decides the check failed, fast and explicitly, with
+  `reason: "timeout"`. This was not hypothetical — see the live
+  verification below, where stopping the Postgres *container* (packets
+  blackholed rather than refused) produced exactly the timeout branch, not
+  the connection-failure branch.
+- **The 503 body has the same shape as the 200 body**
+  (`{"status": ..., "checks": {"database": {...}}}`), set via
+  `response.status_code` rather than by raising `HTTPException`, so a
+  consumer does not parse one schema on success and FastAPI's
+  `{"detail": ...}` on failure. `reason` is a fixed vocabulary
+  (`connection_failed` / `timeout`). On failure the exception's **type
+  name** is reported and its **message never is**: a driver or DSN error
+  message can carry the connection string, and the connection string
+  carries the database password (spec §38, docs/TRADING_SAFETY.md). This
+  is an unauthenticated endpoint, so it is the last place that may leak.
+
+**No Redis check, and that is a finding rather than an omission.** The
+Phase 38 audit recorded that Redis is provisioned in `docker-compose.yml`
+with `Settings.redis_url` set but is not wired into any Python code; that
+was re-confirmed by grep for this phase and is still true — `redis` remains
+an unused declared dependency in `pyproject.toml`. A readiness check for a
+connection the application never makes would be fabricated signal in the
+sense docs/TRADING_SAFETY.md forbids: it would report on a client whose
+configuration has never been exercised, and it could take the whole
+service out of rotation over a dependency no request path touches. The
+check belongs in `_check_database`'s sibling slot the day a real Redis
+client lands, and not one phase earlier.
+
+**(2) `apps/api/Dockerfile` was single-stage and ran as root.** Now a
+`builder` stage resolves dependencies from `pyproject.toml` into
+`/opt/venv`, and a `runtime` stage copies that venv plus the app code,
+`packages/`, `migrations/`, and `alembic.ini`, then `USER appuser` before
+`CMD`. The exposed port (8000), the uvicorn command, and the
+environment-variable contract are all unchanged, as required.
+
+Two non-obvious details:
+
+- **The builder installs the project and then uninstalls it.**
+  `pip install .` is how `pyproject.toml`'s dependency list gets resolved
+  (there is no requirements file, and adding one would create a second
+  source of truth), but it also copies `apps/` and `packages/` into
+  site-packages. Leaving that copy in place would ship two copies of the
+  application code in one image, with `sys.path` ordering silently
+  deciding which one runs. `pip uninstall -y trading-os` immediately after
+  keeps the dependencies and drops the duplicate; `PYTHONPATH=/app` then
+  makes `apps.api.app.main` resolve to the single copied tree — the same
+  import target the old editable install produced, with no pip, setuptools,
+  or build backend needed at runtime.
+- **pip/setuptools/wheel are removed from both the venv and the base
+  image's `/usr/local`.** Nothing at runtime imports them and nothing in
+  the runtime stage installs anything, so shipping them only ships an
+  installer able to fetch and execute arbitrary code off the network
+  inside the running container.
+
+An honest note on image size, since "multi-stage builds shrink the image"
+is the usual claim: the first working version of this Dockerfile came out
+**larger** than the single-stage one it replaced (387MB vs 373MB),
+because a venv duplicates pip and the project's own source on top of what
+the base image already provides. Only after the two removals above did it
+land at **354MB, a real 19MB reduction** — measured, both images built
+from this same tree. The `/usr/local` pip removal contributes no size at
+all (deleting files from a lower layer does not shrink an image) and is
+purely attack-surface. The genuine wins of this change are the non-root
+user, the absent installer, the dependency/app-code layer split for cache
+behaviour, and only then the 19MB.
+
+`alembic.ini` and `migrations/` are shipped deliberately. Verified from
+`docker-compose.yml` rather than assumed: the `api` service runs uvicorn
+directly and has no entrypoint or command that runs migrations, so the
+container never migrates on start and the schema is expected to be
+migrated out-of-band (docs/DEVELOPMENT_WORKFLOW.md). They ship anyway so
+`docker compose run --rm api alembic upgrade head` remains a working
+one-command path from the same image that serves traffic.
+
+Alternatives rejected: (a) making `/health` itself check the database —
+the crash-loop failure mode above; (b) a separate `/ready` at the root
+rather than `/health/ready` — nested reads better next to the existing
+route and groups the two probes under one prefix, and nothing depended on
+a root `/ready`; (c) a distroless or Alpine runtime base — a real size
+win, but Alpine's musl changes the wheel set for asyncpg/bcrypt and
+distroless removes the shell that `docker compose exec ... alembic` and
+this phase's own verification rely on; both are larger changes than "make
+the build multi-stage and drop root", and neither was asked for; (d)
+adding a `HEALTHCHECK` instruction to the image — deliberately not done,
+because the orchestrator, not the image, should own probe cadence and
+thresholds, and `docker-compose.yml`'s `api` service is unchanged by this
+phase.
+
+No new dependency, Python or system, was added by either half.
+No migration. `apps/web` untouched.
+
+Verified live: an isolated `tradingos-p41` compose stack (Postgres on host
+port 15441, Redis on 16441, the rebuilt API on 18441) and a throwaway
+`.venv-p41`, kept entirely off the user's own dev stack
+(`trading-os-postgres-1`/`trading-os-redis-1` on 5432/6379, uvicorn on
+8000, Next.js on 3005), which was never touched — no `docker compose down`
+was ever run without `-p tradingos-p41`.
+- `ruff check .` — "All checks passed!"
+- `mypy apps` — "Success: no issues found in 78 source files" (77 before;
+  the new file is `apps/api/app/api/routes/health.py`).
+- `alembic upgrade head` against the isolated Postgres — all twelve
+  migrations applied, `alembic current` reported `0012 (head)`. Phase 41
+  adds no migration.
+- `pytest tests/ -q` — **404 passed**, 3 warnings, zero failures: four new
+  tests in `tests/test_health.py` over the 400 baseline D051/D053 measured.
+- **The readiness happy path is genuinely un-mocked.** It drives the real
+  route through `httpx.ASGITransport` (not `TestClient`, whose per-request
+  event loop cannot reuse asyncpg connections the session-scoped loop
+  pooled — a harness artifact, not a product one; the running app has a
+  single loop) against the real engine and the real Postgres. Proof it is
+  not vacuous: stopping the Postgres container and re-running that one
+  test makes it **fail**, which was checked explicitly rather than
+  assumed. Only the two failure branches use substitutes — a real engine
+  aimed at a dead port for `connection_failed`, and a hanging stub for
+  `timeout`, since a shared Postgres may not be wedged on demand.
+- **The rebuilt image was actually run, not just built.**
+  `docker compose -p tradingos-p41 ... up -d --build api`, then
+  `exec api whoami` → **`appuser`** (and `id` → `uid=1000(appuser)`);
+  `command -v pip` → **absent**; `alembic current` → `0012 (head)`,
+  confirming the migration files really are in the final image and usable
+  by the non-root user.
+- **End-to-end probe semantics, from inside that container against the
+  isolated Postgres**: `/health` → 200 and `/health/ready` → 200
+  `{"status": "ready"}` while healthy; then, with the Postgres container
+  stopped, `/health` **stayed 200** (liveness correctly indifferent to the
+  dependency — the whole point of the split) while `/health/ready`
+  returned **503** `{"status": "not_ready", "checks": {"database":
+  {"status": "error", "reason": "timeout", "timeout_seconds": 3.0}}}`;
+  then, with Postgres restarted and **the API container never restarted**,
+  `/health/ready` returned **200 `ready`** again on its own. That last
+  step is the readiness contract working exactly as designed.
+Cleanup: the `tradingos-p41` stack was torn down with `-v`,
+`docker-compose.p41.yml`, `.venv-p41`, and the `tradingos-p41-api` images
+were removed. No `.env` file was created at any point — every variable was
+shell-exported for this session only.
