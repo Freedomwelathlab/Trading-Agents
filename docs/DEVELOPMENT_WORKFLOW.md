@@ -22,6 +22,35 @@
 Don't reread the entire project at every turn — this workflow exists so that
 doesn't have to happen.
 
+## What CI actually runs (`.github/workflows/ci.yml`, D052)
+
+Two independent jobs, both on GitHub-hosted runners, no external service
+and no repository secret:
+
+| Job | Runs | Needs |
+| --- | --- | --- |
+| `test` | `bash scripts/secret_scan.sh`, `ruff check .`, `mypy apps`, `alembic upgrade head`, the `downgrade base` → `upgrade head` round-trip, `pytest -v` | Postgres + Redis service containers |
+| `web` | `npm ci`, `npm run build`, `npm test` in `apps/web` | Node 22 only |
+
+Step 10 above (`pytest` + `ruff check .` + `mypy apps`) covers the `test`
+job. If you touched `apps/web`, also run `npm run build && npm test` there
+before calling the change done — that is now a blocking check.
+
+Two things worth knowing before you fight CI:
+
+- **The secret scan lives in `scripts/secret_scan.sh`, not inline in the
+  workflow.** Run it locally the same way CI does. If it flags a line that
+  is a deliberate fixture rather than a real credential, append a
+  `pragma: allowlist secret` comment to *that line*. Don't exclude the
+  file, and don't widen the pattern.
+- **Tests must not read secrets out of the ambient environment.** The
+  `test` job exports `JWT_SECRET_KEY` for every step, so a test asserting
+  fail-closed-when-unset has to `monkeypatch.delenv` it; `_env_file=None`
+  alone is not enough.
+
+The Playwright e2e suite below is **not** run by CI (D052) — it is still a
+manual, local-only gate.
+
 ## Running the e2e suite (`apps/web`, Playwright — D045)
 
 `apps/web` has two independent test suites:

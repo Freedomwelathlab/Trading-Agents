@@ -1061,6 +1061,45 @@ optimization.
   `total_equity = 100100`. Weekday behavior in tests uses an **injected**
   Monday instant, not a real one.
 
+- Phase 40: CI hardening — a frontend job, two long-standing CI-breaking
+  bugs fixed, migration round-trip confirmed sound (2026-08-31, D052).
+  **(1) `apps/web` now has CI at all.** A second `web` job in
+  `.github/workflows/ci.yml` runs `npm ci` → `npm run build` → `npm test`
+  (Vitest) on Node 22, `working-directory: apps/web`, with npm caching
+  keyed on `apps/web/package-lock.json`. It declares no services and no
+  env because none of those commands need Postgres, Redis, or the API, and
+  it does not `needs:` the backend job so neither can mask the other's
+  failure. Twenty-plus phases of frontend work had no automated coverage
+  on push or PR before this. **(2) The secret-scan step had been failing
+  every build since Phase 1/7.** It inlined its own regex into the
+  workflow and then `git grep`-ed the repo for it, so it matched
+  `ci.yml` itself plus the deliberate `sk-live-`-shaped fixture in
+  `tests/test_logging.py`, and exited 1 before `ruff` ever ran. The scan
+  moved to `scripts/secret_scan.sh` (new), which excludes only itself by
+  path and skips lines marked `pragma: allowlist secret` — per line, not
+  per file. **(3)
+  `tests/test_config.py::test_missing_jwt_secret_key_fails_closed` was
+  failing under CI's own env.** `Settings(_env_file=None)` does not
+  suppress the process environment, and the CI job exports
+  `JWT_SECRET_KEY` for every step, so the fail-closed assertion ran with
+  the key present; the test now `monkeypatch.delenv`s it. **(4) The
+  migration downgrade round-trip is genuinely fine** — verified against a
+  real TimescaleDB/pg16 instance, twice, with `psql` confirming
+  `downgrade base` leaves only `alembic_version` and zero enum types. No
+  migration was changed. Deliberately out of scope and recorded as such in
+  D052: the Playwright e2e suite is **not** wired into CI (needs a live
+  backend, seeded Postgres, and a browser install — a bigger job that
+  could not be verified CI-equivalent locally), and `npm run lint` is
+  **not** in the web job (it is currently red: two
+  `react-hooks/set-state-in-effect` errors in
+  `apps/web/components/SessionStatus.tsx`, one Next warning in
+  `apps/web/lib/session.ts`). No new CI service, SaaS, or secret was
+  introduced. Verified live, every CI step run locally with its exact
+  command against a private compose stack on remapped ports: ruff clean,
+  mypy 77 files clean, migrations both directions, **400 pytest tests
+  passing** (399/1 before fix 3), **102 Vitest tests across 13 files
+  passing**, `npm run build` green with all 22 routes.
+
 - Phase 39: security-audit remediation — login lockout, CSRF posture on
   record, vitest CVE (2026-08-30). Fixes three findings from a completed
   read-only security review of the backend and frontend.
