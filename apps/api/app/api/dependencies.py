@@ -17,6 +17,7 @@ from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerGrant, User
+from apps.api.app.execution.live_broker import LiveBrokerAdapter
 from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.router import MarketDataRouter
 
@@ -48,6 +49,20 @@ def get_technical_analyst(request: Request) -> TechnicalAnalyst | None:
     absence means agent-trades proceeds without technical commentary, it
     never blocks the trader agent's own proposal."""
     return request.app.state.technical_analyst
+
+
+def get_live_broker_adapter(request: Request) -> LiveBrokerAdapter | None:
+    """Phase 43 (D058). None means NO live execution path is available -
+    because live trading is disabled (the default), or the mode isn't
+    live, or the live credential trio is incomplete. Callers must render
+    that as NOT_CONFIGURED and refuse the trade; there is deliberately no
+    fallback that would quietly route a live-broker request into the
+    paper simulator.
+
+    Built once at startup in apps/api/app/main.py, exactly like the market
+    data router, so a request never constructs a broker connection itself.
+    """
+    return request.app.state.live_broker_adapter
 
 
 @dataclass

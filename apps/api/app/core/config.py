@@ -79,6 +79,44 @@ class Settings(BaseSettings):
     """See docs/DECISIONS.md D024 for why 5s was chosen over a shorter or
     longer window."""
 
+    live_risk_max_position_pct_of_equity: Decimal = Decimal("0.05")
+    live_risk_max_portfolio_exposure_pct_of_equity: Decimal = Decimal("0.20")
+    live_risk_max_risk_pct_of_equity_per_trade: Decimal = Decimal("0.01")
+    """Phase 43 (docs/DECISIONS.md D058): the risk limits applied to a LIVE
+    trade, deliberately kept SEPARATE from the `risk_*` settings above
+    rather than replacing or reinterpreting them.
+
+    Two reasons they are separate rather than one shared set:
+
+      1. Paper trading's behaviour must be *provably* unchanged by the
+         existence of a live path. Sharing one set of numbers would mean
+         any future tightening for live money silently retunes every paper
+         backtest and every existing test's expectations.
+      2. Real money warrants tighter defaults than a simulator. These are
+         5% of equity per position and 20% total exposure, against paper's
+         10%/50% - half and two-fifths respectively. Per-trade risk stays
+         at 1%: that limit is already a conservative, well-understood
+         fraction, and loosening OR tightening it would change position
+         sizing for a reason unrelated to "this is real money."
+
+    Only `apps/api/app/api/routes/trades.py`'s live branch reads these; the
+    paper branch reads the `risk_*` set and nothing else. Neither branch can
+    see the other's numbers, which is what makes claim (1) structural
+    rather than a convention.
+
+    These are DEFAULTS, not a licence: they gate a trade only after
+    `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, the live credential
+    trio, the `trade:submit:live` permission, the per-request `confirm`
+    flag, the emergency stop, and the Portfolio Manager have all been
+    satisfied."""
+
+    live_account_currency: str = "USD"
+    """Which currency's cash balance on the live Longbridge account is
+    treated as this account's cash. A live Longbridge account can hold
+    several currencies; the adapter refuses to value the account at all if
+    this one is absent, rather than substituting another currency's balance
+    at an unknown rate (spec Sec57)."""
+
     portfolio_max_symbol_pct_of_equity: Decimal = Decimal("0.25")
     """Trade-path Portfolio Manager (D029): cap on any ONE symbol's
     post-trade market value as a share of equity. Deliberately looser than
@@ -177,6 +215,21 @@ class Settings(BaseSettings):
     must render as NOT_CONFIGURED, not a fabricated feed). All three must
     be set together or the Longbridge provider isn't built at all - see
     apps/api/app/marketdata/providers/longbridge.py and docs/DECISIONS.md D015."""
+
+    longport_live_app_key: str | None = None
+    longport_live_app_secret: str | None = None
+    longport_live_access_token: str | None = None
+    """Phase 43 (D058): LIVE TRADING credentials for the Longbridge trade
+    context. Same all-or-nothing posture as the read-only quote trio above
+    and deliberately DISTINCT from it - a quote credential must never be
+    able to become a trading credential by accident, which is exactly what
+    reusing `longport_app_key` here would have allowed.
+
+    These alone authorize nothing: `build_live_broker_adapter()` also
+    requires `trading_mode=live` AND `live_trading_enabled=true`, so
+    setting these three on a default (`LIVE_TRADING_ENABLED=false`)
+    deployment constructs no trade context and opens no connection.
+    Never commit real values; keep them in a local, gitignored `.env`."""
 
     llm_provider_base_url: str | None = None
     llm_provider_api_key: str | None = None

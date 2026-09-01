@@ -78,7 +78,50 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
   `.env` is now only the bootstrap default used before the first-ever flip;
   it does not override a persisted row.
 
+- `apps/api/app/execution/live_broker.py` — the live broker adapter
+  (Phase 43, D058). **The live path exists in code and is inert by
+  default.** `build_live_broker_adapter()` returns `None` — never a
+  degraded or simulated stand-in — unless `TRADING_MODE=live` AND
+  `LIVE_TRADING_ENABLED=true` AND all three `LONGPORT_LIVE_*` credentials
+  are set together, so on the committed configuration no trade context is
+  constructed and no connection is opened. The live trading credentials
+  are separate settings from the read-only `LONGPORT_*` quote credentials:
+  a quote key must never become a trading key.
+- `apps/api/app/api/routes/trades.py` — the explicit per-trade live
+  confirmation this document requires is now enforceable server-side
+  (D058). A trade against a `kind=live` broker needs `"confirm": true` in
+  that request's body (400 `LIVE_CONFIRMATION_REQUIRED` otherwise), a
+  configured live path, and the `trade:submit:live` permission IN ADDITION
+  to `trade:submit:paper`. A confirmation living only in a frontend dialog
+  is not a confirmation the server can enforce, which is why this is a
+  payload field and not a UI concern. `POST /brokers/{id}/agent-trades`
+  remains paper-only: an agent-invented side/quantity is not something a
+  human confirmed.
+- Live trades are gated by the SAME emergency stop, duplicate-order check,
+  deterministic Risk Engine, and Portfolio Manager as paper trades — the
+  same code, not a parallel implementation — against the tighter
+  `LIVE_RISK_*` limits (5% max position, 20% max exposure, 1% risk per
+  trade). The live adapter never fabricates a fill: a broker order that is
+  accepted but not executed surfaces as `502 LIVE_ORDER_UNCONFIRMED`
+  naming the real order id, never as an assumed fill at the estimated
+  price.
+- A broker row's `kind` is the per-broker paper/live switch, managed by
+  `POST /admin/brokers` and `PATCH /admin/brokers/{id}/mode` (D058).
+  Designating a broker live requires `confirm_live: true`, and a broker
+  that has already traded (or holds a simulated book) can no longer be
+  flipped — that would make simulated and real history indistinguishable
+  in an append-only audit trail.
+
+**Standing rule, unchanged by Phase 43:** building the live path is not
+enabling it. `LIVE_TRADING_ENABLED` stays `false` in every default and
+every test. Flipping it still requires explicit user approval given in
+that moment, per this document's confirmation section above.
+
 ## Not yet enforced (because not yet built)
 
-Broker adapter beyond the paper simulator, and the full audit/decision-chain
-tables. Do not write code that assumes any of these exist.
+The full audit/decision-chain tables. On the live path specifically: limit
+orders, reconciliation of an accepted-but-unfilled live order, fractional
+shares (refused outright rather than rounded), and multi-currency live
+accounts (one `LIVE_ACCOUNT_CURRENCY`; a missing balance in it fails the
+trade rather than substituting another currency). Do not write code that
+assumes any of these exist.

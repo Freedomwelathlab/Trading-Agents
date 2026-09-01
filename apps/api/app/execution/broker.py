@@ -37,3 +37,16 @@ class BrokerAdapter(Protocol):
     def submit_order(self, order: OrderRequest, *, market_price: Decimal) -> Fill: ...
 
     def get_account_state(self, *, marks: dict[str, Decimal]) -> AccountState: ...
+
+    @property
+    def cash(self) -> Decimal: ...
+
+    @property
+    def positions(self) -> dict[str, Decimal]:
+        """A COPY - a caller must never mutate a broker's positions except
+        through submit_order(). Promoted into the Protocol in Phase 43
+        (D058): the trade route needs both of these to build the Portfolio
+        Manager's view of the book, so they were always part of the real
+        contract; before a second adapter existed, only the concrete
+        PaperBrokerAdapter happened to declare them."""
+        ...

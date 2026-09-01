@@ -21,6 +21,7 @@ from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
 from apps.api.app.core.request_id import RequestIDMiddleware
 from apps.api.app.db.base import get_engine, get_session_factory
+from apps.api.app.execution.live_broker import build_live_broker_adapter
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_history_provider,
     build_longbridge_provider,
@@ -43,6 +44,15 @@ async def lifespan(app: FastAPI):
     # capability (a price series, not one quote) - see
     # apps/api/app/marketdata/history_provider.py.
     app.state.history_provider = build_longbridge_history_provider(settings)
+
+    # Phase 43 (D058): the LIVE broker adapter. Returns None - and
+    # therefore constructs no trade context and opens no connection -
+    # unless TRADING_MODE=live AND LIVE_TRADING_ENABLED=true AND all three
+    # LONGPORT_LIVE_* credentials are set. The repository's committed
+    # default has LIVE_TRADING_ENABLED=false, so on a default deployment
+    # this is None and POST /brokers/{id}/trades refuses every live-broker
+    # request with NOT_CONFIGURED.
+    app.state.live_broker_adapter = build_live_broker_adapter(settings)
 
     llm_provider = build_llm_provider(settings)
     app.state.trader_agent = build_trader_agent(llm_provider)
@@ -95,6 +105,12 @@ async def lifespan(app: FastAPI):
         # per trade submission, so this startup line must not be read as
         # "the stop is/isn't currently on".
         emergency_stop_settings_default=settings.emergency_stop_active,
+        # D058: "configured" here means a live TradeContext exists, which
+        # requires live mode + the enable flag + the credential trio. It
+        # does NOT mean an order will be placed - every live submission
+        # still needs trade:submit:live, an explicit per-request
+        # `confirm: true`, and every gate a paper trade goes through.
+        live_broker=("longbridge" if app.state.live_broker_adapter else "NOT_CONFIGURED"),
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
         history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",

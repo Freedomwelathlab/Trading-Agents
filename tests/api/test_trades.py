@@ -424,7 +424,13 @@ async def test_unknown_broker_returns_404():
 
 
 @pytest.mark.asyncio
-async def test_live_broker_is_rejected_since_no_live_execution_path_exists():
+async def test_live_broker_is_rejected_on_the_default_configuration():
+    """Phase 43 (D058) built the live CODE path but left it inert: with the
+    repository defaults (LIVE_TRADING_ENABLED=false) a live-broker request
+    is still refused. The refusal now names the confirmation requirement
+    first, because that gate is checked before the configuration one - see
+    `_authorize_live_trade`. The full set of live-path behaviours lives in
+    tests/api/test_live_trades.py."""
     async with (
         db_session() as session,
         active_user(session) as (user_id, email),
@@ -445,7 +451,7 @@ async def test_live_broker_is_rejected_since_no_live_execution_path_exists():
                 },
             )
         assert response.status_code == 400
-        assert "NOT_CONFIGURED" in response.json()["detail"]
+        assert "LIVE_CONFIRMATION_REQUIRED" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
