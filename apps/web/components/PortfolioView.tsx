@@ -3,6 +3,38 @@
 import { useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
 import { subscribeToBrokerSelection } from "@/lib/brokerSelection";
+import {
+  Alert,
+  EmptyNote,
+  Field,
+  Panel,
+  Stat,
+  TableScroll,
+  btnPrimary,
+  monoInputClass,
+  tableClass,
+  tbodyRowClass,
+  tdClass,
+  thClass,
+  theadRowClass,
+} from "@/components/ui/primitives";
+
+/**
+ * Colours a P&L figure from the sign of the number the backend actually
+ * returned. A value that is not a finite number (absent, or a string the
+ * backend did not send as a decimal) gets no colour at all rather than a
+ * guessed one, and the raw string is still displayed verbatim.
+ */
+function pnlTone(raw: string | undefined): "pos" | "neg" | undefined {
+  const n = Number(raw);
+  if (raw == null || raw === "" || !Number.isFinite(n) || n === 0) return undefined;
+  return n > 0 ? "pos" : "neg";
+}
+
+function pnlClass(raw: string | undefined): string {
+  const tone = pnlTone(raw);
+  return tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : "";
+}
 
 type Position = {
   symbol: string;
@@ -33,7 +65,7 @@ function parseMarks(input: string): Record<string, string> {
   return marks;
 }
 
-export default function PortfolioView() {
+export default function PortfolioView({ className }: { className?: string } = {}) {
   const [brokerId, setBrokerId] = useState("");
 
   // D034: the broker discovery list can push a real, granted broker id
@@ -85,98 +117,103 @@ export default function PortfolioView() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Portfolio
-      </h2>
-      <p className="mb-3 text-xs text-neutral-500">
-        Real-time snapshot only — cash, positions, and totals as computed by
-        the backend right now. For performance over time, see Portfolio
-        history below, which charts persisted snapshots.
-      </p>
+    <Panel
+      className={className}
+      title="Portfolio"
+      description="Real-time snapshot only — cash, positions, and totals as computed by the backend right now. For performance over time, see Portfolio history, which charts persisted snapshots."
+    >
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Broker ID
+        <Field label="Broker ID">
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={monoInputClass}
             value={brokerId}
             onChange={(e) => setBrokerId(e.target.value)}
             placeholder="broker UUID"
             required
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Marks for currently-held symbols (required if you hold positions)
+        </Field>
+        <Field
+          label="Marks for currently-held symbols (required if you hold positions)"
+          hint="Comma-separated SYMBOL=price pairs. A held position with no mark is a real 400 DATA_UNAVAILABLE from the backend, not a zero."
+        >
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={monoInputClass}
             value={marksInput}
             onChange={(e) => setMarksInput(e.target.value)}
             placeholder="AAPL.US=150.25, TSLA.US=250"
           />
-        </label>
+        </Field>
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
+        <button type="submit" disabled={loading} className={`${btnPrimary} self-start`}>
           {loading ? "Loading…" : "View portfolio"}
         </button>
       </form>
 
       {errorDetail && (
-        <p role="alert" className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+        <Alert tone="error">
           {status ? `HTTP ${status}: ` : ""}
           {errorDetail}
-        </p>
+        </Alert>
       )}
 
       {result && !errorDetail && (
-        <div className="mt-3 rounded bg-neutral-50 px-3 py-2 text-sm dark:bg-neutral-900">
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
-            <dt className="opacity-70">cash</dt>
-            <dd>{result.cash}</dd>
-            <dt className="opacity-70">total_equity</dt>
-            <dd>{result.total_equity}</dd>
-            <dt className="opacity-70">total_unrealized_pnl</dt>
-            <dd>{result.total_unrealized_pnl}</dd>
-            <dt className="opacity-70">total_realized_pnl</dt>
-            <dd>{result.total_realized_pnl}</dd>
-          </dl>
+        <div className="flex flex-col gap-4">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <Stat label="total_equity" value={result.total_equity ?? "—"} tone="accent" />
+            <Stat label="cash" value={result.cash ?? "—"} />
+            <Stat
+              label="total_unrealized_pnl"
+              value={result.total_unrealized_pnl ?? "—"}
+              tone={pnlTone(result.total_unrealized_pnl)}
+            />
+            <Stat
+              label="total_realized_pnl"
+              value={result.total_realized_pnl ?? "—"}
+              tone={pnlTone(result.total_realized_pnl)}
+            />
+          </div>
 
-          <h3 className="mt-3 mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            Positions
-          </h3>
-          {result.positions && result.positions.length > 0 ? (
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="text-xs uppercase tracking-wide text-neutral-500">
-                  <th className="pr-3">Symbol</th>
-                  <th className="pr-3">Quantity</th>
-                  <th className="pr-3">Avg cost</th>
-                  <th className="pr-3">Current value</th>
-                  <th className="pr-3">Unrealized P&amp;L</th>
-                  <th className="pr-3">Realized P&amp;L</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.positions.map((p) => (
-                  <tr key={p.symbol}>
-                    <td className="pr-3">{p.symbol}</td>
-                    <td className="pr-3">{p.quantity}</td>
-                    <td className="pr-3">{p.avg_cost}</td>
-                    <td className="pr-3">{p.current_value}</td>
-                    <td className="pr-3">{p.unrealized_pnl}</td>
-                    <td className="pr-3">{p.realized_pnl}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="text-neutral-500">No open positions.</p>
-          )}
+          <div>
+            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.09em] text-ink-faint">
+              Positions
+            </h3>
+            {result.positions && result.positions.length > 0 ? (
+              <TableScroll>
+                <table className={tableClass}>
+                  <thead>
+                    <tr className={theadRowClass}>
+                      <th className={thClass}>Symbol</th>
+                      <th className={thClass}>Quantity</th>
+                      <th className={thClass}>Avg cost</th>
+                      <th className={thClass}>Current value</th>
+                      <th className={thClass}>Unrealized P&amp;L</th>
+                      <th className={thClass}>Realized P&amp;L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.positions.map((p) => (
+                      <tr key={p.symbol} className={tbodyRowClass}>
+                        <td className={`${tdClass} font-semibold`}>{p.symbol}</td>
+                        <td className={tdClass}>{p.quantity}</td>
+                        <td className={tdClass}>{p.avg_cost}</td>
+                        <td className={tdClass}>{p.current_value}</td>
+                        <td className={`${tdClass} ${pnlClass(p.unrealized_pnl)}`}>
+                          {p.unrealized_pnl}
+                        </td>
+                        <td className={`${tdClass} ${pnlClass(p.realized_pnl)}`}>
+                          {p.realized_pnl}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableScroll>
+            ) : (
+              <EmptyNote>No open positions.</EmptyNote>
+            )}
+          </div>
         </div>
       )}
-    </section>
+    </Panel>
   );
 }

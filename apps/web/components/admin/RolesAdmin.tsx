@@ -31,7 +31,7 @@ function ResultOrError({
     return (
       <p
         role="alert"
-        className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
+        className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300"
       >
         {status ? `HTTP ${status}: ` : ""}
         {errorDetail}
@@ -41,13 +41,13 @@ function ResultOrError({
   if (result) {
     return (
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-        <dt className="text-neutral-500">id</dt>
+        <dt className="text-ink-faint">id</dt>
         <dd>{result.id}</dd>
-        <dt className="text-neutral-500">name</dt>
+        <dt className="text-ink-faint">name</dt>
         <dd>{result.name}</dd>
-        <dt className="text-neutral-500">description</dt>
+        <dt className="text-ink-faint">description</dt>
         <dd>{result.description ?? "—"}</dd>
-        <dt className="text-neutral-500">permissions</dt>
+        <dt className="text-ink-faint">permissions</dt>
         <dd>{result.permissions?.join(", ") || "—"}</dd>
       </dl>
     );
@@ -103,15 +103,15 @@ export function CreateRoleForm() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Create role
       </h3>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <label className="flex flex-col gap-1 text-sm">
           Name
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
@@ -120,7 +120,7 @@ export function CreateRoleForm() {
         <label className="flex flex-col gap-1 text-sm">
           Description (optional)
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -128,7 +128,7 @@ export function CreateRoleForm() {
         <label className="flex flex-col gap-1 text-sm">
           Permissions (comma-separated)
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={permissions}
             onChange={(e) => setPermissions(e.target.value)}
             placeholder="trade:submit:paper, admin:manage"
@@ -137,7 +137,7 @@ export function CreateRoleForm() {
         <button
           type="submit"
           disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 bg-accent px-4 py-2 text-accent-ink shadow-sm hover:brightness-110 active:brightness-95 self-start"
         >
           {loading ? "Creating…" : "Create role"}
         </button>
@@ -195,15 +195,15 @@ export function UpdateRoleForm() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Update role
       </h3>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <label className="flex flex-col gap-1 text-sm">
           Role ID
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={roleId}
             onChange={(e) => setRoleId(e.target.value)}
             placeholder="role UUID"
@@ -220,7 +220,7 @@ export function UpdateRoleForm() {
             Change description to:
           </label>
           <input
-            className="rounded border border-neutral-300 px-3 py-2 text-sm disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={description}
             disabled={!changeDescription}
             onChange={(e) => setDescription(e.target.value)}
@@ -236,20 +236,20 @@ export function UpdateRoleForm() {
             Replace permissions with:
           </label>
           <input
-            className="rounded border border-neutral-300 px-3 py-2 text-sm disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={permissions}
             disabled={!changePermissions}
             onChange={(e) => setPermissions(e.target.value)}
             placeholder="trade:submit:paper, admin:manage"
           />
         </div>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-ink-faint">
           Note: role name isn&apos;t updatable via this endpoint (D016).
         </p>
         <button
           type="submit"
           disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 bg-accent px-4 py-2 text-accent-ink shadow-sm hover:brightness-110 active:brightness-95 self-start"
         >
           {loading ? "Updating…" : "Update role"}
         </button>

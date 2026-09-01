@@ -26,7 +26,7 @@ function ResultOrError({
     return (
       <p
         role="alert"
-        className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
+        className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300"
       >
         {status ? `HTTP ${status}: ` : ""}
         {errorDetail}
@@ -36,13 +36,13 @@ function ResultOrError({
   if (result) {
     return (
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-        <dt className="text-neutral-500">id</dt>
+        <dt className="text-ink-faint">id</dt>
         <dd>{result.id}</dd>
-        <dt className="text-neutral-500">email</dt>
+        <dt className="text-ink-faint">email</dt>
         <dd>{result.email}</dd>
-        <dt className="text-neutral-500">is_active</dt>
+        <dt className="text-ink-faint">is_active</dt>
         <dd>{String(result.is_active)}</dd>
-        <dt className="text-neutral-500">role_id</dt>
+        <dt className="text-ink-faint">role_id</dt>
         <dd>{result.role_id ?? "—"}</dd>
       </dl>
     );
@@ -97,8 +97,8 @@ export function CreateUserForm() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Create user
       </h3>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -107,7 +107,7 @@ export function CreateUserForm() {
             Email
             <input
               type="email"
-              className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+              className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
@@ -117,7 +117,7 @@ export function CreateUserForm() {
             Password
             <input
               type="password"
-              className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+              className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -128,7 +128,7 @@ export function CreateUserForm() {
           <label className="flex flex-col gap-1 text-sm">
             Role ID (optional)
             <input
-              className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+              className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
               value={roleId}
               onChange={(e) => setRoleId(e.target.value)}
               placeholder="role UUID"
@@ -146,7 +146,7 @@ export function CreateUserForm() {
         <button
           type="submit"
           disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 bg-accent px-4 py-2 text-accent-ink shadow-sm hover:brightness-110 active:brightness-95 self-start"
         >
           {loading ? "Creating…" : "Create user"}
         </button>
@@ -207,15 +207,15 @@ export function UpdateUserForm() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Update user
       </h3>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <label className="flex flex-col gap-1 text-sm">
           User ID
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
             placeholder="user UUID"
@@ -232,7 +232,7 @@ export function UpdateUserForm() {
             Change active status to:
           </label>
           <select
-            className="rounded border border-neutral-300 px-3 py-2 text-sm disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={isActive ? "true" : "false"}
             disabled={!changeActive}
             onChange={(e) => setIsActive(e.target.value === "true")}
@@ -251,7 +251,7 @@ export function UpdateUserForm() {
             Change role to:
           </label>
           <input
-            className="rounded border border-neutral-300 px-3 py-2 text-sm disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={roleId}
             disabled={!changeRole}
             onChange={(e) => setRoleId(e.target.value)}
@@ -261,7 +261,7 @@ export function UpdateUserForm() {
         <button
           type="submit"
           disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 bg-accent px-4 py-2 text-accent-ink shadow-sm hover:brightness-110 active:brightness-95 self-start"
         >
           {loading ? "Updating…" : "Update user"}
         </button>

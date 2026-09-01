@@ -51,8 +51,8 @@ export function CreateBrokerGrantForm() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Grant broker access
       </h3>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -60,7 +60,7 @@ export function CreateBrokerGrantForm() {
           <label className="flex flex-col gap-1 text-sm">
             User ID
             <input
-              className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+              className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
               value={userId}
               onChange={(e) => setUserId(e.target.value)}
               placeholder="user UUID"
@@ -70,7 +70,7 @@ export function CreateBrokerGrantForm() {
           <label className="flex flex-col gap-1 text-sm">
             Broker ID
             <input
-              className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+              className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
               value={brokerId}
               onChange={(e) => setBrokerId(e.target.value)}
               placeholder="broker UUID"
@@ -81,7 +81,7 @@ export function CreateBrokerGrantForm() {
         <button
           type="submit"
           disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 bg-accent px-4 py-2 text-accent-ink shadow-sm hover:brightness-110 active:brightness-95 self-start"
         >
           {loading ? "Granting…" : "Create grant"}
         </button>
@@ -90,7 +90,7 @@ export function CreateBrokerGrantForm() {
       {errorDetail && (
         <p
           role="alert"
-          className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
+          className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300"
         >
           {status ? `HTTP ${status}: ` : ""}
           {errorDetail}
@@ -98,11 +98,11 @@ export function CreateBrokerGrantForm() {
       )}
       {result && !errorDetail && (
         <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-          <dt className="text-neutral-500">id</dt>
+          <dt className="text-ink-faint">id</dt>
           <dd>{result.id}</dd>
-          <dt className="text-neutral-500">user_id</dt>
+          <dt className="text-ink-faint">user_id</dt>
           <dd>{result.user_id}</dd>
-          <dt className="text-neutral-500">broker_id</dt>
+          <dt className="text-ink-faint">broker_id</dt>
           <dd>{result.broker_id}</dd>
         </dl>
       )}
@@ -144,15 +144,15 @@ export function DeleteBrokerGrantForm() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Revoke broker access
       </h3>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <label className="flex flex-col gap-1 text-sm">
           Grant ID
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             value={grantId}
             onChange={(e) => setGrantId(e.target.value)}
             placeholder="grant UUID"
@@ -171,7 +171,7 @@ export function DeleteBrokerGrantForm() {
       {errorDetail && (
         <p
           role="alert"
-          className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
+          className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300"
         >
           {status ? `HTTP ${status}: ` : ""}
           {errorDetail}

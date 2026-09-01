@@ -41,10 +41,37 @@ export function riskVerdictTone(result: {
   approved?: boolean;
 }): string {
   if (result.approved === false)
-    return "bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300";
+    return "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/70 dark:text-amber-300";
   if (result.status === "rejected")
-    return "bg-neutral-100 text-neutral-800 dark:bg-neutral-900 dark:text-neutral-200";
-  return "bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-300";
+    return "border-neutral-300 bg-neutral-100 text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200";
+  return "border-green-300 bg-green-50 text-green-900 dark:border-green-800 dark:bg-green-950/70 dark:text-green-300";
+}
+
+/**
+ * Label/value pair inside a tinted verdict block. Deliberately inherits
+ * the block's own text colour instead of using the neutral chrome token —
+ * the tint is what tells the reader which gate spoke.
+ */
+export function VerdictTerm({ children }: { children: React.ReactNode }) {
+  return (
+    <dt className="font-mono text-[11px] uppercase tracking-wide opacity-70">
+      {children}
+    </dt>
+  );
+}
+
+export function VerdictValue({
+  children,
+  testId,
+}: {
+  children: React.ReactNode;
+  testId?: string;
+}) {
+  return (
+    <dd data-testid={testId} className="tnum truncate font-mono text-[13px]">
+      {children}
+    </dd>
+  );
 }
 
 type Props = PortfolioVerdictFields & {
@@ -72,9 +99,9 @@ export default function PortfolioVerdict({
   // a different gate with a different meaning, and conflating the two colours
   // would make an easily-misread combination worse.
   const tone = isReject
-    ? "border-violet-400 bg-violet-50 text-violet-900 dark:border-violet-700 dark:bg-violet-950 dark:text-violet-200"
+    ? "border-violet-400 bg-violet-50 text-violet-900 dark:border-violet-700 dark:bg-violet-950/70 dark:text-violet-200"
     : isModify
-      ? "border-blue-400 bg-blue-50 text-blue-900 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-200"
+      ? "border-blue-400 bg-blue-50 text-blue-900 dark:border-blue-700 dark:bg-blue-950/70 dark:text-blue-200"
       : "border-neutral-400 bg-neutral-50 text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200";
 
   const heading = isReject
@@ -87,45 +114,48 @@ export default function PortfolioVerdict({
     <div
       data-testid="portfolio-verdict"
       data-portfolio-action={portfolio_action}
-      className={`mt-3 rounded border px-3 py-2 text-sm ${tone}`}
+      className={`rounded-md border-l-4 border border-l-current px-3 py-3 text-sm ${tone}`}
     >
-      <p className="font-semibold">{heading}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.09em] opacity-70">
+        Portfolio Manager
+      </p>
+      <p className="mt-1 font-semibold">{heading}</p>
 
       {isReject && (
-        <p className="mt-1">
+        <p className="mt-1.5 leading-relaxed">
           The deterministic Risk Engine did not stop this trade — the
           portfolio-level allocation gate did. No order reached the broker.
         </p>
       )}
 
       {isModify && (
-        <p className="mt-1">
+        <p className="mt-1.5 leading-relaxed">
           The Risk Engine approved this trade, then the Portfolio Manager shrank
           it to fit a portfolio-level limit. The reduced quantity was re-checked
           by the Risk Engine before it reached the broker.
         </p>
       )}
 
-      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
-        <dt className="opacity-70">portfolio_action</dt>
-        <dd>{portfolio_action}</dd>
-        <dt className="opacity-70">binding constraint</dt>
-        <dd>{portfolio_binding_constraint ?? "—"}</dd>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1.5 sm:grid-cols-[auto_1fr_auto_1fr]">
+        <VerdictTerm>portfolio_action</VerdictTerm>
+        <VerdictValue>{portfolio_action}</VerdictValue>
+        <VerdictTerm>binding constraint</VerdictTerm>
+        <VerdictValue>{portfolio_binding_constraint ?? "—"}</VerdictValue>
         {isModify && (
           <>
-            <dt className="opacity-70">requested quantity</dt>
-            <dd data-testid="portfolio-requested-quantity">
+            <VerdictTerm>requested quantity</VerdictTerm>
+            <VerdictValue testId="portfolio-requested-quantity">
               {portfolio_requested_quantity ?? "—"}
-            </dd>
-            <dt className="opacity-70">filled quantity</dt>
-            <dd data-testid="portfolio-filled-quantity">
+            </VerdictValue>
+            <VerdictTerm>filled quantity</VerdictTerm>
+            <VerdictValue testId="portfolio-filled-quantity">
               {fill_quantity ?? "—"}
-            </dd>
+            </VerdictValue>
           </>
         )}
       </dl>
 
-      {portfolio_detail && <p className="mt-2">{portfolio_detail}</p>}
+      {portfolio_detail && <p className="mt-2 leading-relaxed">{portfolio_detail}</p>}
     </div>
   );
 }

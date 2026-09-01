@@ -62,7 +62,7 @@ export default function SessionStatus() {
     return (
       <p
         role="status"
-        className="text-xs text-amber-700 dark:text-amber-400"
+        className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-300"
         data-testid="session-status"
       >
         Session status unavailable — {errorDetail}
@@ -80,12 +80,16 @@ export default function SessionStatus() {
       data-testid="session-status"
       className={
         soon
-          ? "rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-          : "text-xs text-neutral-500"
+          ? "rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs font-medium leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-300"
+          : "px-1 text-xs leading-relaxed text-ink-faint"
       }
     >
       {soon ? "Session expiring soon — " : ""}
-      {info.email} · {formatRemaining(info.expires_in_seconds)} left
+      <span className="font-mono text-ink-muted">{info.email}</span> ·{" "}
+      <span className="tnum font-mono">
+        {formatRemaining(info.expires_in_seconds)}
+      </span>{" "}
+      left
       {soon ? " (sign out and back in to continue)" : ""}
     </p>
   );

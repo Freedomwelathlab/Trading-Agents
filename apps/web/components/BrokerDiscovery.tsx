@@ -3,6 +3,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
 import { selectBroker } from "@/lib/brokerSelection";
+import {
+  Alert,
+  EmptyNote,
+  Field,
+  Panel,
+  Pill,
+  TableScroll,
+  btnGhost,
+  btnPrimary,
+  inputClass,
+  tableClass,
+  tbodyRowClass,
+  tdClass,
+  thClass,
+  theadRowClass,
+} from "@/components/ui/primitives";
 
 /**
  * Lists the brokers this user actually has access to (D034's
@@ -14,6 +30,11 @@ import { selectBroker } from "@/lib/brokerSelection";
  * grants sees an explicit empty state, a 401 redirects to login (D032),
  * and an unreachable API renders the real DATA_UNAVAILABLE sentinel —
  * nothing here is ever filled in with a sample or placeholder broker.
+ *
+ * Phase 45 / D060 restyle: this panel keeps its position ahead of every
+ * broker-scoped panel on the page, because it is where the `broker_id`
+ * those panels need comes from. The fetch, the states and the "Use"
+ * behaviour are unchanged.
  */
 
 type BrokerRow = {
@@ -70,98 +91,113 @@ export default function BrokerDiscovery() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        My brokers
-      </h2>
-      <p className="mb-3 text-xs text-neutral-500">
-        Brokers you hold an access grant for. “Use” fills this broker&rsquo;s id into the trade,
-        agent-trade and portfolio forms below — the backend still re-checks your grant on every
-        request.
-      </p>
-
+    <Panel
+      title="My brokers"
+      description={
+        <>
+          Brokers you hold an access grant for. “Use” fills this broker&rsquo;s id
+          into the trade, agent-trade and portfolio panels below — the backend
+          still re-checks your grant on every request.
+        </>
+      }
+      actions={
+        selectedId ? (
+          <Pill tone="pos" testId="selected-broker-pill">
+            <span className="text-ink-faint">in use</span>
+            <span className="max-w-[18ch] truncate">{selectedId}</span>
+          </Pill>
+        ) : null
+      }
+    >
       <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Limit (1–500)
+        <Field label="Limit (1–500)" className="w-32">
           <input
             type="number"
             min={1}
             max={500}
-            className="w-28 rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={inputClass}
             value={limit}
             onChange={(e) => setLimit(e.target.value)}
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Offset
+        </Field>
+        <Field label="Offset" className="w-32">
           <input
             type="number"
             min={0}
-            className="w-28 rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={inputClass}
             value={offset}
             onChange={(e) => setOffset(e.target.value)}
           />
-        </label>
-        <button
-          type="button"
-          onClick={load}
-          disabled={loading}
-          className="rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
+        </Field>
+        <button type="button" onClick={load} disabled={loading} className={btnPrimary}>
           {loading ? "Loading…" : "Refresh brokers"}
         </button>
       </div>
 
       {errorDetail && (
-        <p
-          role="alert"
-          className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
-        >
+        <Alert tone="error">
           {status ? `HTTP ${status}: ` : ""}
           {errorDetail}
-        </p>
+        </Alert>
       )}
 
       {rows && rows.length === 0 && (
-        <p className="mt-3 text-sm text-neutral-500">
-          No brokers on this page. If you expect access to one, ask an admin for a broker grant.
-        </p>
+        <EmptyNote>
+          No brokers on this page. If you expect access to one, ask an admin for a
+          broker grant.
+        </EmptyNote>
       )}
 
       {rows && rows.length > 0 && (
-        <table className="mt-3 w-full text-left text-xs">
-          <thead>
-            <tr className="uppercase tracking-wide text-neutral-500">
-              <th className="pr-3">id</th>
-              <th className="pr-3">name</th>
-              <th className="pr-3">kind</th>
-              <th className="pr-3">provider</th>
-              <th className="pr-3">is_active</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((b) => (
-              <tr key={b.id}>
-                <td className="pr-3 font-mono">{b.id}</td>
-                <td className="pr-3">{b.name}</td>
-                <td className="pr-3">{b.kind}</td>
-                <td className="pr-3">{b.provider}</td>
-                <td className="pr-3">{String(b.is_active)}</td>
-                <td className="pr-3">
-                  <button
-                    type="button"
-                    onClick={() => use(b.id)}
-                    className="rounded border border-neutral-300 px-2 py-1 dark:border-neutral-700"
-                  >
-                    {selectedId === b.id ? "In use" : "Use"}
-                  </button>
-                </td>
+        <TableScroll>
+          <table className={tableClass}>
+            <thead>
+              <tr className={theadRowClass}>
+                <th className={thClass}>id</th>
+                <th className={thClass}>name</th>
+                <th className={thClass}>kind</th>
+                <th className={thClass}>provider</th>
+                <th className={thClass}>is_active</th>
+                <th className={thClass} />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((b) => {
+                const active = selectedId === b.id;
+                return (
+                  <tr
+                    key={b.id}
+                    className={`${tbodyRowClass} ${active ? "bg-accent/8" : ""}`}
+                  >
+                    <td className={`${tdClass} text-ink-muted`}>{b.id}</td>
+                    <td className={`${tdClass} font-sans font-medium`}>{b.name}</td>
+                    <td className={tdClass}>{b.kind}</td>
+                    <td className={tdClass}>{b.provider}</td>
+                    <td className={tdClass}>
+                      <Pill tone={b.is_active ? "pos" : "neutral"}>
+                        {String(b.is_active)}
+                      </Pill>
+                    </td>
+                    <td className={`${tdClass} text-right`}>
+                      <button
+                        type="button"
+                        onClick={() => use(b.id)}
+                        className={
+                          active
+                            ? `${btnGhost} border-accent text-accent`
+                            : btnGhost
+                        }
+                      >
+                        {active ? "In use" : "Use"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
-    </section>
+    </Panel>
   );
 }
