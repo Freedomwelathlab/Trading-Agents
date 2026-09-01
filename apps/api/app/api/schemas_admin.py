@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from apps.api.app.db.models import BrokerKind
+
 
 class CreateUserRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
@@ -88,6 +90,47 @@ class ListBrokerGrantsResponse(BaseModel):
     grants: list[BrokerGrantResponse]
     limit: int
     offset: int
+
+
+class CreateBrokerRequest(BaseModel):
+    """Phase 43 (docs/DECISIONS.md D058). Until this endpoint existed,
+    broker rows could only be created by direct SQL insert, which meant the
+    paper/live distinction - the thing that decides which adapter a trade
+    is routed to - was unmanageable through the API at all."""
+
+    name: str = Field(min_length=1, max_length=64)
+    kind: BrokerKind
+    provider: str = Field(min_length=1, max_length=64)
+    is_active: bool = False
+
+    confirm_live: bool = False
+    """Required when `kind` is `live`, ignored otherwise. Creating a
+    live-kind broker is what makes a broker id eligible for the real-money
+    execution path at all, so it is stated explicitly rather than being a
+    one-character difference from a paper row that nobody reviews. It is
+    NOT by itself an authorization to trade - a live broker still cannot
+    place an order unless TRADING_MODE=live, LIVE_TRADING_ENABLED=true,
+    the LONGPORT_LIVE_* trio is set, the caller holds trade:submit:live,
+    and that individual request carries `confirm: true`."""
+
+
+class UpdateBrokerModeRequest(BaseModel):
+    """Phase 43 (D058): the per-broker paper/live toggle.
+
+    `kind` IS the trading-mode switch for a broker. `POST
+    /brokers/{broker_id}/trades` reads it on every submission and routes to
+    `PaperBrokerAdapter` or `LiveBrokerAdapter` accordingly - there is one
+    endpoint, and the broker row decides, so a client cannot select the
+    execution mode from the request body.
+    """
+
+    kind: BrokerKind
+    confirm_live: bool = False
+    """Required to flip a broker TO live; ignored when flipping to paper.
+    Flipping toward real money is the consequential direction, and only
+    that direction is made deliberately awkward - a live -> paper flip is
+    always allowed to proceed without it, because that direction can only
+    make the system safer."""
 
 
 class EmergencyStopRequest(BaseModel):

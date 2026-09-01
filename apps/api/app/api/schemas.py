@@ -40,6 +40,22 @@ class TradeSubmissionRequest(BaseModel):
     the account's exposure; omitting a held symbol's mark fails the
     request rather than guessing a stale price (spec §57)."""
 
+    confirm: bool = False
+    """Phase 43 (docs/DECISIONS.md D058): per-request explicit confirmation,
+    REQUIRED for a trade against a LIVE broker and ignored entirely for a
+    paper one.
+
+    Defaults to false so that a body which would place a paper trade can
+    never place a live one merely by being pointed at a different broker
+    id. Omitting it (or sending false) against a live broker is a 400, not
+    a silently-approved trade.
+
+    This is a structural safeguard, not a UX nicety: docs/TRADING_SAFETY.md
+    requires explicit confirmation before a real order, and a confirmation
+    that lives only in a frontend dialog is not one the server can enforce.
+    Any caller - a script, an agent, a retried request, a future UI - has
+    to state its intent to spend real money in the payload itself."""
+
 
 class TradeSubmissionResponse(BaseModel):
     order_id: uuid.UUID

@@ -4953,3 +4953,264 @@ user's own `trading-os-postgres-1`/`trading-os-redis-1` containers and their
 uvicorn (8000) and Next.js (3005) dev servers were confirmed still running,
 healthy, and untouched via `docker ps` and `netstat` after cleanup
 completed.
+
+**D058 — The live-trading execution path (Phase 43): a real Longbridge `LiveBrokerAdapter`, separate tighter live risk limits, a mandatory per-trade `confirm` flag, and a per-broker paper/live toggle — all built and tested with `LIVE_TRADING_ENABLED` permanently false**
+
+Date: 2026-09-01
+
+Numbering note: developed in parallel with sibling phases 44 and 45 in
+separate worktrees. D-numbers were reserved sequentially from the state of
+`main` at commit `9c0660c` (latest entry D057), so this is D058; phases 44
+and 45 will claim the next free numbers when they merge. Nothing in this
+entry depends on either sibling.
+
+**The headline constraint, stated before anything else:** no real order was
+ever placed, no real broker was ever contacted, and `LIVE_TRADING_ENABLED`
+was never set to `true` — not in a default, not in a test fixture, not
+transiently during verification, not in the smoke test. What was built and
+proven here is the CODE PATH. The system's committed configuration is
+exactly as inert after this phase as before it: on a default checkout, a
+request against a live-kind broker is refused and no trade context is ever
+constructed.
+
+Decision: build the live execution path structurally parallel to the paper
+one, so that the deterministic safety machinery gates a live order because
+it is the *same code*, not because a second implementation was written to
+agree with the first.
+
+**1. `apps/api/app/execution/live_broker.py` — `LiveBrokerAdapter`.**
+Implements the same `BrokerAdapter` Protocol as `PaperBrokerAdapter`, so
+`submit_trade()` and everything above it cannot tell them apart.
+
+Three sub-decisions worth recording:
+
+*The synchronous `TradeContext`, not `AsyncTradeContext`.* The SDK ships
+both with identical method signatures. `BrokerAdapter` is synchronous
+because the paper adapter, the OMS, and the backtest engine are, so the
+sync context is what keeps the two adapters interchangeable instead of
+forcing the entire order path async purely to accommodate a second
+implementation. The cost is real and accepted: a live submission briefly
+blocks the serving event loop. That is fine for one human-confirmed order
+at a time and would not be fine for a high-rate automated path; moving the
+order path to async is the right fix if such a path is ever built, and is
+not this phase's work.
+
+*Never a fabricated fill.* A real `submit_order` returns an order id, not a
+fill — `SubmitOrderResponse`'s only attribute is `order_id`. The adapter
+therefore reads the order back once via `order_detail()` and builds its
+`Fill` from the broker's own `executed_quantity`/`executed_price`. If
+nothing is executed at that moment it raises `LiveOrderNotFilledError`
+carrying the real order id, and the route answers `502
+LIVE_ORDER_UNCONFIRMED` naming that id. The caller's `market_price`
+argument exists only to keep the Protocol signature identical to the paper
+adapter's; it is never sent to the broker and never written into a `Fill`.
+There is deliberately no retry/poll loop — silently re-reading a live order
+in a loop hides a real money-moving order behind a request timeout, and
+reconciling an accepted-but-unfilled live order is its own unbuilt problem
+that must not be papered over here.
+
+*One book per trade.* The account snapshot (cash + positions) is fetched
+from the broker once per adapter instance and cached for that instance. The
+route builds one adapter per request, so the Risk Engine, the buying-power
+check, and the Portfolio Manager all reason about the same book. A second
+mid-trade fetch could hand two gates two different accounts, which is
+precisely what fail-closed exists to prevent. The cache is dropped after a
+fill rather than patched locally: the venue, not this process, is the source
+of truth for a live book (spec §62).
+
+SDK surface was verified by direct introspection of the installed `longport`
+package, never from documentation or memory — the same discipline D008/D015/
+D021 established. That check earned its keep immediately: `TradeContext` has
+no `.create()` (only `AsyncTradeContext` does), and `submit_order` returns an
+order id rather than any fill information. Both would have been wrong if
+assumed.
+
+Construction is gated by `build_live_broker_adapter()`, which returns `None`
+— never a degraded or simulated stand-in — unless `trading_mode=live` AND
+`live_trading_enabled=true` AND all three `LONGPORT_LIVE_*` credentials are
+present together (D015's all-or-nothing trio pattern). The live credentials
+are deliberately SEPARATE settings from the read-only `LONGPORT_*` quote
+credentials: a quote key must never be able to become a trading key by
+accident, which is exactly what reusing `longport_app_key` would have
+allowed.
+
+**2. Separate, tighter live risk limits.** New settings
+`live_risk_max_position_pct_of_equity` (0.05),
+`live_risk_max_portfolio_exposure_pct_of_equity` (0.20), and
+`live_risk_max_risk_pct_of_equity_per_trade` (0.01), kept entirely separate
+from the existing `risk_*` set rather than replacing or reinterpreting it.
+Per-trade risk stays at 1% because that limit is already a conservative,
+well-understood fraction and changing it would retune position sizing for a
+reason unrelated to "this is real money."
+
+Separate rather than shared for two reasons. First, paper trading's
+behaviour must be *provably* unchanged by the existence of a live path;
+sharing one set would mean any future tightening for live money silently
+retunes every paper backtest and every existing test's expectation. Second,
+real money warrants tighter defaults than a simulator.
+
+The branch itself lives in `apps/api/app/risk/limits.py` as
+`build_risk_limits(settings, *, live)`, extracted out of the route so the
+paper/live distinction is one pure, directly unit-testable function rather
+than a branch buried in an async handler that needs a database, a user, and
+a broker row to reach. The live branch reads only `live_risk_*` and the
+paper branch only `risk_*`, so "neither can see the other's numbers" is
+structural, not a convention. The three non-money-scaled limits (stop
+requirement, market-data freshness, duplicate-order window) are shared
+deliberately: they are correctness rules, not risk appetite, and a live
+trade must never be held to a looser version of them than a paper one.
+
+An interaction worth knowing, found while writing the tests: with live
+exposure capped at 20% of equity, no single symbol can reach the Portfolio
+Manager's 25% per-symbol concentration cap — the tighter live limit above it
+always binds first. On the live path `max_symbol_concentration` and
+`min_cash_reserve` are therefore effectively unreachable, and
+`max_open_positions` is the Portfolio Manager constraint that can actually
+bind. That is a consequence of the chosen numbers, not a defect, but it
+means the Portfolio Manager does less work on the live path than on the
+paper one and should be revisited if the live exposure cap is ever loosened.
+
+**3. A mandatory per-trade `confirm: true` for live orders.**
+`TradeSubmissionRequest` gains `confirm: bool = False`. It is REQUIRED for a
+live-kind broker and ignored entirely for a paper one; missing or false
+against a live broker is a `400 LIVE_CONFIRMATION_REQUIRED`.
+
+Why this is a structural safeguard and not a UX nicety, since that was the
+question worth answering: `docs/TRADING_SAFETY.md` requires explicit
+confirmation before a real order, and a confirmation that lives only in a
+frontend dialog is not a confirmation the server can enforce. Any caller — a
+script, a retried request, an agent, a future UI — has to state its intent to
+spend real money in the payload itself. The default of `false` also means a
+request body that would place a paper trade can never place a live one
+merely by being pointed at a different broker id.
+
+Check ORDER inside `_authorize_live_trade` is deliberate. Confirmation is
+checked FIRST, so an unconfirmed request is refused for the reason actually
+true of it regardless of how the server is configured — and, usefully, so
+that branch is testable without ever enabling live trading anywhere. The
+configuration gate is second (on a default deployment the trade stops here,
+having touched no broker). The permission check is last, because it is the
+only one needing the resolved role.
+
+`trade:submit:live` is required IN ADDITION to the `trade:submit:paper` the
+route's dependency already enforces, rather than instead of it. That is
+strictly more demanding than either alone, which is the correct direction
+for a control that spends real money, and it avoids reordering the existing
+permission-before-broker-lookup checks in `require_broker_access` — a change
+that would have altered 403/404 responses on paths unrelated to this phase.
+`Permission.SUBMIT_LIVE_TRADE` existed as a reserved, unenforced member since
+Phase 6; this phase is what its own docstring said had to happen before it
+could be wired, and it is now enforced.
+
+**4. The emergency stop and Portfolio Manager gate a live trade — verified,
+not assumed.** `_execute_trade()` is one function serving both kinds. The
+ONLY two differences below the gates are which adapter is used and which
+limits are read; the emergency-stop read (D039), the duplicate-order read
+(D024), the Risk Engine, the Portfolio Manager (D029), the re-evaluation of
+a shrunk proposal, and order/fill persistence are literally the same code.
+Each is nonetheless covered by its own explicit live test, because "it
+should follow from the structure" is not verification. The emergency-stop
+test asserts the decisive fact directly: the fake broker double received
+nothing.
+
+The agent route (`POST /brokers/{id}/agent-trades`) is deliberately
+UNCHANGED and remains paper-only. The human `confirm: true` is a
+confirmation of a specific side, quantity and stop that a human chose; no
+equivalent exists when an agent invents those, so an LLM-originated live
+order has no confirmation to give (`docs/AGENT_POLICY.md`, spec §3/§46).
+
+**5. The per-broker paper/live toggle.** A broker row's `kind` IS the
+trading-mode switch, and this phase made it manageable. Before it, broker
+rows could only be created by direct SQL insert — the field deciding which
+adapter real orders reach was unreachable through the API.
+
+Added `POST /admin/brokers` (create with an explicit kind) and `PATCH
+/admin/brokers/{broker_id}/mode` (flip an existing broker), both
+`admin:manage`-gated. There is ONE trade-submission endpoint, and the broker
+row — never anything in the request body — decides paper vs live routing. No
+body field selects the execution mode: `confirm` gates a live trade, it does
+not choose one, and a live-kind broker with no configured live path is
+refused outright rather than falling back to the simulator.
+
+Three guards on the toggle:
+
+- Designating a broker live (on create or flip) needs `confirm_live: true`.
+  Only that direction is made awkward; live -> paper never needs it, because
+  that direction can only make the system safer.
+- A broker with ANY recorded order can no longer be flipped (409).
+  `orders`/`fills` are append-only and keyed by `broker_id` with no
+  per-order kind, so flipping a traded broker would retroactively make its
+  simulated and real history indistinguishable. That is an audit-integrity
+  failure, and the remedy — a new broker row — costs nothing.
+- A broker with a simulated cash/position book cannot be flipped either, so
+  a fake 100,000 balance can never become the identity of a real account.
+
+The mode change is logged at WARNING with the actor, previous kind and new
+kind. A no-op flip (already that kind) succeeds without the guards, since it
+changes nothing.
+
+Two smaller changes fell out of this. `cash` and `positions` were promoted
+into the `BrokerAdapter` Protocol — the trade route always needed both to
+build the Portfolio Manager's view, so they were always part of the real
+contract; before a second adapter existed, only the concrete
+`PaperBrokerAdapter` happened to declare them. And `save_paper_broker()` is
+now skipped on the live path: writing a live account's cash and positions
+into `broker_accounts`/`broker_positions` would create a second, immediately
+divergent book. The order/fill rows are still written for both kinds, since
+those record what THIS system did, which is a different claim from "this is
+the account state."
+
+Deliberately NOT built this phase: any frontend (sibling phase 45 owns
+frontend, and a live-trading UI with its own "you are about to spend real
+money" dialog deserves a dedicated, carefully reviewed phase rather than
+being bolted on here); limit orders on the live path; a reconciliation
+process for an accepted-but-unfilled live order; fractional shares (refused
+explicitly rather than silently rounded); and multi-currency live accounts
+(a single `live_account_currency` is used, and a missing balance in it fails
+the trade rather than substituting another currency at an unknown rate).
+
+Verification (own Docker Postgres on remapped port 5443, own Python 3.13
+venv, own compose project `trading-os-phase43`; the user's 5432/6379/8000/
+3005 stack and the sibling phase-44/45 worktrees were never touched):
+
+- `ruff check .` clean; `mypy apps` clean, 81 source files.
+- Full suite **487 passed**, 0 failed, 3 pre-existing warnings (the same
+  `starlette`/`httpx` deprecation and two `InsecureKeyLengthWarning`s every
+  prior phase reports) — 424 pre-existing (D057's exact total) plus 63 new:
+  23 in `tests/execution/test_live_broker.py`, 6 in
+  `tests/risk/test_limits.py`, 17 in `tests/api/test_live_trades.py`, 17 in
+  `tests/api/test_broker_mode_toggle.py`.
+- One pre-existing test was updated rather than added to:
+  `test_live_broker_is_rejected_since_no_live_execution_path_exists` became
+  `test_live_broker_is_rejected_on_the_default_configuration`. A live-broker
+  request on the default configuration is still refused with a 400; the
+  detail now names the confirmation requirement, because that gate is
+  checked first.
+- Live smoke test against a real `uvicorn` on port 58043 in
+  `TRADING_MODE=paper`, `LIVE_TRADING_ENABLED=false`. Twelve checks passed:
+  the paper path returned results identical to before this phase (`filled`,
+  fill price 100, quantity 10; an oversized order still
+  `exceeds_max_position_size`); `confirm: true` was inert on a paper broker;
+  creating a live broker without `confirm_live` was refused and created no
+  row; an unconfirmed live trade returned `LIVE_CONFIRMATION_REQUIRED`; a
+  CONFIRMED live trade still returned `400 NOT_CONFIGURED: no live execution
+  path is available` — the decisive line, showing the path stays inert even
+  when a caller asks for it correctly; the live broker accumulated zero
+  orders and zero paper-account rows; the flip to paper then routed the same
+  request to the simulator; and the now-traded broker could no longer be
+  flipped (409). The startup log line read
+  `"trading_mode": "paper", "live_trading_enabled": false, "live_broker": "NOT_CONFIGURED"`.
+- The `LiveBrokerAdapter` itself is exercised only against an injected fake
+  SDK client that has no network access. `build_live_broker_adapter()` is
+  tested exclusively in its REFUSING direction — research mode, paper mode,
+  the flag off, each partial credential trio, and the quote-credential trio
+  — because the accepting direction would require enabling live trading,
+  which this repository's tests must never do. The HTTP-level live tests
+  supply a real `LiveBrokerAdapter` over that fake client via FastAPI's
+  `dependency_overrides`, so the production class runs its production code
+  without any `Settings` value being touched.
+
+Cleanup: the `trading-os-phase43` compose project was torn down with `-v`,
+the `.venv` and the smoke-test log/script were removed, and no `.env` file
+was created at any point — every variable was shell-exported for this
+session only.

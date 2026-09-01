@@ -186,8 +186,37 @@ requires an explicit `BrokerGrant` for this specific `broker_id` — 403
 (`No access grant for broker ...`) if the user hasn't been granted access
 to it, even if they hold the permission (D012). Broker existence (404) is
 checked before the grant, so an unknown `broker_id` reliably 404s rather
-than 403ing. Only works against a broker row with `kind=paper`; a
-`kind=live` broker returns 400 (no live execution path exists).
+than 403ing.
+
+**Paper vs live routing (D058).** This is the ONLY trade-submission
+endpoint, and the broker row's `kind` — never anything in the request body
+— decides which execution path it takes: `kind=paper` routes to the
+in-process `PaperBrokerAdapter`, `kind=live` routes to the real
+`LiveBrokerAdapter`. Flip a broker between the two with `PATCH
+/admin/brokers/{broker_id}/mode` (see below); that is the per-broker
+trading-mode toggle. A `kind=live` broker is never quietly served by the
+simulator — if no live path is configured, the request is refused.
+
+A `kind=live` broker additionally requires ALL of:
+
+1. `"confirm": true` in this request's body — 400
+   `LIVE_CONFIRMATION_REQUIRED:` if missing or false. Checked first, so an
+   unconfirmed request is refused for that reason regardless of server
+   configuration.
+2. A configured live execution path: `TRADING_MODE=live`,
+   `LIVE_TRADING_ENABLED=true`, and all three `LONGPORT_LIVE_*`
+   credentials set together — 400 `NOT_CONFIGURED:` otherwise. **This is
+   false on the committed defaults**, so a live-broker request is refused
+   here out of the box.
+3. The `trade:submit:live` permission **in addition to**
+   `trade:submit:paper` — 403 otherwise.
+
+Everything after those three gates is the same code a paper trade runs:
+the emergency stop, the duplicate-order check, the deterministic Risk
+Engine, and the Portfolio Manager all gate a live order identically. The
+only other difference is that live trades are evaluated against the
+tighter `LIVE_RISK_*` limits (5% max position, 20% max exposure, 1% risk
+per trade) instead of the `RISK_*` ones (10%/50%/1%).
 
 Request body (`TradeSubmissionRequest`):
 ```json
@@ -198,9 +227,14 @@ Request body (`TradeSubmissionRequest`):
   "estimated_price": "100",
   "stop_price": "95",
   "market_data_as_of": null,
-  "marks": {}
+  "marks": {},
+  "confirm": false
 }
 ```
+`confirm` (D058) defaults to `false`. It is REQUIRED for a `kind=live`
+broker and IGNORED entirely for a `kind=paper` one — sending it against a
+paper broker changes nothing. It gates a live trade; it does not select
+one, so it cannot make a paper broker execute live or vice versa.
 `estimated_price` is optional (D017). Supplied: it's authoritative and no
 vendor is consulted; `market_data_as_of` defaults to the server's current
 time if also omitted. Omitted: the server fetches a live quote from the
@@ -258,10 +292,20 @@ Portfolio Manager stopped it. Read `portfolio_action` (not `approved`) to
 tell the two apart.
 
 Error responses: 401 if unauthenticated/token invalid; 403 if authenticated
-but missing the `trade:submit:paper` permission; 404 if `broker_id` doesn't
-exist; 400 with a `NOT_CONFIGURED:`-prefixed detail if the broker isn't a
-paper broker; 400 with a `DATA_UNAVAILABLE:`-prefixed detail if a mark is
-missing for an existing position.
+but missing the `trade:submit:paper` permission (or, on a live broker,
+`trade:submit:live`); 404 if `broker_id` doesn't exist; 400 with a
+`DATA_UNAVAILABLE:`-prefixed detail if a mark is missing for an existing
+position.
+
+Live-broker-only errors (D058): 400 `LIVE_CONFIRMATION_REQUIRED:` when
+`confirm` is absent or false; 400 `NOT_CONFIGURED:` when no live execution
+path is configured (the default); 502 `DATA_UNAVAILABLE:` when the live
+account's cash/positions cannot be read (fail closed — the trade is never
+evaluated against an unknown book); 502 `LIVE_BROKER_ERROR:` on a broker
+connection failure; and 502 `LIVE_ORDER_UNCONFIRMED:` when the broker
+ACCEPTED a real order but has reported no execution. That last one names
+the real broker order id so the position can be reconciled by hand — no
+fill is recorded and none is assumed (spec §57).
 
 ## `POST /brokers/{broker_id}/agent-trades`
 
@@ -616,6 +660,60 @@ deliberately not updatable here. Unknown `role_id` is 404. Response (200,
 Replacing `permissions` takes effect for every holder of the role on
 their very next request — nothing caches a permission set, so an
 already-issued token immediately reflects the new grant (or its absence).
+
+## `POST /admin/brokers`
+
+Requires `admin:manage`. Creates a broker row with an explicit `kind` —
+the per-broker paper/live execution switch (D058). Before this endpoint,
+broker rows could only be created by direct SQL insert.
+
+```json
+{
+  "name": "Longbridge Live",
+  "kind": "live",
+  "provider": "longbridge",
+  "is_active": false,
+  "confirm_live": true
+}
+```
+
+`confirm_live` is REQUIRED when `kind` is `"live"` and ignored otherwise —
+400 `LIVE_KIND_CONFIRMATION_REQUIRED:` without it, and no row is created.
+Creating a live-kind broker does NOT enable live trading: an order against
+it still requires `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, the
+`LONGPORT_LIVE_*` credentials, the `trade:submit:live` permission, and
+`"confirm": true` on that individual trade request.
+
+Returns 201 with the same `BrokerResponse` shape `GET /brokers/{id}`
+returns.
+
+## `PATCH /admin/brokers/{broker_id}/mode`
+
+Requires `admin:manage`. **The per-broker paper/live trading-mode toggle
+(D058).** Flips one broker between execution modes; `POST
+/brokers/{broker_id}/trades` reads the result on every submission and
+routes to `PaperBrokerAdapter` or `LiveBrokerAdapter` accordingly.
+
+```json
+{ "kind": "live", "confirm_live": true }
+```
+
+- `confirm_live` is required to flip TO live (400
+  `LIVE_KIND_CONFIRMATION_REQUIRED:` without it) and ignored flipping to
+  paper. Only the direction toward real money is made deliberately
+  awkward; live → paper can only make the system safer.
+- **409 if the broker has any recorded order.** `orders`/`fills` are
+  append-only and record no per-order kind, so flipping a traded broker
+  would make its simulated and real history indistinguishable. Create a
+  new broker instead.
+- **409 if the broker has a simulated cash/position book**
+  (`broker_accounts`/`broker_positions` rows), so a simulated balance can
+  never become the identity of a real account.
+- 404 for an unknown `broker_id`. A no-op flip (the broker already has the
+  requested kind) returns 200 without applying those checks.
+
+The change is logged at WARNING with the actor, previous kind, and new
+kind. Read a broker's current mode back with `GET /brokers/{broker_id}`.
 
 ## `POST /admin/broker-grants`
 

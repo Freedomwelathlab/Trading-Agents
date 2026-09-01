@@ -49,6 +49,28 @@ the bootstrap default used while no flip has ever been recorded. The Risk
 Engine's signature and behavior are unchanged - it still receives a plain
 boolean and still returns BlockReason.EMERGENCY_STOP_ACTIVE; only the
 source of that boolean moved.
+
+D058 (Phase 43) adds the LIVE branch to the human-submitted route only.
+A request against a broker row whose kind is LIVE must clear, in this
+order and BEFORE any of the machinery a paper trade uses:
+
+  1. `confirm: true` in the request body (docs/TRADING_SAFETY.md's
+     "requires explicit user confirmation", made enforceable server-side),
+  2. an actually-configured live execution path - TRADING_MODE=live,
+     LIVE_TRADING_ENABLED=true, and the LONGPORT_LIVE_* credential trio,
+     which the committed defaults do NOT satisfy,
+  3. the `trade:submit:live` permission, in addition to the
+     `trade:submit:paper` this route's dependency already required.
+
+After that it runs the SAME `_execute_trade()` a paper trade runs, so the
+emergency stop (D039), the duplicate-order check (D024), the deterministic
+Risk Engine, and the Portfolio Manager (D029) gate a live order exactly as
+they gate a paper one - they are not re-implemented for live and cannot be
+skipped by it. The only two differences below that point are which broker
+adapter is used and which risk limits are read (the tighter `live_risk_*`
+set - see apps/api/app/risk/limits.py).
+
+The AGENT route is deliberately untouched: it remains paper-only.
 """
 
 import uuid
@@ -63,6 +85,7 @@ from apps.api.app.agents.trader import AgentOutputError, TraderAgent, stop_price
 from apps.api.app.api.dependencies import (
     AuthorizedBroker,
     get_history_provider,
+    get_live_broker_adapter,
     get_market_data_router,
     get_technical_analyst,
     get_trader_agent,
@@ -79,6 +102,13 @@ from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import BrokerKind, OrderStatus
+from apps.api.app.execution.broker import BrokerAdapter
+from apps.api.app.execution.live_broker import (
+    LiveBrokerAdapter,
+    LiveBrokerError,
+    LiveOrderNotFilledError,
+)
+from apps.api.app.execution.paper_broker import PaperBrokerAdapter
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
 from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
@@ -87,7 +117,8 @@ from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableErro
 from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
 from apps.api.app.portfolio_manager.manager import portfolio_state_from_positions
 from apps.api.app.portfolio_manager.models import PortfolioLimits
-from apps.api.app.risk.models import RiskLimits, TradeProposal
+from apps.api.app.risk.limits import build_risk_limits
+from apps.api.app.risk.models import TradeProposal
 from apps.api.app.safety.emergency_stop import is_emergency_stop_active
 
 router = APIRouter(prefix="/brokers/{broker_id}/trades", tags=["trades"])
@@ -109,13 +140,76 @@ async def _resolve_live_quote(
 
 
 def _require_paper_broker(authorized: AuthorizedBroker) -> None:
+    """Used by the AGENT trade route only, as of Phase 43. An
+    LLM-originated live order is exactly what docs/TRADING_SAFETY.md and
+    docs/AGENT_POLICY.md rule out: the human's `confirm: true` on the
+    human-submitted route is a confirmation of a specific side, quantity
+    and stop that the human chose, and no equivalent exists when an agent
+    invents those. So `/agent-trades` stays paper-only and D058 changed
+    nothing about it."""
     if authorized.broker.kind is not BrokerKind.PAPER:
         raise HTTPException(
             status_code=400,
             detail=(
                 "NOT_CONFIGURED: this endpoint only supports paper brokers. "
-                "Live trading has no implemented execution path (spec §3/§46)."
+                "Agent-originated live trades are not permitted (spec §3/§46, "
+                "docs/AGENT_POLICY.md)."
             ),
+        )
+
+
+def _authorize_live_trade(
+    authorized: AuthorizedBroker,
+    *,
+    confirmed: bool,
+    live_broker: LiveBrokerAdapter | None,
+) -> None:
+    """Phase 43 (D058). Every gate a LIVE trade must clear BEFORE any of
+    the machinery a paper trade also clears (risk engine, emergency stop,
+    Portfolio Manager) is consulted.
+
+    Order matters and is deliberate. The confirmation check is FIRST, so
+    that an unconfirmed live request is refused for the reason that is
+    actually true of it - "you did not confirm" - regardless of how the
+    server happens to be configured, and so this branch is testable
+    without ever enabling live trading anywhere. The configuration gate
+    is second: on a default deployment (`LIVE_TRADING_ENABLED=false`)
+    `live_broker` is None and the trade stops here, having touched no
+    broker. The permission check is last of the three because it is the
+    only one that needs the resolved role.
+
+    `trade:submit:live` is required IN ADDITION to the
+    `trade:submit:paper` the route's own dependency already enforced -
+    strictly more demanding than either alone, which is the correct
+    direction for a control that spends real money.
+    """
+    if not confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "LIVE_CONFIRMATION_REQUIRED: this broker is a LIVE broker and this "
+                "request would place a real order with real money. Resubmit with "
+                '"confirm": true to state that intent explicitly '
+                "(docs/TRADING_SAFETY.md, docs/DECISIONS.md D058)."
+            ),
+        )
+
+    if live_broker is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "NOT_CONFIGURED: no live execution path is available. Live trading "
+                "requires TRADING_MODE=live, LIVE_TRADING_ENABLED=true, and all three "
+                "LONGPORT_LIVE_* credentials set together (docs/DECISIONS.md D058). "
+                "No live-broker request is ever routed to the paper simulator."
+            ),
+        )
+
+    role = authorized.user.role
+    if role is None or Permission.SUBMIT_LIVE_TRADE.value not in role.permissions:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing required permission: {Permission.SUBMIT_LIVE_TRADE.value}",
         )
 
 
@@ -127,25 +221,41 @@ async def _execute_trade(
     proposal: TradeProposal,
     marks: dict[str, Decimal],
     submitted_by_user_id: uuid.UUID,
+    live_broker: LiveBrokerAdapter | None = None,
 ) -> TradeSubmissionResponse:
-    # Locks the broker's account row for the rest of this transaction -
-    # see apps/api/app/execution/persistence.py's module docstring for why.
-    broker_adapter = await load_paper_broker(
-        session, broker_id, default_starting_cash=settings.paper_broker_starting_cash
-    )
+    """`live_broker` is None for every paper trade, which is the only shape
+    this function had before Phase 43; passing one switches the broker and
+    the risk limits and nothing else. Everything between those two points -
+    the emergency stop read, the duplicate-order read, the Risk Engine, the
+    Portfolio Manager, the re-evaluation of a shrunk proposal, and the
+    order/fill persistence - is the SAME code for both, by construction
+    rather than by convention (D058)."""
+    live = live_broker is not None
+    paper_adapter: PaperBrokerAdapter | None = None
+
+    if live_broker is not None:
+        broker_adapter: BrokerAdapter = live_broker
+    else:
+        # Locks the broker's account row for the rest of this transaction -
+        # see apps/api/app/execution/persistence.py's module docstring for
+        # why. A live broker has no such row: the venue, not this database,
+        # holds the authoritative cash and positions (spec §62).
+        paper_adapter = await load_paper_broker(
+            session, broker_id, default_starting_cash=settings.paper_broker_starting_cash
+        )
+        broker_adapter = paper_adapter
     try:
         account = broker_adapter.get_account_state(marks=marks)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"DATA_UNAVAILABLE: {exc}") from None
+    except LiveBrokerError as exc:
+        # D058: the live account state could not be read. Fail closed -
+        # never proceed to a risk evaluation against an unknown book.
+        raise HTTPException(status_code=502, detail=f"DATA_UNAVAILABLE: {exc}") from None
 
-    limits = RiskLimits(
-        max_position_pct_of_equity=settings.risk_max_position_pct_of_equity,
-        max_portfolio_exposure_pct_of_equity=settings.risk_max_portfolio_exposure_pct_of_equity,
-        max_risk_pct_of_equity_per_trade=settings.risk_max_risk_pct_of_equity_per_trade,
-        require_stop_price=settings.risk_require_stop_price,
-        max_market_data_age_seconds=settings.risk_max_market_data_age_seconds,
-        duplicate_order_window_seconds=settings.risk_duplicate_order_window_seconds,
-    )
+    # D058: the live branch reads ONLY live_risk_* and the paper branch
+    # reads ONLY risk_*; see apps/api/app/risk/limits.py.
+    limits = build_risk_limits(settings, live=live)
 
     portfolio_limits = PortfolioLimits(
         max_symbol_pct_of_equity=settings.portfolio_max_symbol_pct_of_equity,
@@ -164,6 +274,8 @@ async def _execute_trade(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"DATA_UNAVAILABLE: {exc}") from None
+    except LiveBrokerError as exc:
+        raise HTTPException(status_code=502, detail=f"DATA_UNAVAILABLE: {exc}") from None
 
     # D039: the emergency stop's authoritative state is a persisted row,
     # read here (one layer above the Risk Engine) and handed down as a
@@ -186,21 +298,50 @@ async def _execute_trade(
         window_seconds=settings.risk_duplicate_order_window_seconds,
     )
 
-    result = await submit_trade_and_record(
-        session,
-        broker_id,
-        proposal,
-        account,
-        limits,
-        broker_adapter,
-        emergency_stop_active=emergency_stop_active,
-        submitted_by_user_id=submitted_by_user_id,
-        recent_orders=recent_orders,
-        portfolio=portfolio,
-        portfolio_limits=portfolio_limits,
-    )
+    try:
+        result = await submit_trade_and_record(
+            session,
+            broker_id,
+            proposal,
+            account,
+            limits,
+            broker_adapter,
+            emergency_stop_active=emergency_stop_active,
+            submitted_by_user_id=submitted_by_user_id,
+            recent_orders=recent_orders,
+            portfolio=portfolio,
+            portfolio_limits=portfolio_limits,
+        )
+    except LiveOrderNotFilledError as exc:
+        # D058: the live broker ACCEPTED a real order but has not executed
+        # it. The one thing that must not happen here is inventing a fill,
+        # so the real order id is surfaced instead (spec §57). Note this is
+        # reachable only after every gate above already approved the trade.
+        logger.error(
+            "live_order_submitted_but_not_filled",
+            broker_id=str(broker_id),
+            symbol=proposal.symbol,
+            broker_order_id=exc.order_id,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"LIVE_ORDER_UNCONFIRMED: broker order {exc.order_id} was submitted but "
+                "no execution has been reported. This order may still fill - reconcile "
+                "it with the broker directly. No fill was recorded and none was assumed."
+            ),
+        ) from None
+    except LiveBrokerError as exc:
+        raise HTTPException(status_code=502, detail=f"LIVE_BROKER_ERROR: {exc}") from None
 
-    await save_paper_broker(session, broker_id, broker_adapter)
+    if paper_adapter is not None:
+        # A live broker's cash/positions live at the venue, not in
+        # broker_accounts/broker_positions - writing them here would create
+        # a second, immediately-divergent book (spec §62). The order/fill
+        # rows written by submit_trade_and_record above are still recorded
+        # for both kinds; those are an audit record of what THIS system
+        # did, which is a different claim from "this is the account state".
+        await save_paper_broker(session, broker_id, paper_adapter)
     await session.commit()
 
     assert result.order_id is not None  # always set by submit_trade_and_record
@@ -232,8 +373,16 @@ async def submit_trade_endpoint(
     settings: Settings = Depends(get_settings),
     authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_PAPER_TRADE)),
     market_data_router: MarketDataRouter | None = Depends(get_market_data_router),
+    live_broker: LiveBrokerAdapter | None = Depends(get_live_broker_adapter),
 ) -> TradeSubmissionResponse:
-    _require_paper_broker(authorized)
+    # D058: exactly one of these two branches runs, decided by the BROKER
+    # ROW's kind, never by anything in the request body. A caller cannot
+    # opt a paper broker into the live path or vice versa.
+    if authorized.broker.kind is BrokerKind.LIVE:
+        _authorize_live_trade(authorized, confirmed=request.confirm, live_broker=live_broker)
+    else:
+        _require_paper_broker(authorized)
+        live_broker = None
 
     if request.estimated_price is not None:
         estimated_price = request.estimated_price
@@ -264,6 +413,7 @@ async def submit_trade_endpoint(
         proposal=proposal,
         marks={**request.marks, request.symbol: estimated_price},
         submitted_by_user_id=authorized.user.id,
+        live_broker=live_broker,
     )
 
 

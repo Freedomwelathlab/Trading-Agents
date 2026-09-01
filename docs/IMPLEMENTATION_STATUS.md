@@ -1,4 +1,4 @@
-# Implementation Status
+﻿# Implementation Status
 
 Update this after meaningful implementation work — not for every commit.
 
@@ -1695,6 +1695,71 @@ record.
   with `-v`, the built image removed, and the throwaway compose file and
   verification venv deleted; no `.env` was created at any point. See
   docs/DECISIONS.md D056.
+
+- Phase 43: the live-trading execution path — built, gated, and left INERT
+  (2026-09-01, D058). **No real order was ever placed, no real broker was
+  ever contacted, and `LIVE_TRADING_ENABLED` was never set to `true` — not
+  in a default, not in a test fixture, not transiently, not in the smoke
+  test. This phase delivers the CODE PATH only.** On a default checkout the
+  system is exactly as inert as before it: a request against a live-kind
+  broker is refused and no trade context is ever constructed.
+  **(1) `LiveBrokerAdapter`** (`apps/api/app/execution/live_broker.py`) —
+  the first concrete `BrokerAdapter` that can move real money, implementing
+  the same Protocol as `PaperBrokerAdapter` so the OMS and every gate above
+  it cannot tell the two apart. Uses the SDK's SYNCHRONOUS
+  `longport.openapi.TradeContext` (verified by direct introspection of the
+  installed package, not from docs: `TradeContext` has no `.create()`, and
+  `submit_order` returns only an `order_id`, never fill information). It
+  therefore reads the order back once via `order_detail()` and builds its
+  `Fill` from the broker's own `executed_quantity`/`executed_price`; an
+  accepted-but-unexecuted order raises `LiveOrderNotFilledError` and the
+  route answers `502 LIVE_ORDER_UNCONFIRMED` naming the real order id
+  rather than inventing a fill at the caller's estimated price. The
+  account snapshot is fetched once per adapter instance (one adapter per
+  request), so every gate in a trade reasons about the same book.
+  `build_live_broker_adapter()` returns `None` unless `TRADING_MODE=live`
+  AND `LIVE_TRADING_ENABLED=true` AND all three `LONGPORT_LIVE_*`
+  credentials are set together — separate settings from the read-only
+  `LONGPORT_*` quote credentials, so a quote key can never become a
+  trading key.
+  **(2) Separate, tighter live risk limits** — `LIVE_RISK_*` at 5% max
+  position / 20% max exposure / 1% risk per trade, against paper's
+  10%/50%/1%, built by the new pure `build_risk_limits(settings, live=)`
+  in `apps/api/app/risk/limits.py`. The live branch reads only
+  `live_risk_*` and the paper branch only `risk_*`, so paper behaviour is
+  structurally unaffected rather than unaffected by convention.
+  **(3) A mandatory per-trade `confirm: true`** on `POST
+  /brokers/{id}/trades` for a live broker (400 `LIVE_CONFIRMATION_REQUIRED`
+  otherwise), plus `trade:submit:live` required IN ADDITION to
+  `trade:submit:paper`. A confirmation that lives only in a frontend
+  dialog is not one the server can enforce — this is a payload field, and a
+  structural safeguard rather than a UX nicety. The agent route stays
+  paper-only.
+  **(4) The shared gates verified, not assumed** — the emergency stop
+  (D039), the duplicate-order check (D024), the Risk Engine, and the
+  Portfolio Manager (D029) gate a live order via literally the same
+  `_execute_trade()` a paper order runs, and each has its own explicit
+  live test against a fake broker double.
+  **(5) The per-broker paper/live toggle** — `POST /admin/brokers` and
+  `PATCH /admin/brokers/{id}/mode` (both `admin:manage`). A broker row's
+  `kind` IS the trading-mode switch: one trade endpoint, and the broker
+  row — never a request-body field — decides paper vs live routing.
+  Designating a broker live needs `confirm_live: true`; a broker that has
+  recorded orders or holds a simulated book can no longer be flipped (409),
+  because `orders`/`fills` are append-only with no per-order kind and
+  flipping would make simulated and real history indistinguishable.
+  No frontend was built (sibling phase 45 owns frontend; a live-trading UI
+  deserves its own reviewed phase). Also not built: live limit orders,
+  reconciliation of an unfilled live order, fractional shares (refused, not
+  rounded), multi-currency live accounts.
+  **487 tests passing** (424 pre-existing + 63 new: 23 live-broker unit, 6
+  risk-limits unit, 17 live-trade integration, 17 broker-mode-toggle
+  integration), ruff + mypy clean across 81 source files. Verified against
+  a real Postgres on a remapped port and a real `uvicorn` in
+  `TRADING_MODE=paper`; the paper path returned results identical to before
+  the phase, and a CONFIRMED live trade still returned `400 NOT_CONFIGURED`
+  because `LIVE_TRADING_ENABLED` is false.
+
 
 A fourth, fully independent full from-scratch integration verification run
 2026-08-31 against `main` (Phase 42's request-ID middleware and ordered

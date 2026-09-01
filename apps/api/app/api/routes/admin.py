@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.app.api.schemas_admin import (
     BrokerGrantResponse,
     CreateBrokerGrantRequest,
+    CreateBrokerRequest,
     CreateRoleRequest,
     CreateRoleResponse,
     CreateUserRequest,
@@ -39,14 +40,26 @@ from apps.api.app.api.schemas_admin import (
     ListBrokerGrantsResponse,
     ListRolesResponse,
     ListUsersResponse,
+    UpdateBrokerModeRequest,
     UpdateRoleRequest,
     UpdateUserRequest,
 )
+from apps.api.app.api.schemas_brokers import BrokerResponse
 from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.auth.security import hash_password
+from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import Broker, BrokerGrant, Role, User
+from apps.api.app.db.models import (
+    Broker,
+    BrokerAccount,
+    BrokerGrant,
+    BrokerKind,
+    BrokerPosition,
+    Order,
+    Role,
+    User,
+)
 
 router = APIRouter(
     prefix="/admin",
@@ -58,6 +71,17 @@ DEFAULT_LIST_LIMIT = 50
 """Default page size for the D030 listing routes - deliberately identical
 to the portfolio history endpoint's DEFAULT_HISTORY_LIMIT (D027) so this
 codebase has one pagination convention, not two."""
+logger = get_logger(__name__)
+
+_LIVE_KIND_CONFIRMATION_REQUIRED = (
+    "LIVE_KIND_CONFIRMATION_REQUIRED: designating a broker as kind='live' makes it "
+    'eligible for the real-money execution path. Resend with "confirm_live": true to '
+    "state that intent explicitly (docs/DECISIONS.md D058). This alone still does not "
+    "enable live trading: an order additionally requires TRADING_MODE=live, "
+    "LIVE_TRADING_ENABLED=true, the LONGPORT_LIVE_* credentials, the trade:submit:live "
+    'permission, and "confirm": true on that individual trade request.'
+)
+
 MAX_LIST_LIMIT = 500
 """Hard ceiling on `limit` regardless of what the caller asks for, same
 value and reasoning as the history endpoint's MAX_HISTORY_LIMIT: a caller
@@ -301,6 +325,142 @@ async def create_broker_grant(
         ) from None
 
     return BrokerGrantResponse(id=grant.id, user_id=grant.user_id, broker_id=grant.broker_id)
+
+
+@router.post("/brokers", response_model=BrokerResponse, status_code=201)
+async def create_broker(
+    request: CreateBrokerRequest,
+    current_user: User = Depends(require_permission(Permission.ADMIN)),
+    session: AsyncSession = Depends(get_session),
+) -> BrokerResponse:
+    """Phase 43 (D058). Creates a broker row with an explicit `kind`, which
+    is the per-broker paper/live trading-mode switch the trade endpoint
+    routes on."""
+    if request.kind is BrokerKind.LIVE and not request.confirm_live:
+        raise HTTPException(status_code=400, detail=_LIVE_KIND_CONFIRMATION_REQUIRED)
+
+    broker = Broker(
+        name=request.name,
+        kind=request.kind,
+        provider=request.provider,
+        is_active=request.is_active,
+    )
+    session.add(broker)
+    await session.commit()
+
+    logger.info(
+        "broker_created",
+        broker_id=str(broker.id),
+        kind=broker.kind.value,
+        actor_user_id=str(current_user.id),
+    )
+    return BrokerResponse(
+        id=broker.id,
+        name=broker.name,
+        kind=broker.kind,
+        provider=broker.provider,
+        is_active=broker.is_active,
+    )
+
+
+@router.patch("/brokers/{broker_id}/mode", response_model=BrokerResponse)
+async def set_broker_mode(
+    broker_id: uuid.UUID,
+    request: UpdateBrokerModeRequest,
+    current_user: User = Depends(require_permission(Permission.ADMIN)),
+    session: AsyncSession = Depends(get_session),
+) -> BrokerResponse:
+    """Phase 43 (D058): flip ONE broker between paper and live execution.
+
+    This is the per-broker trading-mode toggle. It is deliberately its own
+    endpoint rather than a field on a general "update broker" route,
+    because it is the only broker attribute that changes which adapter
+    real orders go to, and it carries preconditions no other field does.
+
+    Refused when the broker already has ANY recorded order. `orders`/`fills`
+    are append-only and keyed by `broker_id` alone - they record no
+    per-order kind - so flipping a traded broker would retroactively make
+    its simulated and real history indistinguishable. That is an
+    audit-integrity failure, not an inconvenience: the remedy is a NEW
+    broker row, which costs nothing and keeps each history honest.
+
+    Also refused when a paper book exists (`broker_accounts` /
+    `broker_positions` rows), so a simulated 100,000 balance can never
+    become the identity of a real account.
+
+    A no-op flip (kind already equals the requested one) succeeds without
+    those checks - it changes nothing, so there is nothing to protect.
+    """
+    broker = (
+        await session.execute(select(Broker).where(Broker.id == broker_id))
+    ).scalar_one_or_none()
+    if broker is None:
+        raise HTTPException(status_code=404, detail=f"No broker with id {broker_id}.")
+
+    if broker.kind is request.kind:
+        return BrokerResponse(
+            id=broker.id,
+            name=broker.name,
+            kind=broker.kind,
+            provider=broker.provider,
+            is_active=broker.is_active,
+        )
+
+    if request.kind is BrokerKind.LIVE and not request.confirm_live:
+        raise HTTPException(status_code=400, detail=_LIVE_KIND_CONFIRMATION_REQUIRED)
+
+    order_exists = (
+        await session.execute(select(Order.id).where(Order.broker_id == broker_id).limit(1))
+    ).scalar_one_or_none()
+    if order_exists is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Broker {broker_id} has recorded orders and its kind can no longer be "
+                "changed. The orders/fills history is append-only and does not record a "
+                "per-order kind, so flipping it would make simulated and real trades "
+                "indistinguishable in the audit trail. Create a new broker instead."
+            ),
+        )
+
+    account_exists = (
+        await session.execute(
+            select(BrokerAccount.broker_id).where(BrokerAccount.broker_id == broker_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    position_exists = (
+        await session.execute(
+            select(BrokerPosition.id).where(BrokerPosition.broker_id == broker_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if account_exists is not None or position_exists is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Broker {broker_id} has a simulated cash/position book and its kind can "
+                "no longer be changed. A simulated balance must never become the identity "
+                "of a real account. Create a new broker instead."
+            ),
+        )
+
+    previous = broker.kind
+    broker.kind = request.kind
+    await session.commit()
+
+    logger.warning(
+        "broker_mode_changed",
+        broker_id=str(broker_id),
+        previous_kind=previous.value,
+        new_kind=broker.kind.value,
+        actor_user_id=str(current_user.id),
+    )
+    return BrokerResponse(
+        id=broker.id,
+        name=broker.name,
+        kind=broker.kind,
+        provider=broker.provider,
+        is_active=broker.is_active,
+    )
 
 
 @router.delete("/broker-grants/{grant_id}", status_code=204)
