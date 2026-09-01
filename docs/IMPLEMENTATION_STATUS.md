@@ -1742,6 +1742,53 @@ verification venv were all removed, and the user's own
 (8000) and Next.js (3005) dev servers were confirmed still running and
 untouched. See docs/DECISIONS.md D057 for the full verification record.
 
+- Phase 45: dashboard redesign — a real layout shell and a design-token
+  system (2026-09-01, D060). A **visual and layout pass only**: no
+  endpoint, no fetch, and no condition governing whether something
+  renders was changed. `/dashboard` was a single `max-w-2xl` column of
+  eight identically-weighted bordered boxes with ad-hoc
+  `border-neutral-*` classes repeated at every call site; it is now a
+  12-column grid inside a persistent app shell (left rail carrying brand,
+  navigation, live `SessionStatus` and sign-out; sticky header carrying
+  the page title and the real `/health` status strip). Panel order stays
+  semantically load-bearing: broker discovery ahead of everything
+  broker-scoped because it is the source of the `broker_id` those panels
+  need (D034), portfolio state and the equity curve leading in the wide
+  column, the two order-entry panels sharing a row so neither reads as
+  the default, and the backtest last and separate because it alone is not
+  broker-scoped (D025). `app/globals.css` gained a semantic token set
+  (four-step surface scale, two line weights, three text weights, accent,
+  `--pos`/`--neg`/`--grid`) wired through Tailwind v4's `@theme inline`;
+  dark is primary (`#060b16`, not `#000000`) and light is a separately
+  contrast-checked palette, not an inversion — every text token clears
+  4.5:1 against `--surface` in both. `/login` and `/admin` were given the
+  same tokens and shell. The Risk Engine's amber and the Portfolio
+  Manager's violet deliberately stay explicit palette classes rather than
+  tokens, because those hues carry meaning fixed by D029.
+  `components/ui/ChartFrame.tsx` adds gridlines, an area fill and axis
+  labels to both equity charts but draws no data — `buildPoints` and
+  `buildBacktestPoints` are untouched and still hand-rolled, and both
+  charts keep their full data table as the accessible fallback. **No new
+  dependency**: `package.json` is byte-identical, fonts come from
+  `next/font/google`, and the `ui-ux-pro-max` skill's component-library
+  suggestion was translated into local Tailwind components instead of
+  installed. **102 frontend tests over 13 files pass**, the same 102 as
+  before the redesign, with none deleted, skipped or weakened; the two
+  that initially failed were fixed by rewording new chrome that had
+  named the Portfolio Manager when the backend had not, not by relaxing
+  the assertion. Live-verified in a real browser against an isolated
+  stack (Postgres 5445, Redis 6445, uvicorn 8045, Next 3045) seeded with
+  real users, brokers, grants, a real trade and five real snapshots:
+  three distinct `NOT_CONFIGURED:` sentinels (market data, LLM provider,
+  history provider), two real 403s (ungranted broker, and
+  `admin:manage`), the backend's own login 401, and the full D029 case —
+  `approved: true` with `status: "rejected"` and
+  `portfolio_action: "reject"` rendering as a neutral Risk Engine block
+  beside a violet Portfolio Manager panel. Both colour schemes and a
+  1024px viewport were checked. Stack, venv and throwaway compose file
+  were removed afterwards; no `.env` was ever created, and the user's own
+  5432/6379/8000/3005 services were left untouched.
+
 ## Known Issues
 
 None open.

@@ -3,6 +3,32 @@
 import { useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
 import { subscribeToBrokerSelection } from "@/lib/brokerSelection";
+import {
+  ChartFrame,
+  WIDTH,
+  HEIGHT,
+  PAD_LEFT,
+  PAD_RIGHT,
+  PAD_TOP,
+  PAD_BOTTOM,
+} from "@/components/ui/ChartFrame";
+import {
+  Alert,
+  EmptyNote,
+  Field,
+  Panel,
+  TableScroll,
+  Term,
+  Value,
+  btnPrimary,
+  inputClass,
+  monoInputClass,
+  tableClass,
+  tbodyRowClass,
+  tdClass,
+  thClass,
+  theadRowClass,
+} from "@/components/ui/primitives";
 
 type HistoryPosition = {
   symbol: string;
@@ -31,12 +57,6 @@ type HistoryResponse = {
   detail?: string;
 };
 
-const WIDTH = 640;
-const HEIGHT = 200;
-const PAD_LEFT = 8;
-const PAD_RIGHT = 8;
-const PAD_TOP = 12;
-const PAD_BOTTOM = 12;
 
 type Point = { x: number; y: number; entry: HistoryEntry; equity: number };
 
@@ -85,75 +105,83 @@ function EquityChart({ snapshots }: { snapshots: HistoryEntry[] }) {
   const first = snapshots[0];
   const last = snapshots[snapshots.length - 1];
 
-  return (
-    <div className="mt-3">
-      <svg
-        role="img"
-        aria-label={`Total equity across ${snapshots.length} captured snapshot${
-          snapshots.length === 1 ? "" : "s"
-        }`}
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        className="w-full rounded border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
-      >
-        <polyline
-          data-testid="equity-line"
-          points={path}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          className="text-emerald-600 dark:text-emerald-400"
-        />
-        {points.map((p) => (
-          <circle
-            key={p.entry.id}
-            cx={p.x}
-            cy={p.y}
-            r={3}
-            className="fill-emerald-600 dark:fill-emerald-400"
-          >
-            <title>{`${p.entry.captured_at} — total_equity ${p.entry.total_equity}`}</title>
-          </circle>
-        ))}
-      </svg>
+  // Closes the plotted line down to the baseline so the series reads as a
+  // filled area. Purely a restatement of the same vertices — it adds no
+  // point that `buildPoints` did not already compute from real data.
+  const area =
+    points.length > 0
+      ? `${path} ${points[points.length - 1].x.toFixed(2)},${HEIGHT - PAD_BOTTOM} ` +
+        `${points[0].x.toFixed(2)},${HEIGHT - PAD_BOTTOM}`
+      : "";
 
-      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
-        <dt className="opacity-70">snapshots</dt>
-        <dd>{snapshots.length}</dd>
-        <dt className="opacity-70">equity range</dt>
-        <dd>
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-md border border-line bg-well p-3">
+        <ChartFrame
+          ariaLabel={`Total equity across ${snapshots.length} captured snapshot${
+            snapshots.length === 1 ? "" : "s"
+          }`}
+          min={min}
+          max={max}
+          testId="equity-line"
+          areaPoints={area}
+          linePoints={path}
+        >
+          {points.map((p) => (
+            <circle
+              key={p.entry.id}
+              cx={p.x}
+              cy={p.y}
+              r={3}
+              className="fill-pos stroke-well"
+              strokeWidth={1.5}
+            >
+              <title>{`${p.entry.captured_at} — total_equity ${p.entry.total_equity}`}</title>
+            </circle>
+          ))}
+        </ChartFrame>
+      </div>
+
+      <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1.5 text-xs sm:grid-cols-[auto_1fr_auto_1fr]">
+        <Term>snapshots</Term>
+        <Value>{snapshots.length}</Value>
+        <Term>equity range</Term>
+        <Value>
           {min} – {max}
-        </dd>
-        <dt className="opacity-70">first captured_at</dt>
-        <dd>{first.captured_at}</dd>
-        <dt className="opacity-70">last captured_at</dt>
-        <dd>{last.captured_at}</dd>
+        </Value>
+        <Term>first captured_at</Term>
+        <Value>{first.captured_at}</Value>
+        <Term>last captured_at</Term>
+        <Value>{last.captured_at}</Value>
       </dl>
 
-      <table className="mt-3 w-full text-left text-xs">
-        <caption className="sr-only">
-          Every plotted snapshot, exactly as returned by the API
-        </caption>
-        <thead>
-          <tr className="uppercase tracking-wide text-neutral-500">
-            <th className="pr-3">captured_at</th>
-            <th className="pr-3">total_equity</th>
-            <th className="pr-3">cash</th>
-            <th className="pr-3">unrealized</th>
-            <th className="pr-3">realized</th>
-          </tr>
-        </thead>
-        <tbody>
-          {snapshots.map((s) => (
-            <tr key={s.id}>
-              <td className="pr-3">{s.captured_at}</td>
-              <td className="pr-3">{s.total_equity}</td>
-              <td className="pr-3">{s.cash}</td>
-              <td className="pr-3">{s.total_unrealized_pnl}</td>
-              <td className="pr-3">{s.total_realized_pnl}</td>
+      <TableScroll>
+        <table className={tableClass}>
+          <caption className="sr-only">
+            Every plotted snapshot, exactly as returned by the API
+          </caption>
+          <thead>
+            <tr className={theadRowClass}>
+              <th className={thClass}>captured_at</th>
+              <th className={thClass}>total_equity</th>
+              <th className={thClass}>cash</th>
+              <th className={thClass}>unrealized</th>
+              <th className={thClass}>realized</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {snapshots.map((s) => (
+              <tr key={s.id} className={tbodyRowClass}>
+                <td className={`${tdClass} text-ink-muted`}>{s.captured_at}</td>
+                <td className={`${tdClass} font-semibold`}>{s.total_equity}</td>
+                <td className={tdClass}>{s.cash}</td>
+                <td className={tdClass}>{s.total_unrealized_pnl}</td>
+                <td className={tdClass}>{s.total_realized_pnl}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableScroll>
     </div>
   );
 }
@@ -166,7 +194,7 @@ function EquityChart({ snapshots }: { snapshots: HistoryEntry[] }) {
  * manual, so an empty result is a real "nobody has captured one yet",
  * rendered as exactly that rather than a zeroed or synthesised curve.
  */
-export default function PortfolioHistoryChart() {
+export default function PortfolioHistoryChart({ className }: { className?: string } = {}) {
   const [brokerId, setBrokerId] = useState("");
 
   // D034: the broker discovery list can push a real, granted broker id
@@ -216,79 +244,65 @@ export default function PortfolioHistoryChart() {
   const snapshots = result?.snapshots ?? [];
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Portfolio history
-      </h2>
-      <p className="mb-3 text-xs text-neutral-500">
-        Total equity over time, from persisted snapshots only. Snapshots are
-        captured manually — this chart plots exactly the points that were
-        captured, in capture order, and nothing between or beyond them.
-      </p>
-
-      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Broker ID
+    <Panel
+      className={className}
+      title="Portfolio history"
+      description="Total equity over time, from persisted snapshots only. Snapshots are captured manually — this chart plots exactly the points that were captured, in capture order, and nothing between or beyond them."
+    >
+      <form
+        onSubmit={handleSubmit}
+        className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem_7rem_auto] sm:items-end"
+      >
+        <Field label="Broker ID">
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={monoInputClass}
             value={brokerId}
             onChange={(e) => setBrokerId(e.target.value)}
             placeholder="broker UUID"
             required
           />
-        </label>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1 text-sm">
-            Limit (1–500)
-            <input
-              type="number"
-              min={1}
-              max={500}
-              className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
-              value={limit}
-              onChange={(e) => setLimit(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Offset
-            <input
-              type="number"
-              min={0}
-              className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
-              value={offset}
-              onChange={(e) => setOffset(e.target.value)}
-            />
-          </label>
-        </div>
-        <button
-          type="submit"
-          disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
+        </Field>
+        <Field label="Limit (1–500)">
+          <input
+            type="number"
+            min={1}
+            max={500}
+            className={inputClass}
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+          />
+        </Field>
+        <Field label="Offset">
+          <input
+            type="number"
+            min={0}
+            className={inputClass}
+            value={offset}
+            onChange={(e) => setOffset(e.target.value)}
+          />
+        </Field>
+        <button type="submit" disabled={loading} className={btnPrimary}>
           {loading ? "Loading…" : "Load history"}
         </button>
       </form>
 
       {errorDetail && (
-        <p
-          role="alert"
-          className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
-        >
+        <Alert tone="error">
           {status ? `HTTP ${status}: ` : ""}
           {errorDetail}
-        </p>
+        </Alert>
       )}
 
       {result && !errorDetail && snapshots.length === 0 && (
-        <p className="mt-3 text-sm text-neutral-500">
+        <EmptyNote>
           No snapshots have been captured for this broker yet, so there is no
           history to chart.
-        </p>
+        </EmptyNote>
       )}
 
       {result && !errorDetail && snapshots.length > 0 && (
         <EquityChart snapshots={snapshots} />
       )}
-    </section>
+    </Panel>
   );
 }

@@ -1,26 +1,127 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * Trading OS design tokens (Phase 45 / D060).
+ *
+ * Dark-first "modern dark terminal" palette: a deep desaturated navy
+ * ground rather than pure #000000, a layered surface scale so a dense
+ * dashboard still reads as panels rather than one flat wall, and a green
+ * accent that carries the "running / positive" meaning a trading tool
+ * needs. Light mode is a real, separately-contrast-checked palette, not
+ * an inversion — every token below is defined for both.
+ *
+ * Nothing here encodes state: colour is only ever chrome. The semantic
+ * verdict blocks (Risk Engine amber, Portfolio Manager violet/blue) keep
+ * their own explicit Tailwind palette classes in the components, because
+ * those colours carry meaning defined by D029 and must not drift with a
+ * theme change.
+ */
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+:root {
+  /* Light — surfaces */
+  --canvas: #eef1f6;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --well: #f1f5f9;
+
+  /* Light — lines */
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+
+  /* Light — text (all >= 4.5:1 on --surface) */
+  --ink: #0f172a;
+  --ink-muted: #475569;
+  --ink-faint: #64748b;
+
+  /* Light — accent */
+  --accent: #047857;
+  --accent-ink: #ffffff;
+
+  /* Light — data */
+  --pos: #047857;
+  --neg: #b91c1c;
+  --grid: #e2e8f0;
+
+  --shadow-panel: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 3px rgb(15 23 42 / 0.04);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* Dark — surfaces. Deliberately not #000000 (OLED smear + no room
+       for an elevation scale underneath the panels). */
+    --canvas: #060b16;
+    --surface: #0c1424;
+    --raised: #121c30;
+    --well: #0a1120;
+
+    --line: #1e293b;
+    --line-strong: #334155;
+
+    /* Dark — text (all >= 4.5:1 on --surface) */
+    --ink: #e8eef7;
+    --ink-muted: #9fb0c4;
+    --ink-faint: #7a8aa0;
+
+    --accent: #34d399;
+    --accent-ink: #04120b;
+
+    --pos: #34d399;
+    --neg: #f87171;
+    --grid: #1e293b;
+
+    --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.3);
   }
 }
 
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-well: var(--well);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-grid: var(--grid);
+
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-mono-code);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+/*
+ * Financial figures are read in columns. Tabular figures keep decimal
+ * points aligned between rows and stop a re-render from reflowing a
+ * table because "1" is narrower than "8".
+ */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* The dashboard is data-dense; keep its scrollbars from being chunky
+   OS-default bars that eat horizontal room inside panels. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

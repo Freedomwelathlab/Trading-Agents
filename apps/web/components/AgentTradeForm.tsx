@@ -4,9 +4,19 @@ import { useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
 import { subscribeToBrokerSelection } from "@/lib/brokerSelection";
 import PortfolioVerdict, {
+  VerdictTerm,
+  VerdictValue,
   riskVerdictTone,
   type PortfolioVerdictFields,
 } from "@/components/PortfolioVerdict";
+import {
+  Alert,
+  Field,
+  Panel,
+  btnPrimary,
+  monoInputClass,
+  inputClass,
+} from "@/components/ui/primitives";
 
 type AgentTradeResponse = PortfolioVerdictFields & {
   order_id?: string;
@@ -85,106 +95,98 @@ export default function AgentTradeForm() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Agent trade (AI proposal)
-      </h2>
-      <p className="mb-3 text-xs text-neutral-500">
-        The agent proposes side/quantity/stop from your directive; the price
-        always comes from a live quote, never the agent. The proposal still
-        passes through the same deterministic Risk Engine a human-submitted
-        trade uses.
-      </p>
+    <Panel
+      title="Agent trade (AI proposal)"
+      description="The agent proposes side/quantity/stop from your directive; the price always comes from a live quote, never the agent. The proposal still passes through the same deterministic Risk Engine a human-submitted trade uses."
+    >
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Broker ID
+        <Field label="Broker ID">
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={monoInputClass}
             value={brokerId}
             onChange={(e) => setBrokerId(e.target.value)}
             placeholder="broker UUID"
             required
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Symbol
+        </Field>
+        <Field label="Symbol">
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={monoInputClass}
             value={symbol}
             onChange={(e) => setSymbol(e.target.value)}
             required
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Directive
+        </Field>
+        <Field
+          label="Directive"
+          hint="Plain-language intent. The agent turns it into a side, quantity and stop; it never sets the price."
+        >
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={inputClass}
             value={directive}
             onChange={(e) => setDirective(e.target.value)}
             required
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Marks for other open positions (optional)
+        </Field>
+        <Field label="Marks for other open positions (optional)">
           <input
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+            className={monoInputClass}
             value={marksInput}
             onChange={(e) => setMarksInput(e.target.value)}
             placeholder="TSLA.US=250, MSFT.US=410"
           />
-        </label>
+        </Field>
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="self-start rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
+        <button type="submit" disabled={loading} className={`${btnPrimary} self-start`}>
           {loading ? "Proposing…" : "Propose agent trade"}
         </button>
       </form>
 
       {errorDetail && (
-        <p role="alert" className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+        <Alert tone="error">
           {status ? `HTTP ${status}: ` : ""}
           {errorDetail}
-        </p>
+        </Alert>
       )}
 
       {result && !errorDetail && (
         <>
           <div
             data-testid="risk-verdict"
-            className={`mt-3 rounded px-3 py-2 text-sm ${riskVerdictTone(result)}`}
+            className={`rounded-md border px-3 py-3 text-sm ${riskVerdictTone(result)}`}
           >
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
-              <dt className="opacity-70">order_id</dt>
-              <dd>{result.order_id}</dd>
-              <dt className="opacity-70">status</dt>
-              <dd>{result.status}</dd>
-              <dt className="opacity-70">approved (Risk Engine)</dt>
-              <dd>{String(result.approved)}</dd>
-              <dt className="opacity-70">block_reason</dt>
-              <dd>{result.block_reason ?? "—"}</dd>
-              <dt className="opacity-70">side</dt>
-              <dd>{result.side}</dd>
-              <dt className="opacity-70">quantity (agent proposed)</dt>
-              <dd>{result.quantity}</dd>
-              <dt className="opacity-70">fill_quantity</dt>
-              <dd>{result.fill_quantity ?? "—"}</dd>
-              <dt className="opacity-70">fill_price</dt>
-              <dd>{result.fill_price ?? "—"}</dd>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.09em] opacity-70">
+              Risk Engine
+            </p>
+            <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1.5 sm:grid-cols-[auto_1fr_auto_1fr]">
+              <VerdictTerm>order_id</VerdictTerm>
+              <VerdictValue>{result.order_id}</VerdictValue>
+              <VerdictTerm>status</VerdictTerm>
+              <VerdictValue>{result.status}</VerdictValue>
+              <VerdictTerm>approved (Risk Engine)</VerdictTerm>
+              <VerdictValue>{String(result.approved)}</VerdictValue>
+              <VerdictTerm>block_reason</VerdictTerm>
+              <VerdictValue>{result.block_reason ?? "—"}</VerdictValue>
+              <VerdictTerm>side</VerdictTerm>
+              <VerdictValue>{result.side}</VerdictValue>
+              <VerdictTerm>quantity (agent proposed)</VerdictTerm>
+              <VerdictValue>{result.quantity}</VerdictValue>
+              <VerdictTerm>fill_quantity</VerdictTerm>
+              <VerdictValue>{result.fill_quantity ?? "—"}</VerdictValue>
+              <VerdictTerm>fill_price</VerdictTerm>
+              <VerdictValue>{result.fill_price ?? "—"}</VerdictValue>
             </dl>
             {result.rationale && (
-              <p className="mt-2">
+              <p className="mt-2 leading-relaxed">
                 <span className="opacity-70">rationale: </span>
                 {result.rationale}
               </p>
             )}
-            {result.detail && <p className="mt-2">{result.detail}</p>}
+            {result.detail && <p className="mt-2 leading-relaxed">{result.detail}</p>}
           </div>
           <PortfolioVerdict {...result} />
         </>
       )}
-    </section>
+    </Panel>
   );
 }

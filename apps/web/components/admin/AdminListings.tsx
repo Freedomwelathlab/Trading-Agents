@@ -99,7 +99,7 @@ function Pager({
           type="number"
           min={1}
           max={500}
-          className="w-28 rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+          className="w-28 w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
           value={limit}
           onChange={(e) => setLimit(e.target.value)}
         />
@@ -109,7 +109,7 @@ function Pager({
         <input
           type="number"
           min={0}
-          className="w-28 rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+          className="w-28 w-full rounded-md border border-line bg-well px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors duration-150 hover:border-line-strong focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
           value={offset}
           onChange={(e) => setOffset(e.target.value)}
         />
@@ -118,7 +118,7 @@ function Pager({
         type="button"
         onClick={onLoad}
         disabled={loading}
-        className="rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+        className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 bg-accent px-4 py-2 text-accent-ink shadow-sm hover:brightness-110 active:brightness-95"
       >
         {loading ? "Loading…" : `Refresh ${label.toLowerCase()}`}
       </button>
@@ -130,7 +130,7 @@ function ListError({ status, detail }: { status: number | null; detail: string }
   return (
     <p
       role="alert"
-      className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
+      className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300"
     >
       {status ? `HTTP ${status}: ` : ""}
       {detail}
@@ -161,8 +161,8 @@ export function UsersList() {
   }, []);
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Users
       </h3>
       <Pager
@@ -176,12 +176,12 @@ export function UsersList() {
       />
       {state.errorDetail && <ListError status={state.status} detail={state.errorDetail} />}
       {state.rows && state.rows.length === 0 && (
-        <p className="mt-3 text-sm text-neutral-500">No users on this page.</p>
+        <p className="mt-3 text-sm text-ink-faint">No users on this page.</p>
       )}
       {state.rows && state.rows.length > 0 && (
         <table className="mt-3 w-full text-left text-xs">
           <thead>
-            <tr className="uppercase tracking-wide text-neutral-500">
+            <tr className="uppercase tracking-wide text-ink-faint">
               <th className="pr-3">id</th>
               <th className="pr-3">email</th>
               <th className="pr-3">is_active</th>
@@ -215,8 +215,8 @@ export function RolesList() {
   }, []);
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Roles
       </h3>
       <Pager
@@ -230,12 +230,12 @@ export function RolesList() {
       />
       {state.errorDetail && <ListError status={state.status} detail={state.errorDetail} />}
       {state.rows && state.rows.length === 0 && (
-        <p className="mt-3 text-sm text-neutral-500">No roles on this page.</p>
+        <p className="mt-3 text-sm text-ink-faint">No roles on this page.</p>
       )}
       {state.rows && state.rows.length > 0 && (
         <table className="mt-3 w-full text-left text-xs">
           <thead>
-            <tr className="uppercase tracking-wide text-neutral-500">
+            <tr className="uppercase tracking-wide text-ink-faint">
               <th className="pr-3">id</th>
               <th className="pr-3">name</th>
               <th className="pr-3">description</th>
@@ -271,11 +271,11 @@ export function BrokerGrantsList() {
   }, []);
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
         Broker grants
       </h3>
-      <p className="mb-2 text-xs text-neutral-500">
+      <p className="mb-2 text-xs text-ink-faint">
         The <code>id</code> column is the grant handle the revoke form needs.
       </p>
       <Pager
@@ -289,12 +289,12 @@ export function BrokerGrantsList() {
       />
       {state.errorDetail && <ListError status={state.status} detail={state.errorDetail} />}
       {state.rows && state.rows.length === 0 && (
-        <p className="mt-3 text-sm text-neutral-500">No broker grants on this page.</p>
+        <p className="mt-3 text-sm text-ink-faint">No broker grants on this page.</p>
       )}
       {state.rows && state.rows.length > 0 && (
         <table className="mt-3 w-full text-left text-xs">
           <thead>
-            <tr className="uppercase tracking-wide text-neutral-500">
+            <tr className="uppercase tracking-wide text-ink-faint">
               <th className="pr-3">id</th>
               <th className="pr-3">user_id</th>
               <th className="pr-3">broker_id</th>

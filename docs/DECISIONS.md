@@ -4953,3 +4953,151 @@ user's own `trading-os-postgres-1`/`trading-os-redis-1` containers and their
 uvicorn (8000) and Next.js (3005) dev servers were confirmed still running,
 healthy, and untouched via `docker ps` and `netstat` after cleanup
 completed.
+
+**D060 — Dashboard redesign (Phase 45): a real layout shell and a design-token system, with every backend-driven state preserved exactly**
+
+Numbering note: this entry is D060, not D058. Phases 43 and 44 are being
+built in sibling worktrees off the same `main` at `9c0660c` and are
+claiming D058 and D059 respectively, following the parallel-worktree
+convention this project has used since D028 — each phase reserves its
+number up front so three branches can merge in any order without a
+renumber.
+
+**What this phase is, and what it deliberately is not.** The dashboard
+worked and was honest, but it was a single `max-w-2xl` column of eight
+identically-weighted bordered boxes stacked vertically, styled with
+ad-hoc `border-neutral-300` / `dark:border-neutral-700` classes repeated
+at every call site. An operator could not tell at a glance which panel
+mattered, the equity chart carried the same visual weight as an optional
+"stop price" input, and `globals.css` held nothing but the two-variable
+`--background`/`--foreground` pair `create-next-app` ships.
+
+This is a **visual and layout pass only**. No endpoint changed, no fetch
+changed, and no condition governing whether something renders changed.
+That constraint was the hard part and is worth stating precisely: every
+`NOT_CONFIGURED:` / `DATA_UNAVAILABLE:` / `AGENT_OUTPUT_INVALID:`
+sentinel is still rendered verbatim as the backend sent it; every 401
+still routes through `handleExpiredSession` (D031/D032); and the
+Portfolio Manager verdict still appears if and only if the backend
+actually reported a `portfolio_action`, never for an `approve` and never
+for a null (D029). Colour is chrome, never a claim: a P&L figure is
+tinted from the sign of the number the backend returned and is left
+**uncoloured** when the value is absent or unparseable, and
+`live_trading_enabled` renders `unknown` in the neutral tone rather than
+a reassuring green when the field is missing.
+
+**(1) Design tokens, dark-first, both modes real.** `app/globals.css`
+now defines a semantic token set — a four-step surface scale
+(`--canvas` / `--surface` / `--raised` / `--well`), two line weights,
+three text weights, an accent, and `--pos` / `--neg` / `--grid` for data
+— exposed to Tailwind v4 through `@theme inline`. Dark is the primary
+palette (a `#060b16` ground, deliberately not `#000000`), and light is a
+separately contrast-checked palette rather than an inversion: every text
+token clears 4.5:1 against `--surface` in **both** modes, which is why
+the accent is `#047857` in light and `#34d399` in dark. Both were
+verified in a real browser under emulated `prefers-color-scheme`.
+
+The semantic verdict colours are the one deliberate exception. The Risk
+Engine's amber and the Portfolio Manager's violet/blue keep explicit
+Tailwind palette classes in the components rather than becoming tokens,
+because those hues carry meaning fixed by D029 and must not drift with a
+theme edit. `riskVerdictTone` still keys on `approved`, so a trade that
+is `approved: true` with `status: "rejected"` still gets a *neutral*
+block beside a violet portfolio panel — amber still means, and only
+means, "the Risk Engine said no".
+
+**(2) A shell instead of a column.** `components/shell/AppShell.tsx`
+adds a persistent left rail (brand, navigation, live `SessionStatus`,
+sign-out) and a sticky page header carrying the title and the real
+`/health` status strip. `components/shell/SideNav.tsx` marks the current
+route with `aria-current="page"`. `/admin` is still listed for every
+authenticated user: hiding it would imply a client-side security
+boundary that does not exist, when the real `admin:manage` gate is the
+backend's — as the live check below re-confirmed by rendering a genuine
+`HTTP 403: Missing required permission: admin:manage`.
+
+The dashboard is now a 12-column grid under three section headings. The
+ordering is not arbitrary. `BrokerDiscovery` stays ahead of everything
+broker-scoped because it is where the `broker_id` those panels need
+comes from (D034); portfolio state and the equity curve lead and take
+the wide column; the two order-entry panels share a row so neither reads
+as the default action; the backtest is last and visually separate
+because it alone is not broker-scoped — a run builds its own throwaway
+paper broker and writes nothing (D025). Desktop-primary, as an operator
+tool should be, but the grid collapses cleanly at 1024px and every wide
+table scrolls inside its own `overflow-x-auto` container so the page
+body never scrolls sideways.
+
+**(3) Charts, still hand-rolled.** `components/ui/ChartFrame.tsx` is
+shared by both equity charts and adds *chrome only* — a plot ground,
+three low-contrast gridlines, a gradient area fill, and the min/max axis
+labels the previous version left the reader to infer. It draws no data
+of its own: `buildPoints` and `buildBacktestPoints` are untouched, the
+area polygon is the same vertices closed to the baseline, and nothing is
+interpolated, smoothed, or extended past the last real point. Point
+markers keep their `<title>` tooltips and both charts keep their full
+data table, which remains the accessible fallback.
+
+**No new dependency was added.** `package.json` is byte-identical: Inter
+and JetBrains Mono come from `next/font/google`, which is part of Next
+itself, and every component is hand-built Tailwind. The `ui-ux-pro-max`
+skill that informed the palette and typography recommends a component
+library; that recommendation was translated into local components rather
+than installed, per this project's ask-before-adding-a-tool rule.
+
+**Tests.** 102 frontend tests over 13 files — the same 102 that passed
+before the redesign. No test was deleted, skipped, or weakened. Two
+initially failed, both in `TradeForm.test.tsx`, and the failure was
+correct: the assertion is that when `portfolio_action` is null *nothing
+on screen mentions the Portfolio Manager*, and a new static panel
+description had named it. The fix was to reword the chrome, not the
+assertion — standing text naming that gate would read as "it looked at
+this and was fine", which is exactly the fabrication D029 exists to
+forbid. The shared `Field` primitive keeps its label as the only text
+inside the `<label>` element, with hints as siblings, so every input's
+accessible name is still exactly its label; this was confirmed live by
+enumerating all 21 labels in the running page.
+
+**Live verification.** An isolated stack (compose project
+`trading-os-p45`; Postgres 5445, Redis 6445, uvicorn 8045, Next 3045 —
+chosen to avoid the user's own 5432/6379/8000/3005 and the phase43/44
+worktrees on 5443/5444), migrated to head and seeded with
+`scripts/seed_e2e.py` plus a real trade and five real portfolio
+snapshots. With no market-data vendor and no LLM provider wired, the
+following were driven in a real browser and all rendered faithfully:
+
+- `HTTP 503: NOT_CONFIGURED: no market data vendor is wired (see
+  docs/DECISIONS.md D008/D015).` — quote lookup
+- `HTTP 400: NOT_CONFIGURED: no LLM provider is wired (see
+  docs/DECISIONS.md D018).` — agent trade
+- `HTTP 400: NOT_CONFIGURED: no history provider.` — backtest
+- `HTTP 403: No access grant for broker 3e2e0000-...-0003.` — the real
+  ungranted-broker 403, not a 404 for a non-existent id
+- `HTTP 403: Missing required permission: admin:manage` — the admin
+  listings, as the non-admin trader user
+- `Incorrect email or password.` — the backend's own login 401
+- The **D029 case in full**: a real response carrying `approved: true`,
+  `status: "rejected"`, `portfolio_action: "reject"` and
+  `portfolio_binding_constraint: "symbol_concentration"`, rendered as a
+  neutral Risk Engine block beside a violet Portfolio Manager panel
+  reading "Rejected by the Portfolio Manager (not the Risk Engine)".
+
+The five seeded snapshots also produced a real equity curve, plotted
+with its five real vertices and labelled with its true `112288` maximum.
+
+One thing is worth recording so it is not mistaken for a defect later:
+the preview pane's screenshot compositor mis-places `position: sticky`
+layers once the page is scrolled, producing blank captures. This was
+diagnosed rather than assumed — `getBoundingClientRect` on the running
+page showed the rail correctly pinned at `y: 0` with `scrollY: 765` on a
+2702px document, i.e. correct sticky behaviour. Captures were taken with
+the sticky positioning temporarily neutralised from the console; the
+shipped CSS is unchanged.
+
+Cleanup: the compose stack was torn down with `-v`, the `.venv_p45`
+virtualenv removed, and the throwaway compose file kept outside the repo
+entirely. No `.env` file was created at any point — every variable was
+shell-exported for this session only. The user's own
+`trading-os-postgres-1` / `trading-os-redis-1` containers and their
+uvicorn (8000) and Next.js (3005) dev servers were confirmed still
+running and untouched.

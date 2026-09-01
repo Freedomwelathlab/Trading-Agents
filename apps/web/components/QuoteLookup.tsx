@@ -2,6 +2,16 @@
 
 import { useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
+import {
+  Alert,
+  KeyValue,
+  Panel,
+  Stat,
+  Term,
+  Value,
+  btnPrimary,
+  monoInputClass,
+} from "@/components/ui/primitives";
 
 type QuoteResponse = {
   symbol?: string;
@@ -11,7 +21,7 @@ type QuoteResponse = {
   detail?: string;
 };
 
-export default function QuoteLookup() {
+export default function QuoteLookup({ className }: { className?: string } = {}) {
   const [symbol, setSymbol] = useState("AAPL.US");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<QuoteResponse | null>(null);
@@ -49,46 +59,45 @@ export default function QuoteLookup() {
   }
 
   return (
-    <section className="rounded border border-neutral-300 p-4 dark:border-neutral-700">
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Quote lookup
-      </h2>
-      <form onSubmit={handleSubmit} className="flex gap-2">
+    <Panel
+      className={className}
+      title="Quote lookup"
+      description="A single live price straight from the configured market-data vendor. If none is wired the backend's own NOT_CONFIGURED sentinel is shown verbatim — never a stand-in price."
+    >
+      <form onSubmit={handleSubmit} className="flex flex-wrap gap-2">
         <input
-          className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          aria-label="Symbol"
+          className={`${monoInputClass} min-w-[10rem] flex-1`}
           value={symbol}
           onChange={(e) => setSymbol(e.target.value)}
           placeholder="AAPL.US"
           required
         />
-        <button
-          type="submit"
-          disabled={loading}
-          className="rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
+        <button type="submit" disabled={loading} className={btnPrimary}>
           {loading ? "Looking up…" : "Get quote"}
         </button>
       </form>
 
       {errorDetail && (
-        <p role="alert" className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+        <Alert tone="error">
           {status ? `HTTP ${status}: ` : ""}
           {errorDetail}
-        </p>
+        </Alert>
       )}
 
       {result && !errorDetail && (
-        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-          <dt className="text-neutral-500">symbol</dt>
-          <dd>{result.symbol}</dd>
-          <dt className="text-neutral-500">price</dt>
-          <dd>{result.price}</dd>
-          <dt className="text-neutral-500">as_of</dt>
-          <dd>{result.as_of}</dd>
-          <dt className="text-neutral-500">source</dt>
-          <dd>{result.source}</dd>
-        </dl>
+        <>
+          <Stat label="price" value={result.price ?? "—"} tone="accent" />
+          <KeyValue columns={1}>
+            <Term>symbol</Term>
+            <Value>{result.symbol}</Value>
+            <Term>as_of</Term>
+            <Value>{result.as_of}</Value>
+            <Term>source</Term>
+            <Value>{result.source}</Value>
+          </KeyValue>
+        </>
       )}
-    </section>
+    </Panel>
   );
 }

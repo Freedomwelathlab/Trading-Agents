@@ -4,8 +4,8 @@ import {
   CreateBrokerGrantForm,
   DeleteBrokerGrantForm,
 } from "@/components/admin/BrokerGrantsAdmin";
-import LogoutButton from "@/components/LogoutButton";
-import SessionStatus from "@/components/SessionStatus";
+import AppShell from "@/components/shell/AppShell";
+import { Alert, SectionHeading } from "@/components/ui/primitives";
 import {
   UsersList,
   RolesList,
@@ -22,45 +22,45 @@ import {
  * real 403 rendered honestly, not a client-side "you can't be here" guess
  * and not a hidden nav item implying a security boundary that doesn't
  * exist at this layer.
+ *
+ * Phase 45 / D060 gave this page the dashboard's shell and tokens for
+ * consistency. No form, endpoint or rendered state changed.
  */
 export default function AdminPage() {
   return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-10">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">Admin</h1>
-          <p className="text-sm text-neutral-500">
-            Requires the <code>admin:manage</code> permission. If your account
-            doesn&apos;t hold it, every action below will return a real 403
-            from the backend when you submit it.
-          </p>
-          <SessionStatus />
+    <AppShell
+      title="Administration"
+      subtitle="Users, roles and broker grants."
+      statusStrip={
+        <Alert tone="warn" role="status" className="max-w-3xl">
+          Requires the <code className="font-mono">admin:manage</code> permission.
+          If your account doesn&apos;t hold it, every action below will return a
+          real 403 from the backend when you submit it.
+        </Alert>
+      }
+    >
+      <div className="flex flex-col gap-5">
+        <SectionHeading>Users</SectionHeading>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <CreateUserForm />
+          <UpdateUserForm />
         </div>
-        <LogoutButton />
-      </div>
+        <UsersList />
 
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">Users</h2>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <CreateUserForm />
-        <UpdateUserForm />
-      </div>
-      <UsersList />
+        <SectionHeading>Roles</SectionHeading>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <CreateRoleForm />
+          <UpdateRoleForm />
+        </div>
+        <RolesList />
 
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">Roles</h2>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <CreateRoleForm />
-        <UpdateRoleForm />
+        <SectionHeading>Broker grants</SectionHeading>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <CreateBrokerGrantForm />
+          <DeleteBrokerGrantForm />
+        </div>
+        <BrokerGrantsList />
       </div>
-      <RolesList />
-
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-        Broker grants
-      </h2>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <CreateBrokerGrantForm />
-        <DeleteBrokerGrantForm />
-      </div>
-      <BrokerGrantsList />
-    </main>
+    </AppShell>
   );
 }

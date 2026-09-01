@@ -3,6 +3,13 @@
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { EXPIRED_REASON } from "@/lib/session";
+import {
+  Alert,
+  Field,
+  btnPrimary,
+  hintClass,
+  inputClass,
+} from "@/components/ui/primitives";
 
 /**
  * Explains why the user is back on this page when they were bounced here
@@ -15,13 +22,10 @@ function SessionEndedNotice() {
   const reason = useSearchParams().get("reason");
   if (reason !== EXPIRED_REASON) return null;
   return (
-    <p
-      role="status"
-      className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-    >
+    <Alert tone="warn" role="status">
       Your session has ended — it either expired or your account was
       deactivated. Sign in again to continue.
-    </p>
+    </Alert>
   );
 }
 
@@ -33,6 +37,12 @@ export default function LoginPage() {
   );
 }
 
+/**
+ * Phase 45 / D060 restyle. The credential handling, the redirect and the
+ * error rendering are unchanged: whatever `detail` the backend sends —
+ * including the real lockout message — is shown verbatim, and a failure
+ * to reach the service says exactly that rather than guessing at a cause.
+ */
 function LoginForm() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -65,53 +75,98 @@ function LoginForm() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 px-4">
-      <div>
-        <h1 className="text-xl font-semibold">Trading OS</h1>
-        <p className="text-sm text-neutral-500">Sign in to continue.</p>
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10">
+      {/* Ambient ground. Decorative only, and behind everything — it never
+          sits between the reader and a value. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 -z-10"
+        style={{
+          backgroundImage:
+            "radial-gradient(60rem 32rem at 50% -12%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%)",
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 -z-10 opacity-[0.5]"
+        style={{
+          backgroundImage:
+            "linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px)",
+          backgroundSize: "56px 56px",
+          maskImage: "radial-gradient(40rem 26rem at 50% 30%, black, transparent 75%)",
+          WebkitMaskImage:
+            "radial-gradient(40rem 26rem at 50% 30%, black, transparent 75%)",
+        }}
+      />
+
+      <div className="w-full max-w-sm">
+        <div className="mb-6 flex flex-col items-center gap-3 text-center">
+          <svg viewBox="0 0 28 28" className="h-11 w-11" role="img" aria-label="Trading OS">
+            <rect
+              x="1"
+              y="1"
+              width="26"
+              height="26"
+              rx="7"
+              className="fill-accent/12 stroke-accent/50"
+              strokeWidth="1"
+            />
+            <path
+              d="M8 19.5 12.5 14l3.5 3 4-7.5"
+              fill="none"
+              className="stroke-accent"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <circle cx="20" cy="9.5" r="1.9" className="fill-accent" />
+          </svg>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-ink">Trading OS</h1>
+            <p className={`mt-1 ${hintClass}`}>Sign in to continue.</p>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-6 shadow-[var(--shadow-panel)]">
+          <SessionEndedNotice />
+
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <Field label="Email">
+              <input
+                type="email"
+                required
+                autoComplete="username"
+                className={inputClass}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </Field>
+
+            <Field label="Password">
+              <input
+                type="password"
+                required
+                autoComplete="current-password"
+                className={inputClass}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </Field>
+
+            {error && <Alert tone="error">{error}</Alert>}
+
+            <button type="submit" disabled={submitting} className={`${btnPrimary} w-full`}>
+              {submitting ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+        </div>
+
+        <p className="mt-5 text-center text-xs leading-relaxed text-ink-faint">
+          Sessions are held in an httpOnly cookie and expire server-side. Trading
+          mode and the live-trading switch are enforced by the backend, never by
+          this page.
+        </p>
       </div>
-
-      <SessionEndedNotice />
-
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1 text-sm">
-          Email
-          <input
-            type="email"
-            required
-            autoComplete="username"
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1 text-sm">
-          Password
-          <input
-            type="password"
-            required
-            autoComplete="current-password"
-            className="rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
-
-        {error && (
-          <p role="alert" className="rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-            {error}
-          </p>
-        )}
-
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
-          {submitting ? "Signing in..." : "Sign in"}
-        </button>
-      </form>
     </main>
   );
 }
