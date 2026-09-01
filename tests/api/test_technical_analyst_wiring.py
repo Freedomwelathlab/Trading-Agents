@@ -36,10 +36,26 @@ class CapturingTraderAgent(TraderAgent):
         super().__init__(FakeLLMProvider(response))
         self.received_technical_context: str | None = "UNSET"
 
-    async def propose(self, *, symbol: str, directive: str, technical_context: str | None = None):
+    async def propose(
+        self,
+        *,
+        symbol: str,
+        directive: str,
+        technical_context: str | None = None,
+        # D059 widened TraderAgent.propose() with two more optional analyst
+        # contexts. Accepted (and forwarded) here so this override still
+        # matches the real signature; this suite asserts only on the
+        # technical one, which D059 leaves behaviorally unchanged.
+        fundamental_context: str | None = None,
+        news_context: str | None = None,
+    ):
         self.received_technical_context = technical_context
         return await super().propose(
-            symbol=symbol, directive=directive, technical_context=technical_context
+            symbol=symbol,
+            directive=directive,
+            technical_context=technical_context,
+            fundamental_context=fundamental_context,
+            news_context=news_context,
         )
 
 

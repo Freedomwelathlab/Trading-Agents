@@ -5214,3 +5214,179 @@ Cleanup: the `trading-os-phase43` compose project was torn down with `-v`,
 the `.venv` and the smoke-test log/script were removed, and no `.env` file
 was created at any point — every variable was shell-exported for this
 session only.
+Status: Implemented and verified as above.
+
+---
+
+**D059 — Phase 44: FundamentalAnalyst and NewsAnalyst built on the EXISTING Longbridge vendor relationship, closing the "no real data source" block; SentimentAnalyst deliberately cut**
+
+Date: 2026-09-01
+
+Numbering note: this repo is currently being worked in parallel git
+worktrees. `main` was at D057 when this phase branched; sibling worktree
+phase43 is claiming D058, so this phase takes D059. The number is
+allocated at branch time, not at merge time.
+
+Decision: Built the parallel analyst layer's second and third members —
+`FundamentalAnalyst` (`apps/api/app/agents/fundamental_analyst.py`) and
+`NewsAnalyst` (`apps/api/app/agents/news_analyst.py`) — mirroring D019/
+D021's `TechnicalAnalyst` structure exactly. This closes the block
+recorded in PROJECT_CONTEXT and IMPLEMENTATION_STATUS since Phase 16:
+those analysts were never built because there was no real data source and
+spec §57 forbids fabricating one.
+
+**The block is closed without adding any vendor.** The key finding of this
+phase is that the `longport` SDK already installed and already
+credentialed for quotes (D008/D015) and daily candlesticks (D021) also
+exposes company fundamentals and news. So this is the same vendor
+relationship, the same three environment variables
+(`LONGPORT_APP_KEY`/`_APP_SECRET`/`_ACCESS_TOKEN`), no new external
+service, no new credentials, and no new tool permission.
+
+**SDK surface verified by introspection, not assumed** (the same
+discipline as D008/D015/D021, and it mattered here). Direct runtime
+introspection of the installed `longport` 4.3.7 plus its shipped
+`openapi.pyi` established:
+- `AsyncFundamentalContext.create(config)` (synchronous, like
+  `AsyncQuoteContext.create`), with `ctx.company(symbol)` returning a
+  `CompanyOverview` (`.company_name`, `.name`, `.category`, …) and
+  `ctx.valuation(symbol)` returning a `ValuationData` whose `.metrics`
+  carries `pe`/`pb`/`ps`/`dvd_yld`, each an optional `ValuationMetricData`
+  holding `.list[ValuationPoint]` where a point is `(.timestamp, .value)`
+  and `.value` is a **string**.
+- `AsyncContentContext.create(config)` with `ctx.news(symbol)` returning
+  `list[NewsItem]` (`.title`, `.published_at`, `.url`, `.description`).
+- A real, load-bearing discrepancy: the SDK's own `openapi.pyi` is
+  **incomplete**. It declares the synchronous `FundamentalContext` but
+  omits `AsyncFundamentalContext`, which genuinely exists at runtime. The
+  `# type: ignore[attr-defined]` on that one import is annotated as being
+  about the vendor's missing stub, not about an unverified attribute —
+  had this been taken from documentation or memory rather than
+  introspection, the mismatch would have surfaced only at runtime.
+
+Structure, mirroring the established pattern:
+- Two new ports, each its own `Protocol` in its own module rather than an
+  overload of an existing one, exactly as `HistoryProvider` is separate
+  from `MarketDataProvider`: `marketdata/fundamentals_provider.py`
+  (`FundamentalsProvider` + a `CompanyFundamentals` model) and
+  `marketdata/news_provider.py` (`NewsProvider` + a `NewsHeadline`
+  model). Both reuse `DataUnavailableError`/`VendorError` from
+  `marketdata/provider.py` — identical failure semantics, so a parallel
+  error hierarchy would have been noise.
+- Two concrete implementations in the existing
+  `marketdata/providers/longbridge.py`, each behind our own narrow
+  `Protocol` at the vendor boundary so tests inject a fake and never touch
+  real credentials or the network.
+- **Every field on `CompanyFundamentals` is `| None` on purpose.** A real
+  vendor routinely has a P/E but no P/S for the same symbol. A missing
+  metric stays missing all the way into the prompt, where it renders as
+  the literal string "not reported by the vendor" — never zero, never an
+  interpolation, never an industry norm. Unparseable metric strings
+  (`""`, `"--"`) are treated as missing rather than coerced.
+- **No LLM computes anything.** The vendor returns P/E, P/B, P/S, and
+  dividend yield as real reported values. The one genuinely derived
+  quantity, earnings yield, is exact arithmetic (`100/PE`) in
+  `marketdata/fundamental_metrics.py` — pure, no I/O, no LLM — which is
+  the same role `indicators.py` plays for `TechnicalAnalyst`. That module
+  also owns `latest_point()`, which selects a metric's current value **by
+  timestamp**, never by the vendor's list position (the vendor's ordering
+  is not contractual — the same reasoning behind
+  `LongbridgeHistoryProvider`'s explicit sort).
+- For `NewsAnalyst` the fabrication risk has a different shape: not a
+  wrong number but an invented article. So the headline **count and date
+  range are computed deterministically in `format_headlines()`** from the
+  exact list being shown, and the system prompt forbids citing anything
+  outside the numbered list — explicitly including the model's own
+  training knowledge of the company. News items lacking a title or a real
+  publication date are dropped at the provider, never back-filled with
+  "now" or "(untitled)".
+- Both reads use the same `stance`/`summary`/`confidence` contract as
+  `TechnicalRead`, with **no side, quantity, price, or stop field** — there
+  is nothing a caller could mistake for a trade proposal. `Stance` and
+  `AnalystOutputError` are now shared analyst-layer types (still defined
+  in `technical_analyst.py`, documented as shared rather than duplicated).
+
+Wiring (`POST /brokers/{broker_id}/agent-trades`): both are optional,
+additive context on `TraderAgent.propose()`, identical to D019's posture.
+No new endpoint, no new request or response field, no new error response.
+Each analyst requires **both** its LLM analyst and its data vendor to be
+configured — unlike `TechnicalAnalyst`, which can still comment
+qualitatively on the live quote it is always handed, there is no
+fundamentals or news equivalent of "one price" to fall back on, so
+without vendor data there is nothing real to narrate. Absent analyst,
+absent vendor, an uncovered symbol, a vendor failure, or an unparseable
+LLM response each silently omit that one paragraph. The three analysts now
+run **concurrently** via `asyncio.gather` (docs/AGENT_POLICY.md:
+"Parallelize agents with no cross-dependency") and are independently
+failure-isolated — a dead news vendor cannot cost the trade its perfectly
+good fundamental read. The Risk Engine, the Portfolio Manager, and the
+deterministic price path are all untouched.
+
+**Scope cut: `SentimentAnalyst` was deliberately NOT built.** The
+Longbridge SDK exposes no real sentiment score. The only way to produce
+one would be to ask the LLM to score news headlines itself — which would
+convert this layer's rule from "the LLM narrates real data" into "the LLM
+invents a number," precisely what spec §57 forbids and what D019/D021's
+whole deterministic-indicator design exists to prevent. A sentiment
+analyst therefore stays blocked on a real sentiment data source, exactly
+as fundamentals and news were until this phase. Documenting the cut is the
+honest outcome; shipping a fabricated score would not be.
+
+Verified live:
+- `ruff check .` — "All checks passed!"
+- `mypy apps` — "Success: no issues found in 84 source files"
+- `bash scripts/secret_scan.sh` — "Secret scan clean." (run through an
+  LF-normalized copy; the checked-in script has CRLF line endings, which
+  Git Bash on this Windows host rejects — a pre-existing host quirk, not
+  a change from this phase, and left alone rather than "fixed" in a way
+  that would churn the file for other platforms).
+- `alembic upgrade head` against an isolated Postgres — all twelve
+  migrations applied cleanly, confirming this phase adds no migration.
+- `pytest tests/ -q` — **481 passed**, 3 pre-existing warnings (the same
+  `httpx`/`starlette` deprecation and two `InsecureKeyLengthWarning`s seen
+  in every prior pass), zero failures, zero errors. 57 of those are new in
+  this phase: 10 fundamentals-provider, 11 news-provider, 7
+  fundamental-metrics, 12 fundamental-analyst, 14 news-analyst, and 7
+  real-Postgres integration tests of the agent-trades wiring.
+- One real regression was caught by the existing suite and fixed:
+  widening `TraderAgent.propose()` broke
+  `tests/api/test_technical_analyst_wiring.py`'s `CapturingTraderAgent`
+  subclass, whose narrower override no longer matched the call. The
+  subclass now accepts and forwards all three contexts; D019's asserted
+  behavior is unchanged.
+
+**NOT verified against a real vendor response in this environment — stated
+plainly, per the D021/D025/D030 precedent.** No `LONGPORT_*` credentials
+exist anywhere in this project: the repo's `.env` contains only
+`DATABASE_URL`/`REDIS_URL`/`JWT_*`/mode settings, and no `.env` was
+created for this phase. The session's connected Longbridge MCP server was
+tried as an independent check and returned `401103: token is expired`, so
+it could not confirm anything either (and it is a different transport from
+the Python SDK anyway — its field names differ, e.g. `publish_time` vs the
+SDK's `published_at` — so it would have been weak evidence at best).
+
+Concretely, what **is** verified: the SDK's method names, call signatures,
+context-construction pattern, and response attribute names, all by direct
+introspection of the installed package; and the full provider and analyst
+logic against fakes at the vendor boundary, matching this project's
+established no-live-network-call-in-CI discipline. What is **not**
+verified: that a real Longbridge account returns populated
+fundamentals/news for any given symbol, and that the real response objects
+carry the exact attribute *values* (as opposed to attribute *names*) this
+code reads. The providers are written defensively for that gap —
+`_optional_decimal`/`_as_utc`/`_non_empty_str` treat anything unexpected
+as absent rather than coerced — so the realistic worst case on first
+contact with live data is that an analyst contributes no context, which is
+already a fully-supported, non-blocking state. A first live run against
+real credentials remains outstanding follow-up work for this phase.
+
+Cleanup: the `trading-os-phase44` compose stack (a single Postgres on
+remapped host port 5444, chosen to avoid the user's own stack on 5432 and
+sibling worktree phase43's on 5443) was torn down with `-v`,
+`docker-compose.phase44.yml` was deleted, and the `.venv_p44` venv was
+removed. No `.env` file was created at any point — every variable was
+shell-exported for this session only. The user's own
+`trading-os-postgres-1`/`trading-os-redis-1` containers and
+`trading-os-phase43-postgres-1` were confirmed still running and untouched
+via `docker ps` after cleanup.
+Status: Implemented and verified as above.

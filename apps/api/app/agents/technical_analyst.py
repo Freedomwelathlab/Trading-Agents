@@ -55,12 +55,24 @@ sentences, referencing only data actually given to you>", "confidence": \
 
 
 class AnalystOutputError(Exception):
-    """The provider responded, but not with a parseable/valid technical
+    """The provider responded, but not with a parseable/valid analyst
     read. Never a reason to invent one - the caller must treat this
-    analyst's context as unavailable, exactly like NOT_CONFIGURED."""
+    analyst's context as unavailable, exactly like NOT_CONFIGURED.
+
+    Shared by the whole analyst layer, not just this analyst: D059's
+    FundamentalAnalyst and NewsAnalyst raise this same type, because the
+    failure semantics and the caller's required response (omit the
+    context, never fabricate it) are identical. Defined here rather than
+    duplicated per analyst so a caller can catch one type for all of
+    them."""
 
 
 class Stance(str, Enum):  # noqa: UP042 (str mixin kept for pydantic/env-var interop)
+    """Shared across every analyst read (D019, D059) - the same three
+    values mean the same three things regardless of which analyst
+    produced them."""
+
+
     BULLISH = "bullish"
     BEARISH = "bearish"
     NEUTRAL = "neutral"

@@ -11,6 +11,8 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.agents.fundamental_analyst import FundamentalAnalyst
+from apps.api.app.agents.news_analyst import NewsAnalyst
 from apps.api.app.agents.technical_analyst import TechnicalAnalyst
 from apps.api.app.agents.trader import TraderAgent
 from apps.api.app.auth.dependencies import require_permission
@@ -18,7 +20,9 @@ from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerGrant, User
 from apps.api.app.execution.live_broker import LiveBrokerAdapter
+from apps.api.app.marketdata.fundamentals_provider import FundamentalsProvider
 from apps.api.app.marketdata.history_provider import HistoryProvider
+from apps.api.app.marketdata.news_provider import NewsProvider
 from apps.api.app.marketdata.router import MarketDataRouter
 
 
@@ -63,6 +67,32 @@ def get_live_broker_adapter(request: Request) -> LiveBrokerAdapter | None:
     data router, so a request never constructs a broker connection itself.
     """
     return request.app.state.live_broker_adapter
+
+
+def get_fundamentals_provider(request: Request) -> FundamentalsProvider | None:
+    """None means no fundamentals vendor is configured (D059) - like
+    get_history_provider, this is optional context: its absence means no
+    real fundamentals can be read, never a reason to block a trade or
+    fabricate a figure."""
+    return request.app.state.fundamentals_provider
+
+
+def get_news_provider(request: Request) -> NewsProvider | None:
+    """None means no news vendor is configured (D059) - same optional,
+    never-blocking posture as get_fundamentals_provider."""
+    return request.app.state.news_provider
+
+
+def get_fundamental_analyst(request: Request) -> FundamentalAnalyst | None:
+    """None means no LLM provider is configured (D059) - optional
+    context, exactly like get_technical_analyst."""
+    return request.app.state.fundamental_analyst
+
+
+def get_news_analyst(request: Request) -> NewsAnalyst | None:
+    """None means no LLM provider is configured (D059) - optional
+    context, exactly like get_technical_analyst."""
+    return request.app.state.news_analyst
 
 
 @dataclass
