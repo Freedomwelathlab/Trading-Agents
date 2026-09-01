@@ -23,13 +23,14 @@ See [DECISIONS.md](DECISIONS.md) — D001 through D019 so far; see
 
 ## Agent Organization
 
-`TraderAgent` (D018) and `TechnicalAnalyst` (D019) exist — a proposal-only
-agent and a single read-only analyst, both routed through
-`AnthropicCompatibleProvider`. Not yet built: the full parallel analyst team
-(fundamental/news/sentiment — blocked on real data providers,
-`packages/data_providers/` is still an empty placeholder), research
-(bull/bear debate), and Portfolio Manager. Do not assume those modules are
-implemented.
+`TraderAgent` (D018) plus three read-only analysts — `TechnicalAnalyst`
+(D019/D021), `FundamentalAnalyst` and `NewsAnalyst` (D059) — all routed
+through `AnthropicCompatibleProvider`. Not yet built: `SentimentAnalyst`
+(still blocked — the Longbridge SDK exposes no real sentiment score, and
+having the LLM invent one is forbidden by spec §57; see D059), research
+(bull/bear debate), and Portfolio Manager. `packages/data_providers/` is
+still an empty placeholder — all real vendor data flows through
+`apps/api/app/marketdata/`. Do not assume those modules are implemented.
 
 ## Trading Workflow (target, not yet built in full)
 
@@ -113,8 +114,14 @@ placeholder). When configured (same `LLM_PROVIDER_*` connection as
 trade proceeds exactly as it did before Phase 16, no context appended,
 never blocked. Only a `TechnicalAnalyst` was built this phase — no
 `FundamentalAnalyst`/`NewsAnalyst`/`SentimentAnalyst`, since no real data
-source for any of those is wired into this codebase (spec §57's
-no-fabrication rule). Phase 18 (D021) closes the "no historical price
+source for any of those was wired into this codebase at the time (spec
+§57's no-fabrication rule). **That reasoning was later found to be
+partly wrong on the facts:** Phase 44 (D059) established by SDK
+introspection that the already-credentialed Longbridge `longport` package
+also exposes company fundamentals and news, and built both analysts on it
+— no new vendor, no new credentials. Sentiment stays unbuilt, now for a
+narrower reason: the SDK has no sentiment score, and deriving one via the
+LLM would be fabrication. Phase 18 (D021) closes the "no historical price
 data" gap D019 flagged: `HistoryProvider`/`LongbridgeHistoryProvider`
 fetch real daily closes via the same Longbridge SDK, and
 `marketdata/indicators.py`'s pure `sma()`/`rsi()` compute real values
@@ -260,9 +267,10 @@ and the Portfolio Manager's REJECT/`max_open_positions` paths, which
 
 ## Planned Work
 
-Phase 29+: the rest of the parallel analyst layer (fundamental/news/
-sentiment — each blocked on a real, wired data source per spec §57) and
-research debate. Order not finalized. FIFO/LIFO cost-basis reporting is
+Phase 29+: the rest of the parallel analyst layer — fundamental and news
+are now DONE (Phase 44/D059, on the existing Longbridge relationship);
+only sentiment remains blocked on a real, wired sentiment data source per
+spec §57 — and research debate. Order not finalized. FIFO/LIFO cost-basis reporting is
 no longer planned work — Phase 34/D041 built it as an optional
 `?cost_basis_method=` on `GET /brokers/{id}/portfolio` (average stays the
 default and is unchanged), deriving lots from the append-only
@@ -411,8 +419,11 @@ what this repo's docs can verify.)
   optional context into `TraderAgent.propose()`. Real historical prices
   for it: done (D021) — `HistoryProvider`/`LongbridgeHistoryProvider` +
   deterministic `sma()`/`rsi()`, verified live against real Longbridge
-  data. Still open: fundamental/news/sentiment analysts (each blocked on
-  a real wired data source), research debate, and Portfolio Manager from
+  data. Fundamental and news analysts: done (Phase 44/D059), on the same
+  Longbridge SDK — though NOT yet verified against a real vendor response,
+  since no `LONGPORT_*` credentials exist in the current environment.
+  Still open: `SentimentAnalyst` (blocked on a real sentiment data source),
+  research debate, and Portfolio Manager from
   the governing spec's target architecture are not started; re-verifying
   D018/D019's LLM-completion path against a real OmniRoute completion
   (only fake-provider-verified so far, OmniRoute unreachable at

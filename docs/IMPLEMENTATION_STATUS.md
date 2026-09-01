@@ -250,7 +250,10 @@ Update this after meaningful implementation work — not for every commit.
   fundamental/news/sentiment team, since only one has a real data source
   wired (Longbridge live quotes; `packages/data_providers/` remains an
   empty placeholder, so fundamental/news/sentiment would mean fabricating
-  a feed, forbidden per spec §57). `TechnicalAnalyst.analyze()` reads the
+  a feed, forbidden per spec §57). **Superseded in part by Phase 44/D059**,
+  which found that the same already-credentialed Longbridge SDK also
+  exposes company fundamentals and news, and built those two analysts on
+  it; sentiment remains blocked. `TechnicalAnalyst.analyze()` reads the
   same live quote `agent-trades` already resolves and returns a
   `TechnicalRead` (`stance`/`summary`/`confidence`) — no price/side/
   quantity field, so nothing here can be mistaken for a trade proposal.
@@ -918,6 +921,32 @@ Update this after meaningful implementation work — not for every commit.
   row's method, `hifo` rejected 422, and a column-less INSERT reading back
   `average`. See D044.
 
+- Phase 44: FundamentalAnalyst + NewsAnalyst (2026-09-01). Closes the
+  "no real data source" block that kept these two unbuilt since Phase 16.
+  No new vendor: direct introspection of the already-installed, already-
+  credentialed `longport` 4.3.7 SDK found company fundamentals
+  (`AsyncFundamentalContext.company()`/`.valuation()`) and news
+  (`AsyncContentContext.news()`) alongside the quotes and candlesticks
+  D015/D021 already use — same three `LONGPORT_*` variables, no new
+  service, no new credentials. Adds two ports
+  (`marketdata/fundamentals_provider.py`, `marketdata/news_provider.py`),
+  their Longbridge implementations, one pure-deterministic metrics module
+  (`marketdata/fundamental_metrics.py`: exact `100/PE` earnings yield and
+  latest-point-by-timestamp selection — the LLM computes nothing), and the
+  two analysts. Both return the same `stance`/`summary`/`confidence`
+  contract as `TechnicalRead` with no price/side/quantity field. Wired as
+  optional, additive context into `POST .../agent-trades` exactly like
+  D019 — no new endpoint, no new request/response field, no new error
+  response; all three analysts now run concurrently and are independently
+  failure-isolated. A missing vendor metric renders as "not reported by
+  the vendor", never a zero or an estimate; the news prompt's headline
+  count and date range are computed in code so the model cannot overstate
+  its coverage. `SentimentAnalyst` deliberately NOT built (see D059).
+  481 tests pass (57 new). **Not verified against a real vendor response:**
+  no `LONGPORT_*` credentials exist in this environment, so the provider
+  layer is verified only against fakes at the vendor boundary plus SDK
+  introspection — a first live run remains outstanding. See D059.
+
 ## In Progress
 
 Nothing currently mid-implementation.
@@ -928,9 +957,13 @@ Nothing currently blocked.
 
 ## Planned
 
-Phase 20+ (order not finalized): the rest of the parallel analyst layer
-(fundamental/news/sentiment — each blocked on a real, wired data source)
-and research debate. FIFO/LIFO cost-basis reporting is now DONE (Phase
+Phase 20+ (order not finalized): the rest of the parallel analyst layer —
+fundamental and news are now DONE (Phase 44/D059, built on the existing
+Longbridge SDK's fundamentals and news endpoints); **sentiment remains
+blocked** on a real sentiment data source, since the SDK exposes no
+sentiment score and having the LLM invent one from headlines is exactly
+what spec §57 forbids (see D059's scope cut). Research debate is still
+planned. FIFO/LIFO cost-basis reporting is now DONE (Phase
 34/D041), and its one tracked follow-on - offering the choice on the
 write path, which needed a migration recording which method produced each
 row - is now DONE too (Phase 36/D044). No cost-basis follow-on remains.

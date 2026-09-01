@@ -322,6 +322,32 @@ analyst is configured, or its read fails/doesn't parse, the trade
 proceeds exactly as before Phase 16 with no context appended — this never
 produces a new error response, since the analyst is optional.
 
+As of Phase 44 (D059) two more analysts join on exactly the same footing,
+still with **no new request or response field** and no new error response:
+
+- `FundamentalAnalyst` — narrates real company fundamentals (company name,
+  vendor category, P/E, P/B, P/S, dividend yield, and an earnings yield
+  derived deterministically as `100/PE`) fetched through a
+  `FundamentalsProvider`.
+- `NewsAnalyst` — narrates up to 10 real recent headlines (title +
+  publication date) fetched through a `NewsProvider`, with the headline
+  count and date range computed in code, not by the model.
+
+Both are wired to the same already-credentialed Longbridge relationship as
+the quote and history providers (`LONGPORT_APP_KEY`/`_APP_SECRET`/
+`_ACCESS_TOKEN`, all three required together). Each analyst needs **both**
+its LLM analyst and its data vendor configured to contribute anything: with
+no vendor data there is nothing real to narrate, and narrating without data
+is exactly what spec §57 forbids.
+
+All three analysts now run concurrently and are independently
+failure-isolated. Any of these — no analyst configured, no vendor
+configured, a symbol the vendor doesn't cover (`DataUnavailableError`), a
+vendor failure, or an unparseable LLM response — silently omits that one
+analyst's paragraph of context. None of them can block the trade, change
+the response shape, or supply a price, side, or quantity. A
+`SentimentAnalyst` is deliberately **not** implemented — see D059.
+
 ## `GET /brokers/{broker_id}/portfolio`
 
 Read-only (D022). Requires `Permission.VIEW_PORTFOLIO` (a new, weaker

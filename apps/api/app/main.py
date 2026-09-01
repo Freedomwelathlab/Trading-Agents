@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from apps.api.app.agents.anthropic_compatible import build_llm_provider
+from apps.api.app.agents.fundamental_analyst import build_fundamental_analyst
+from apps.api.app.agents.news_analyst import build_news_analyst
 from apps.api.app.agents.technical_analyst import build_technical_analyst
 from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
@@ -22,7 +24,9 @@ from apps.api.app.core.logging import configure_logging, get_logger
 from apps.api.app.core.request_id import RequestIDMiddleware
 from apps.api.app.db.base import get_engine, get_session_factory
 from apps.api.app.marketdata.providers.longbridge import (
+    build_longbridge_fundamentals_provider,
     build_longbridge_history_provider,
+    build_longbridge_news_provider,
     build_longbridge_provider,
 )
 from apps.api.app.marketdata.router import MarketDataRouter
@@ -43,6 +47,13 @@ async def lifespan(app: FastAPI):
     # capability (a price series, not one quote) - see
     # apps/api/app/marketdata/history_provider.py.
     app.state.history_provider = build_longbridge_history_provider(settings)
+    # Phase 44 (D059): two more capabilities from the SAME already-
+    # credentialed Longbridge relationship - company fundamentals and
+    # recent news. Same all-or-nothing credential gate, same
+    # NOT_CONFIGURED-means-optional-context posture as the history
+    # provider above.
+    app.state.fundamentals_provider = build_longbridge_fundamentals_provider(settings)
+    app.state.news_provider = build_longbridge_news_provider(settings)
 
     llm_provider = build_llm_provider(settings)
     app.state.trader_agent = build_trader_agent(llm_provider)
@@ -51,6 +62,12 @@ async def lifespan(app: FastAPI):
     # separately-configured provider would be unused parallel infra with
     # nothing to parallelize against (see D019's "future work" note).
     app.state.technical_analyst = build_technical_analyst(llm_provider)
+    # Phase 44 (D059): the analyst layer's second and third members. They
+    # share the same LLM_PROVIDER_* connection as the trader agent and the
+    # technical analyst, for the same reason D019 gave - one configured
+    # provider, several single-responsibility agents behind it.
+    app.state.fundamental_analyst = build_fundamental_analyst(llm_provider)
+    app.state.news_analyst = build_news_analyst(llm_provider)
 
     # Phase 27 (D030): automatic portfolio snapshots. Opt-in and off by
     # default - when disabled, nothing is constructed and no task runs, so
@@ -97,8 +114,16 @@ async def lifespan(app: FastAPI):
         emergency_stop_settings_default=settings.emergency_stop_active,
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
         history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
+        fundamentals_provider=(
+            "longbridge" if app.state.fundamentals_provider else "NOT_CONFIGURED"
+        ),
+        news_provider="longbridge" if app.state.news_provider else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",
         technical_analyst="configured" if app.state.technical_analyst else "NOT_CONFIGURED",
+        fundamental_analyst=(
+            "configured" if app.state.fundamental_analyst else "NOT_CONFIGURED"
+        ),
+        news_analyst="configured" if app.state.news_analyst else "NOT_CONFIGURED",
         portfolio_snapshot_scheduler=(
             f"enabled:{settings.portfolio_snapshot_interval_seconds}s"
             if settings.portfolio_snapshot_scheduler_enabled

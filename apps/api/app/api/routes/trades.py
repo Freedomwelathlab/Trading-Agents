@@ -24,6 +24,16 @@ code, never the LLM) from a HistoryProvider's daily closes, narrated
 (never calculated) by the TechnicalAnalyst when available - same
 optional, never-blocking posture as D019.
 
+D059 adds two more optional analyst reads on the same footing - a
+FundamentalAnalyst over real vendor fundamentals and a NewsAnalyst over
+real recent headlines, both from the already-credentialed Longbridge
+relationship. All three analysts now run concurrently (they have no
+cross-dependency, per docs/AGENT_POLICY.md) and each is independently
+failure-isolated: an absent analyst, an absent vendor, an unsupported
+symbol, or a failed call simply omits that one paragraph of context. None
+of them can block a trade, and none of them can supply a price, quantity,
+or side. SentimentAnalyst is explicitly out of scope - see D059 for why.
+
 D024 adds deterministic duplicate-order detection: `_execute_trade()`
 (shared by both routes below, so a human-submitted and an LLM-originated
 trade get identical protection) queries this broker+symbol's recent
@@ -51,6 +61,7 @@ boolean and still returns BlockReason.EMERGENCY_STOP_ACTIVE; only the
 source of that boolean moved.
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -58,12 +69,18 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.agents.fundamental_analyst import FundamentalAnalyst
+from apps.api.app.agents.news_analyst import NewsAnalyst
 from apps.api.app.agents.technical_analyst import AnalystOutputError, TechnicalAnalyst
 from apps.api.app.agents.trader import AgentOutputError, TraderAgent, stop_price_from_distance
 from apps.api.app.api.dependencies import (
     AuthorizedBroker,
+    get_fundamental_analyst,
+    get_fundamentals_provider,
     get_history_provider,
     get_market_data_router,
+    get_news_analyst,
+    get_news_provider,
     get_technical_analyst,
     get_trader_agent,
     require_broker_access,
@@ -80,8 +97,10 @@ from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import BrokerKind, OrderStatus
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
+from apps.api.app.marketdata.fundamentals_provider import FundamentalsProvider
 from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
+from apps.api.app.marketdata.news_provider import NewsProvider
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
 from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
@@ -106,6 +125,136 @@ async def _resolve_live_quote(
         # Message is already NO_DATA_AVAILABLE:-prefixed by the router.
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return snapshot.price, snapshot.as_of
+
+
+NEWS_HEADLINE_LIMIT = 10
+"""How many real headlines the NewsAnalyst is shown. A deliberate cap:
+the analyst cites a deterministically-counted set, and an unbounded list
+would grow the prompt without improving a three-sentence read."""
+
+
+def _render_read(stance: str, confidence: Decimal, summary: str) -> str:
+    """The one rendering of an analyst read into trader-agent prompt text,
+    shared by all three analysts (D019's original format, unchanged) so no
+    analyst's context can drift into a different shape."""
+    return f"stance={stance}, confidence={confidence}: {summary}"
+
+
+async def _technical_context(
+    *,
+    symbol: str,
+    price: Decimal,
+    as_of: datetime,
+    technical_analyst: TechnicalAnalyst | None,
+    history_provider: HistoryProvider | None,
+) -> str | None:
+    """D019/D021, unchanged in behavior by D059 - only extracted into a
+    helper so the three analysts can run concurrently. Optional additional
+    context only: a failed or unavailable read must never block the trade,
+    and is never replaced with a fabricated one."""
+    if technical_analyst is None:
+        return None
+
+    indicator_context: str | None = None
+    if history_provider is not None:
+        # D021: real, deterministically-computed indicators (never
+        # asked of an LLM) - optional, like everything else here. A
+        # short history, a vendor failure, or no configured provider all
+        # just mean no indicator context this call, never a blocked trade
+        # or a guessed value.
+        try:
+            closes = await history_provider.get_daily_closes(symbol, count=30)
+            indicator_lines = []
+            try:
+                indicator_lines.append(f"SMA(20)={sma(closes, 20)}")
+            except InsufficientDataError:
+                pass
+            try:
+                indicator_lines.append(f"RSI(14)={rsi(closes, 14)}")
+            except InsufficientDataError:
+                pass
+            if indicator_lines:
+                indicator_context = ", ".join(indicator_lines)
+        except (DataUnavailableError, VendorError) as exc:
+            logger.warning("history_provider_unavailable", symbol=symbol, error=str(exc))
+
+    try:
+        read = await technical_analyst.analyze(
+            symbol=symbol,
+            price=price,
+            as_of=as_of.isoformat(),
+            indicator_context=indicator_context,
+        )
+    except AnalystOutputError as exc:
+        logger.warning("technical_analyst_unavailable", symbol=symbol, error=str(exc))
+        return None
+    return _render_read(read.stance.value, read.confidence, read.summary)
+
+
+async def _fundamental_context(
+    *,
+    symbol: str,
+    analyst: FundamentalAnalyst | None,
+    provider: FundamentalsProvider | None,
+) -> str | None:
+    """D059: real vendor fundamentals -> a narrated read, or nothing.
+
+    Requires BOTH a configured analyst and a configured provider: unlike
+    the technical analyst (which can still comment qualitatively on the
+    live quote it is always given), there is no fundamentals equivalent
+    of "one price" to fall back on, so with no vendor data there is
+    nothing real to narrate - and narrating without data is exactly the
+    fabrication spec Sec57 forbids. A symbol the vendor doesn't cover
+    (DataUnavailableError) or a vendor failure both simply omit this
+    context; neither blocks the trade.
+    """
+    if analyst is None or provider is None:
+        return None
+
+    try:
+        fundamentals = await provider.get_fundamentals(symbol)
+    except (DataUnavailableError, VendorError) as exc:
+        logger.warning("fundamentals_provider_unavailable", symbol=symbol, error=str(exc))
+        return None
+
+    try:
+        read = await analyst.analyze(fundamentals=fundamentals)
+    except AnalystOutputError as exc:
+        logger.warning("fundamental_analyst_unavailable", symbol=symbol, error=str(exc))
+        return None
+    return _render_read(read.stance.value, read.confidence, read.summary)
+
+
+async def _news_context(
+    *,
+    symbol: str,
+    analyst: NewsAnalyst | None,
+    provider: NewsProvider | None,
+) -> str | None:
+    """D059: real recent headlines -> a narrated read, or nothing. Same
+    both-required, never-blocking, never-fabricated posture as
+    _fundamental_context above."""
+    if analyst is None or provider is None:
+        return None
+
+    try:
+        headlines = await provider.get_recent_headlines(symbol, limit=NEWS_HEADLINE_LIMIT)
+    except (DataUnavailableError, VendorError) as exc:
+        logger.warning("news_provider_unavailable", symbol=symbol, error=str(exc))
+        return None
+
+    if not headlines:
+        # A provider is contractually supposed to raise rather than return
+        # an empty list, but an empty list must never reach the analyst -
+        # there would be nothing real for it to cite.
+        return None
+
+    try:
+        read = await analyst.analyze(symbol=symbol, headlines=headlines)
+    except AnalystOutputError as exc:
+        logger.warning("news_analyst_unavailable", symbol=symbol, error=str(exc))
+        return None
+    return _render_read(read.stance.value, read.confidence, read.summary)
 
 
 def _require_paper_broker(authorized: AuthorizedBroker) -> None:
@@ -278,6 +427,10 @@ async def submit_agent_trade_endpoint(
     trader_agent: TraderAgent | None = Depends(get_trader_agent),
     technical_analyst: TechnicalAnalyst | None = Depends(get_technical_analyst),
     history_provider: HistoryProvider | None = Depends(get_history_provider),
+    fundamental_analyst: FundamentalAnalyst | None = Depends(get_fundamental_analyst),
+    fundamentals_provider: FundamentalsProvider | None = Depends(get_fundamentals_provider),
+    news_analyst: NewsAnalyst | None = Depends(get_news_analyst),
+    news_provider: NewsProvider | None = Depends(get_news_provider),
 ) -> AgentTradeResponse:
     _require_paper_broker(authorized)
 
@@ -302,56 +455,38 @@ async def submit_agent_trade_endpoint(
         ),
     )
 
-    indicator_context: str | None = None
-    if history_provider is not None:
-        # D021: real, deterministically-computed indicators (never
-        # asked of an LLM) - optional, like everything else here. A
-        # short history, a vendor failure, or no configured provider all
-        # just mean no indicator context this call, never a blocked trade
-        # or a guessed value.
-        try:
-            closes = await history_provider.get_daily_closes(request.symbol, count=30)
-            indicator_lines = []
-            try:
-                indicator_lines.append(f"SMA(20)={sma(closes, 20)}")
-            except InsufficientDataError:
-                pass
-            try:
-                indicator_lines.append(f"RSI(14)={rsi(closes, 14)}")
-            except InsufficientDataError:
-                pass
-            if indicator_lines:
-                indicator_context = ", ".join(indicator_lines)
-        except (DataUnavailableError, VendorError) as exc:
-            logger.warning("history_provider_unavailable", symbol=request.symbol, error=str(exc))
-
-    technical_context: str | None = None
-    if technical_analyst is not None:
-        # D019/D021: optional additional context only - a failed or
-        # unavailable technical read must never block the trade, since
-        # this analyst is informational and TraderAgent already treats
-        # a missing directive-adjacent context as normal. Never
-        # fabricated: on failure the context is simply omitted, not
-        # guessed.
-        try:
-            read = await technical_analyst.analyze(
-                symbol=request.symbol,
-                price=estimated_price,
-                as_of=market_data_as_of.isoformat(),
-                indicator_context=indicator_context,
-            )
-        except AnalystOutputError as exc:
-            logger.warning("technical_analyst_unavailable", symbol=request.symbol, error=str(exc))
-        else:
-            technical_context = (
-                f"stance={read.stance.value}, confidence={read.confidence}: {read.summary}"
-            )
+    # D059: the three analysts have no cross-dependency, so they run
+    # concurrently (docs/AGENT_POLICY.md: "Parallelize agents with no
+    # cross-dependency"). Each helper is independently failure-isolated
+    # and returns None rather than raising, so one analyst's vendor or
+    # LLM failure can never affect the other two - or the trade.
+    technical_context, fundamental_context, news_context = await asyncio.gather(
+        _technical_context(
+            symbol=request.symbol,
+            price=estimated_price,
+            as_of=market_data_as_of,
+            technical_analyst=technical_analyst,
+            history_provider=history_provider,
+        ),
+        _fundamental_context(
+            symbol=request.symbol,
+            analyst=fundamental_analyst,
+            provider=fundamentals_provider,
+        ),
+        _news_context(
+            symbol=request.symbol,
+            analyst=news_analyst,
+            provider=news_provider,
+        ),
+    )
 
     try:
         idea = await trader_agent.propose(
             symbol=request.symbol,
             directive=request.directive,
             technical_context=technical_context,
+            fundamental_context=fundamental_context,
+            news_context=news_context,
         )
     except AgentOutputError as exc:
         raise HTTPException(status_code=502, detail=f"AGENT_OUTPUT_INVALID: {exc}") from None
