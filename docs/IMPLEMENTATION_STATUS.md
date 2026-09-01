@@ -1288,6 +1288,31 @@ optimization.
 
 ## Tests
 
+Phases 43, 44, and 45 (live-trading path, FundamentalAnalyst/NewsAnalyst,
+dashboard redesign) were built in three parallel worktrees off the same
+D057 `main` and independently confirmed **487** (Phase 43, 424 baseline +
+63 new) and **481** (Phase 44, same 424 baseline + 57 new) — disjoint new
+test files from two branches that both touched
+`apps/api/app/api/dependencies.py`. After merging all three (43 → 44 → 45,
+resolving an additive conflict in that same file plus `docs/DECISIONS.md`)
+a full from-scratch `pytest tests/ -q` against a freshly migrated, isolated
+Postgres/Redis stack (compose project `tosverifymain`, ports 55499/56499,
+never touching the user's own running dev stack on 5432/6379/8000/3005)
+collected the real merged total: **544 passed, 0 failed, 3 pre-existing
+warnings** (424 + 63 + 57 = 544 exactly — confirms the two branches' new
+tests were genuinely disjoint, not that any silently dropped or collided).
+`ruff check .` and `mypy apps` both clean (86 source files); `bash
+scripts/secret_scan.sh` clean; `alembic upgrade head` applied cleanly with
+no new migration from any of the three phases. The live-trading safety
+invariant was explicitly re-checked post-merge: `git grep` for
+`live_trading_enabled\s*=\s*True|LIVE_TRADING_ENABLED=true` across `apps/`
+and `tests/` returns only docstrings/error-message text and two
+pre-existing unit tests that construct a `Settings` object to test the
+fail-closed validator itself (`tests/core/test_execution_context.py`,
+`tests/test_config.py`) — neither starts an app or attempts a broker call.
+No code path anywhere sets this flag true and runs. See D061 for the full
+verification record.
+
 Each of Phase 26, Phase 27, and Phase 28 was built in its own parallel
 worktree against the same 208-test baseline and independently confirmed a
 real `pytest tests/ -q` collected count within its own worktree: **234**
