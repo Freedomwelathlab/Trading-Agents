@@ -1912,6 +1912,94 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
   were removed afterwards; no `.env` was ever created, and the user's own
   5432/6379/8000/3005 services were left untouched.
 
+- Phase 46: self-service password reset, with email as an optional vendor
+  (2026-09-02, D063). Closes the gap D049 opened: before this phase the
+  only recovery path for a forgotten password was a direct SQL update, and
+  a user who mistyped five times was locked out for fifteen minutes with
+  "no unlock endpoint and no email flow".
+  **(1) `password_reset_tokens`** (migration `0013`, the first new table
+  since `0012`) — `id`, `user_id` (FK, ON DELETE CASCADE), `token_hash`
+  (UNIQUE), `created_at`, `expires_at`, `used_at`. Only a **SHA-256 hex
+  digest** of the token is stored, never the token, so a database dump is
+  not a set of working reset links. SHA-256 rather than bcrypt is
+  deliberate and argued in D063: the input is 32 bytes from
+  `secrets.token_urlsafe`, so bcrypt's cost factor buys nothing against a
+  256-bit space while making redemption unindexable.
+  **(2) `POST /auth/password-reset/request`** (public) — **always 200 with
+  one byte-identical body**, across all five branches (address unknown,
+  account inactive, per-account throttle tripped, delivery NOT_CONFIGURED,
+  send failed). No row is written for an unknown or inactive address, so
+  storage cannot be an oracle either. The acknowledgement says a link "has
+  been *issued*", never "sent": that is the only wording true in all five
+  cases, since three of them send nothing.
+  **(3) `POST /auth/password-reset/confirm`** (public) — one 400 sentinel,
+  `INVALID_OR_EXPIRED_TOKEN`, for unknown/expired/used/deactivated alike;
+  never a stack trace and never a hint at which check failed. On success it
+  rehashes with the same bcrypt scheme Phase 7 uses, **clears any active
+  D049 login lockout**, and marks every other outstanding unused token for
+  that user consumed — all in one transaction. Issuing a second token does
+  NOT kill the first (a user who clicked twice cannot tell which email they
+  are looking at); invalidation happens at redemption, when the account is
+  provably back under someone's control.
+  **(4) Email as a NOT_CONFIGURED vendor** — `EMAIL_PROVIDER_BASE_URL` /
+  `_API_KEY` / `_FROM_ADDRESS`, all-or-nothing, exactly like `LONGPORT_*`
+  (D008/D015) and `LLM_PROVIDER_*` (D018). `notifications/provider.py` is
+  the Protocol; `notifications/transactional_email.py` is one
+  vendor-agnostic adapter for a generic `POST {base}/emails` bearer-auth
+  JSON API (Resend's shape). **Unset is a working state, not a broken
+  one**: tokens are still issued, and an admin reads the real link out of
+  the new **`POST /admin/users/{id}/password-reset`** (`admin:manage`),
+  which answers `"delivery": "NOT_CONFIGURED_returned_directly"` with the
+  live `reset_link`. Configured, the same endpoint sends the mail and
+  returns `"delivery": "SENT"` with `reset_link: null`. A refused send is a
+  real **502** that first invalidates the token it just issued — there is
+  no third `delivery` value meaning "we tried and failed", and nothing
+  anywhere claims delivery (only that the vendor *accepted* the message).
+  **(5) Two throttle layers, honestly scoped** — per-account (default 5/h,
+  counted from the table itself so it holds across workers, and never
+  visible in the response) and per-IP (default 20/h, real 429, but an
+  in-process counter that resets on restart and ignores `X-Forwarded-For`;
+  its own docstring says a real rate limit belongs at the reverse proxy).
+  **(6) Frontend** — `/forgot-password` and `/reset-password?token=...`,
+  plus a "Forgot password?" link always present on `/login` and a
+  full-width "Issue password reset link" panel on `/admin`. Both new pages
+  use `components/auth/AuthCard.tsx`, which lifts `/login`'s own Phase 45
+  layout (D060) verbatim rather than `AppShell` — that shell polls
+  `GET /auth/session` and would bounce a signed-out user to `/login` from
+  the one page that exists to break that loop. The pages render the
+  backend's words verbatim and are tested for it: no "check your inbox",
+  and no invented reason behind `INVALID_OR_EXPIRED_TOKEN`.
+  Deliberately NOT built: an admin endpoint that sets a password directly
+  (an admin who could type it would know it), a session issued on
+  successful reset, password rules beyond the existing 8-character floor,
+  email verification, self-service registration, HTML email, delivery
+  receipts, retries, and a per-row reset button on the admin users listing.
+  **615 backend tests passing** (544 baseline re-measured on this branch +
+  71 new: 11 token-arithmetic, 8 throttle, 16 email-adapter, 5 config, 22
+  public-flow integration, 9 admin-endpoint integration), ruff + mypy
+  clean across 93 source files, secret scan clean. **126 frontend tests
+  over 15 files** (102/13 baseline + 24 new, none deleted or weakened) and
+  `npm run build` clean with all four new routes in the manifest. Verified
+  against a real Postgres 16 on remapped port 55446, `alembic upgrade head`
+  through `0013` plus the `downgrade base` round-trip. Also **live-verified
+  over real HTTP** across three uvicorn instances (8046 NOT_CONFIGURED,
+  8047 against a local stub vendor, 8048 against a dead port): registered
+  and unknown addresses returned byte-identical 200s and the unknown flood
+  wrote zero rows; the admin endpoint gave a real link to an admin and a
+  real 403 to a non-admin; the link redeemed once, the old password stopped
+  working, and a replay and a fabricated token returned identical
+  `INVALID_OR_EXPIRED_TOKEN` bodies; redeeming a newer link killed an older
+  one; the per-IP 429 fired for a *registered* address too; the stub vendor
+  received exactly the documented `POST /emails` contract and the emailed
+  link redeemed; an unreachable vendor produced a real 502 on the admin
+  path and an unchanged generic 200 on the public one. Postgres showed only
+  64-character hashes, and grepping every server's stdout for the raw
+  tokens returned zero matches. The container and its volume were removed
+  afterwards and no `.env` was ever created. **No real email vendor was
+  contacted and no email credential exists in this branch.**
+  `LIVE_TRADING_ENABLED` was never touched and nothing under
+  `apps/api/app/execution/` was modified.
+
 ## Known Issues
 
 None open.

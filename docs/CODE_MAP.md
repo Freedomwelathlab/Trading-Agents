@@ -69,13 +69,17 @@ repo (see the module docstring).
 
 Purpose: schema history.
 Location: `migrations/` (Alembic, async env)
-Current head: `0009_orders_portfolio_decision` (`0001` users/roles/assets/
+Current head: `0013_password_reset_tokens` (`0001` users/roles/assets/
 brokers, `0002` orders/fills, `0003` adds `orders.submitted_by_user_id`,
 `0004` adds `roles.permissions`, `0005` adds `broker_grants`, `0006` adds
 `broker_accounts`/`broker_positions`, `0007` adds the composite
 `orders(broker_id, symbol, submitted_at)` index for the duplicate-order
 query, `0008` adds `portfolio_snapshots`/`portfolio_snapshot_positions`,
-`0009` adds the four nullable `orders.portfolio_*` audit columns — D029)
+`0009` adds the four nullable `orders.portfolio_*` audit columns — D029,
+`0010` adds `emergency_stop_events` — D039, `0011` adds
+`portfolio_snapshots.cost_basis_method` — D044, `0012` adds
+`users.failed_login_count`/`users.locked_until` — D049, `0013` adds
+`password_reset_tokens` — D063)
 Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
 comment history in `0001_initial.py` if adding a new enum column.
@@ -200,13 +204,30 @@ Deliberately pure: no session, no request, no clock of its own, so lock
 EXPIRY is testable without sleeping. `login.py` owns reading/writing the
 two `users` columns it reasons about (`failed_login_count`,
 `locked_until`).
+Also: the password-reset flow (D063, Phase 46) —
+`apps/api/app/auth/password_reset.py` (pure: `generate_reset_token`,
+`hash_reset_token` (SHA-256, not bcrypt — see the module docstring for
+why that is not a downgrade), `expiry_for`, `is_redeemable`,
+`build_reset_link`, `build_reset_email_body`, and a `utcnow()` clock seam
+matching `lockout.py`'s), `apps/api/app/auth/reset_service.py` (the
+session-touching half: `find_resettable_user`, `account_throttle_exceeded`,
+`issue_token`, `invalidate_token`, `redeem_token` — shared by the public
+and admin routes so they cannot drift apart on what gets WRITTEN),
+`apps/api/app/auth/reset_throttle.py` (per-IP fixed-window counter;
+in-process and per-worker, and its docstring says so rather than
+overselling), `apps/api/app/auth/routes/password_reset.py` (both public
+routes plus the `get_email_provider` dependency).
 Tests: `tests/auth/test_security.py` (8 unit tests),
 `tests/auth/test_authorization.py` (3 unit tests against the
 `require_permission` checker directly), `tests/auth/test_lockout.py`
-(9 unit tests on the pure lockout arithmetic), `tests/api/test_auth.py`
-(4 integration tests against real Postgres),
+(9 unit tests on the pure lockout arithmetic),
+`tests/auth/test_password_reset.py` (11 unit tests on the pure token
+arithmetic), `tests/auth/test_reset_throttle.py` (8 unit tests),
+`tests/api/test_auth.py` (4 integration tests against real Postgres),
 `tests/api/test_login_lockout.py` (8 integration tests against real
-Postgres, with an injected clock for the expiry cases)
+Postgres, with an injected clock for the expiry cases),
+`tests/api/test_password_reset.py` (22 integration tests),
+`tests/api/test_admin_password_reset.py` (9 integration tests)
 Important: **no public registration endpoint exists** — users and roles are
 created either via the `/admin/*` routes (see the HTTP API layer section
 below and D013) or, for the very first admin, by direct DB insert.
@@ -234,6 +255,38 @@ hashes against a dummy bcrypt hash when the email doesn't exist
 (`login.py`'s `_DUMMY_HASH`, generated at import time, not hand-written) to
 avoid a timing side-channel that would let an attacker enumerate emails —
 don't "simplify" that early-return away.
+`POST /auth/password-reset/request` answers **200 with one byte-identical
+body in every branch** (unknown address, inactive account, throttled,
+delivery NOT_CONFIGURED, send failed), which is why `ACKNOWLEDGEMENT` is a
+module constant rather than a literal per branch — and why the per-account
+throttle is silent while only the per-IP one returns 429. Do not "improve"
+any of those branches into a distinguishable response; that is the
+enumeration oracle the whole route is shaped around. `confirm` answers one
+400 sentinel, `INVALID_OR_EXPIRED_TOKEN`, for every failure. A successful
+reset also clears the D049 lockout columns.
+
+## Notifications
+
+Purpose: outbound transactional email. One consumer today (the
+password-reset link, D063); nothing else in the app sends mail.
+Main files: `apps/api/app/notifications/provider.py` (the `EmailProvider`
+Protocol and `EmailProviderError`),
+`apps/api/app/notifications/transactional_email.py`
+(`HttpTransactionalEmailProvider` + `build_email_provider`)
+Dependencies: `httpx`, `apps.api.app.core.config` (`email_provider_*`)
+Tests: `tests/notifications/test_transactional_email.py` (16 tests; the
+HTTP layer runs unmodified against an `httpx.MockTransport`)
+Important: same optional-vendor shape as market data (D008/D015) and the
+LLM provider (D018) — `build_email_provider` returns **None** unless all
+three `EMAIL_PROVIDER_*` values are set together, and None means
+NOT_CONFIGURED, never a silently-dropped message. Built once in
+`main.py`'s lifespan onto `app.state.email_provider` and read through
+`get_email_provider`. **`send()` returning normally is a claim that the
+vendor ACCEPTED the message** — it must not be made on a timeout, a 4xx or
+an unparseable response, and "accepted" is never upgraded to "delivered"
+anywhere in the code, the docs or the UI. NOT_CONFIGURED does not disable
+password resets; it routes the link through
+`POST /admin/users/{id}/password-reset` instead.
 
 ## HTTP API layer
 
@@ -735,6 +788,17 @@ contract, and on success sets the JWT as an httpOnly cookie
 (`AUTH_COOKIE_NAME`). On failure, passes through the backend's actual
 status and body.
 `apps/web/app/api/auth/logout/route.ts` — `POST`, clears the cookie.
+`apps/web/app/api/auth/password-reset/request/route.ts` and
+`.../confirm/route.ts` (D063) — `POST`, **unauthenticated**: no cookie is
+read and none is set, since the whole point is that the caller cannot log
+in. Forward the backend's status and body untouched. That matters more
+here than elsewhere: the request endpoint's fixed 200 body must not be
+rewritten into "we've emailed you", a claim the backend was careful not to
+make and one that is false with no email provider configured.
+`apps/web/app/api/admin/users/[userId]/password-reset/route.ts` (D063) —
+`POST`, cookie-to-Bearer like every other admin handler; forwards the
+`reset_link` (a live single-use credential when delivery is
+NOT_CONFIGURED) and the real 403/404/502 otherwise.
 `apps/web/app/api/health/route.ts` — `GET`, proxies `GET /health`
 (no auth required by contract; still proxied so the browser only ever
 talks same-origin).
@@ -778,6 +842,23 @@ full `PortfolioSnapshot` body and status unmodified, including 400
 posting to `/api/auth/login`; on success routes to `/dashboard`; renders
 the real error detail from a failed login (network failure vs backend
 401 are distinguished in the UI copy but both render, never silently).
+Carries a permanent "Forgot password?" link to `/forgot-password` (D063) —
+always present, never revealed only after a failed attempt.
+`apps/web/components/auth/AuthCard.tsx` (D063) — the shell for the three
+signed-out pages, lifted verbatim from `/login`'s Phase 45 layout (D060).
+Deliberately NOT `components/shell/AppShell`: that shell renders
+`SessionStatus`/`LogoutButton`, which poll `GET /auth/session` and would
+bounce a signed-out user to `/login` from the very pages that exist to
+break that loop.
+`apps/web/app/forgot-password/page.tsx` (D063) — email input posting to
+`/api/auth/password-reset/request`; renders the backend's fixed
+acknowledgement **verbatim** and keeps the form on screen afterwards.
+`apps/web/app/reset-password/page.tsx` (D063) — reads `?token=` via
+`useSearchParams` inside a `Suspense` boundary, posts to
+`/api/auth/password-reset/confirm`, then links to `/login` (it issues no
+session). Renders the `INVALID_OR_EXPIRED_TOKEN` sentinel as-is and
+invents no reason behind it; the confirm-password box is a client-side
+typo guard only — the real 8-character floor is the backend schema's.
 `apps/web/app/dashboard/page.tsx` — server component shell (gated by
 `proxy.ts`) composing three client components.
 `apps/web/components/HealthStatus.tsx` — fetches `/api/health` on mount,
@@ -808,7 +889,14 @@ backend's 403 on submit.
 (email/password/role/active, posts to `/api/admin/users`) and
 `UpdateUserForm` (user ID + opt-in checkboxes to change active status
 and/or role, posts to `/api/admin/users/[userId]`), both rendering the
-real response or error detail.
+real response or error detail. Plus `ResetUserPasswordForm` (D063) — user
+ID + submit, posts to `/api/admin/users/[userId]/password-reset`, and
+renders the two delivery branches as what they are: the live `reset_link`
+under an explicit "this is a credential" warning when delivery is
+`NOT_CONFIGURED_returned_directly`, or an "accepted a message" note (never
+"delivered") when it is `SENT`. A standalone form rather than a per-row
+button on `UsersList`, so a mis-aimed click cannot issue a live credential
+for the wrong account.
 `apps/web/components/admin/RolesAdmin.tsx` (D023) — `CreateRoleForm`
 (name/description/comma-separated permissions, posts to
 `/api/admin/roles`) and `UpdateRoleForm` (role ID + opt-in checkboxes to

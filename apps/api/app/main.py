@@ -18,6 +18,7 @@ from apps.api.app.api.routes.portfolio import router as portfolio_router
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
 from apps.api.app.auth.routes.login import router as auth_router
+from apps.api.app.auth.routes.password_reset import router as password_reset_router
 from apps.api.app.auth.routes.session import router as session_router
 from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
@@ -31,6 +32,7 @@ from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_provider,
 )
 from apps.api.app.marketdata.router import MarketDataRouter
+from apps.api.app.notifications.transactional_email import build_email_provider
 from apps.api.app.portfolio.cycle_lock import SnapshotCycleLock
 from apps.api.app.portfolio.market_hours import MarketHoursGate
 from apps.api.app.portfolio.scheduler import PortfolioSnapshotScheduler
@@ -64,6 +66,14 @@ async def lifespan(app: FastAPI):
     # this is None and POST /brokers/{id}/trades refuses every live-broker
     # request with NOT_CONFIGURED.
     app.state.live_broker_adapter = build_live_broker_adapter(settings)
+
+    # Phase 46 (D063): outbound transactional email, used only by the
+    # password-reset flow today. None unless all three EMAIL_PROVIDER_*
+    # values are set together - the committed default - in which case the
+    # reset flow still issues real tokens and an admin relays the link by
+    # hand through POST /admin/users/{id}/password-reset. Nothing ever
+    # reports an email as sent when this is None.
+    app.state.email_provider = build_email_provider(settings)
 
     llm_provider = build_llm_provider(settings)
     app.state.trader_agent = build_trader_agent(llm_provider)
@@ -134,6 +144,9 @@ async def lifespan(app: FastAPI):
             "longbridge" if app.state.fundamentals_provider else "NOT_CONFIGURED"
         ),
         news_provider="longbridge" if app.state.news_provider else "NOT_CONFIGURED",
+        # D063: NOT_CONFIGURED here does NOT disable password resets - it
+        # means the link is delivered by an admin rather than by email.
+        email_provider="configured" if app.state.email_provider else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",
         technical_analyst="configured" if app.state.technical_analyst else "NOT_CONFIGURED",
         fundamental_analyst=(
@@ -189,6 +202,9 @@ app = FastAPI(title="Trading OS API", version="0.1.0", lifespan=lifespan)
 # describing a request that never reaches a route handler at all.
 app.add_middleware(RequestIDMiddleware)
 app.include_router(auth_router)
+# Phase 46 (D063): the only unauthenticated routes besides /auth/login and
+# the health probes. Registered next to the login router they belong with.
+app.include_router(password_reset_router)
 app.include_router(session_router)
 app.include_router(trades_router)
 app.include_router(agent_trades_router)

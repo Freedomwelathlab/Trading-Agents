@@ -5589,3 +5589,275 @@ paper-trading Longbridge credentials in the root `.env`, never read or
 logged by this verification) were confirmed still running and untouched
 before and after.
 Status: Implemented and verified as above.
+
+---
+
+**D063 — Phase 46: self-service password reset, with email delivery as an optional NOT_CONFIGURED vendor**
+
+Numbering note: this worktree branched from `main` at D061 and originally
+claimed D062, the next free number at branch time. The concurrently-run
+sibling Phase 47 worktree also branched at D061, claimed D062 for its own
+entry, and merged to `main` first — so this entry is renumbered to **D063**
+at merge time to avoid a collision, following the same convention used
+since D028/D030/D031/D032 for parallel worktrees landing on the same
+D-number.
+
+Date: 2026-09-02
+
+Decision: Build a real forgot-password flow — a `password_reset_tokens`
+table (migration `0013`), `POST /auth/password-reset/request`, `POST
+/auth/password-reset/confirm`, an admin-only `POST
+/admin/users/{id}/password-reset`, and the `/forgot-password` and
+`/reset-password` pages — and treat outbound email as an optional,
+all-or-nothing vendor under the `EMAIL_PROVIDER_*` trio, exactly like
+`LONGPORT_*` (D008/D015) and `LLM_PROVIDER_*` (D018).
+
+Until this phase the only recovery path for a forgotten password was a
+direct SQL update, and D049 had made that worse rather than better: a user
+who mistypes five times is locked out for fifteen minutes with, in its own
+words, "no unlock endpoint and no email flow". That is a defensible
+position for a lockout and an indefensible one for a whole account.
+
+**Why email is a NOT_CONFIGURED vendor rather than a dependency.** A
+password reset that required a transactional-email account before it worked
+at all would mean the committed default of this repo — a self-hosted
+deployment with no vendor relationships — has no recovery path, which is
+the state we were trying to leave. So the token is created either way, and
+the two delivery paths are:
+
+- `EMAIL_PROVIDER_*` unset (the default): the public endpoint issues a real
+  token and sends nothing. An admin holding `admin:manage` reads the actual
+  link out of `POST /admin/users/{id}/password-reset`, whose response says
+  `"delivery": "NOT_CONFIGURED_returned_directly"` and carries
+  `reset_link`, and relays it over a channel they already trust.
+- `EMAIL_PROVIDER_*` set: the same endpoints send the mail, and the admin
+  response becomes `"delivery": "SENT"` with `reset_link: null`. Withholding
+  the link once email works is the point — otherwise configuring a provider
+  would not have changed who can obtain one.
+
+The rejected alternative was the tempting one: log the link at INFO on an
+unconfigured deployment and call the flow "working". That puts a live
+account-takeover credential in a log aggregator forever, for every user,
+including ones nobody is currently helping. The admin endpoint puts the
+same string behind a permission check, in a response that is not persisted
+anywhere, only when a human asks for it.
+
+**The wire contract** (documented in
+`apps/api/app/notifications/transactional_email.py`, restated here so it
+can be judged without reading code): `POST {base}/emails`, bearer auth,
+JSON `{"from", "to": [...], "subject", "text"}`, any 2xx meaning accepted.
+That is Resend's shape and close enough to several lookalikes to be
+reachable through a one-file adapter, but nothing is named after a vendor —
+`apps/api/app/notifications/provider.py` is the Protocol, and a vendor that
+disagrees implements it as a second adapter rather than loosening the
+first. `to` is a list even for one recipient because a bare string is
+silently misread by several of these APIs. Plain text only, no HTML part: a
+reset email is one sentence and one URL, and an HTML template would add a
+second place for the link to diverge from the text.
+
+**Returning normally is a claim.** Every other delivery mechanism in this
+app hands the caller something inspectable; a sent email does not. So
+`EmailProvider.send` has exactly two outcomes — accepted, or
+`EmailProviderError` — with no third state in which delivery may be assumed
+because nothing complained. And "accepted" is the strongest word used
+anywhere in the code, the API docs or the UI: a 2xx from a transactional
+API means the vendor queued the message, and nothing in this stack can see
+an inbox. This is `docs/TRADING_SAFETY.md`'s no-fabrication rule applied to
+notifications rather than to market data.
+
+**Anti-enumeration, and the one place it cost us something.**
+`POST /auth/password-reset/request` is the only unauthenticated route in
+this app that takes a user identifier, so it is the only place an
+enumeration oracle can be built. Five branches — address not registered,
+account deactivated, per-account throttle tripped, delivery
+NOT_CONFIGURED, send failed — converge on one status and one byte-identical
+body, which is a module constant rather than a literal per branch so a
+future edit cannot casually diverge one of them. Storage is held to the
+same rule: no row is written for an unknown or inactive address, or the
+table itself would become the oracle the response refuses to be.
+
+That constraint forced the acknowledgement's wording. "A reset link has
+been sent to you" would be a fabrication in three of the five branches, so
+the message says a link "has been **issued**", and names the real reason
+one might never arrive ("this deployment may not have email delivery
+configured"). It reads as hedging and is not: it is the only sentence true
+in all five cases while telling the caller nothing about which one they
+hit. The frontend renders that sentence verbatim and is tested for not
+saying "check your inbox".
+
+`POST /auth/password-reset/confirm` answers every failure with one 400
+sentinel, `INVALID_OR_EXPIRED_TOKEN`. Unknown, expired, already-used and
+deactivated-user are deliberately indistinguishable: "this expired" would
+confirm that a real reset was requested for a real account, and the remedy
+is identical in all four cases anyway. The admin endpoint, by contrast, IS
+specific (404 unknown id, 400 `USER_INACTIVE`, 502
+`EMAIL_DELIVERY_FAILED`) — the caller already holds `admin:manage` and
+already named an id, so there is nothing left to enumerate.
+
+**SHA-256, not bcrypt, for the token.** `token_hash` stores an unsalted
+SHA-256 digest, and this is not a weakening of the `users.hashed_password`
+precedent — it is the same reasoning applied to a different input. Bcrypt's
+cost factor buys resistance to offline guessing of LOW-entropy secrets; a
+reset token is 32 bytes from `secrets.token_urlsafe`, so there is nothing
+to guess and no rainbow table can exist over that space. Bcrypt would also
+make redemption unindexable: every digest carries its own salt, so "find
+the row for this token" degrades from one indexed lookup to a bcrypt
+verification against every outstanding row. What the hash defends against
+is exactly one thing — a database dump being a set of working reset links —
+and it defends against it completely.
+
+**Two throttle layers, honestly scoped.** They exist because the endpoint
+is unauthenticated and every call can cost an email send.
+
+- Per **account**: at most `AUTH_PASSWORD_RESET_MAX_REQUESTS_PER_HOUR`
+  (default 5) tokens per rolling hour, counted from `password_reset_tokens`
+  itself. Counting persisted rows rather than an in-process tally is what
+  makes it hold across uvicorn/gunicorn workers and across restarts, with
+  no new table and no new dependency — the same reasoning D049 used to
+  reject Redis for the login lockout (Redis is provisioned in
+  `docker-compose.yml` and still unwired). Tripping it never changes the
+  response, or the limit would fire only for registered addresses and
+  become a louder version of the oracle.
+- Per **client IP**: `AUTH_PASSWORD_RESET_MAX_REQUESTS_PER_IP_PER_HOUR`
+  (default 20), answered with 429. This is the layer that bounds a flood of
+  addresses that do not exist, which the row count by construction cannot
+  see. It is an in-process fixed-window counter, so N workers means N times
+  the ceiling and it resets on restart; `apps/api/app/auth/reset_throttle.py`
+  says so in its own docstring rather than overselling. It reads
+  `request.client.host` and deliberately ignores `X-Forwarded-For`: trusting
+  a forwarding header without knowing the proxy depth makes the limit
+  bypassable by spoofing one, and the failure mode of the honest version
+  (over-throttling everyone behind a shared proxy) is strictly better than
+  the failure mode of the dishonest one (no throttle at all). Key tracking
+  is capped at 10,000 with LRU eviction so an attacker cycling addresses
+  cannot turn the mitigation into a memory leak.
+
+**Redemption invalidates siblings, but issuance does not.** A user who
+clicks "forgot password" twice because the first email was slow cannot tell
+which of the two messages they are looking at, so issuing a second token
+leaves the first alive. Every outstanding unused token for that user is
+consumed at REDEMPTION time instead — the moment the account is provably
+back under someone's control and old links stop being useful. `used_at`
+therefore means CONSUMED (redeemed, or invalidated by a sibling's
+redemption), never NULL again; the password write, the lockout clear and
+the sibling invalidation happen in one transaction, so a crash cannot leave
+a changed password beside a still-live token.
+
+A successful reset also clears `failed_login_count`/`locked_until` (D049).
+Someone who forgot their password very likely locked themselves out
+guessing at it first, and leaving that lock in force would strand them
+behind a fresh, correct password for fifteen more minutes with no way to
+tell why.
+
+**Deliberately NOT built**, each for a reason rather than for time:
+
+- **An admin endpoint that sets a password directly.** An admin who could
+  type a user's new password would know it, which is strictly worse than
+  handing over a single-use link the user redeems themselves.
+  `PATCH /admin/users/{id}` still has no password field.
+- **A session issued on successful reset.** The user signs in afterwards
+  with the password they just chose, which proves the new credential works
+  and keeps "proved you control the link" separate from "is now signed in".
+- **Password strength rules beyond the existing `min_length=8`.** That is
+  the same floor `CreateUserRequest` already enforces, chosen so a reset
+  cannot set a password the create endpoint would have refused. Inventing a
+  richer policy here would have made the two endpoints disagree.
+- **Email verification, self-service registration, account deletion.** Out
+  of scope; D013's admin-creates-users model is unchanged.
+- **A separate `invalidated_at` column** distinguishing "redeemed" from
+  "superseded by a sibling". Both are consumed and neither is redeemable,
+  so a second column would carry audit nuance nothing currently reads.
+- **HTML email, delivery receipts, retries, a queue.** Each would add a
+  claim the system cannot verify or a dependency the flow does not need.
+- **Rendering these pages inside `components/shell/AppShell`.** That shell
+  carries `SessionStatus` and `LogoutButton`, which poll `GET /auth/session`
+  and bounce a caller to `/login` on the 401 they are guaranteed to get
+  here — every user on these pages is by definition signed out. Wrapping
+  them in it would produce a redirect loop out of the one page that exists
+  to break one. `components/auth/AuthCard.tsx` instead lifts `/login`'s own
+  Phase 45 layout (D060) verbatim so the three pages read as one flow; it
+  is a move, not a redesign.
+- **A per-row "reset" button on the admin users listing.** That listing is
+  read-only (D030), every mutating action in `UsersAdmin.tsx` is already an
+  explicit type-the-id form, and a one-click button beside every row makes
+  it very easy to issue a live credential for the wrong account with a
+  mis-aimed click.
+
+**Verified.** `bash scripts/secret_scan.sh` clean. `ruff check .` clean.
+`mypy apps` clean (93 source files, up from 86). `alembic upgrade head`
+applied `0013` cleanly against a real Postgres 16, and the
+`downgrade base` → `upgrade head` round-trip CI runs was exercised on the
+same database. `pytest tests/ -q`: **615 passed**, against a 544 baseline
+re-measured on this same branch before any change — 71 new tests across six
+files (11 pure token-arithmetic, 8 throttle, 16 email-adapter, 5 config,
+22 public-flow integration, 9 admin-endpoint integration), 3 pre-existing
+warnings, zero failures. `npm test` in `apps/web`: **126 passed over 15
+files**, against a 102/13 baseline measured the same way — 24 new, none
+deleted, skipped or weakened. `npm run build` clean, with
+`/forgot-password`, `/reset-password`,
+`/api/auth/password-reset/{request,confirm}` and
+`/api/admin/users/[userId]/password-reset` all present in the route
+manifest.
+
+Both email-delivery branches are covered by a fake `EmailProvider` double
+implementing the real Protocol, and the HTTP adapter itself is exercised
+through `httpx.MockTransport` so every line of `send()` — URL joining,
+headers, body shape, status handling — runs unmodified against a scripted
+server. **No real email vendor was contacted and no email credential exists
+anywhere in this branch**; the `EMAIL_PROVIDER_*` values in `.env.example`
+are commented out and empty, and every key-shaped literal in the tests is a
+fixture carrying the D052 `pragma: allowlist secret` marker.
+
+**Live-verified over real HTTP**, not only through the test client, across
+three `uvicorn` instances against the same real Postgres (8046
+NOT_CONFIGURED, 8047 pointed at a local stub vendor on 9046, 8048 pointed
+at a dead port to force a send failure), with two real seeded users:
+
+- The app booted logging `email_provider=NOT_CONFIGURED` on 8046.
+- A registered and an unknown address returned **byte-identical** 200
+  bodies. The unknown-address flood wrote **zero** rows.
+- `POST /admin/users/{id}/password-reset` returned 201 with a real
+  `reset_link` for the admin and **403 `Missing required permission:
+  admin:manage`** for the ordinary user.
+- That link redeemed once (200); the new password logged in (200), the old
+  one did not (401); replaying the link and submitting a fabricated token
+  returned **identical** 400 `INVALID_OR_EXPIRED_TOKEN` bodies.
+- Two outstanding links were issued; redeeming the newer made the older
+  fail with the same sentinel.
+- The per-IP throttle returned a real 429, and returned it for a
+  *registered* address too — confirming it cannot be used to probe which
+  addresses exist.
+- On 8047 the stub vendor received exactly the documented contract:
+  `POST /emails`, `Authorization: Bearer …`, `{"from", "to": ["…"],
+  "subject", "text"}` with `to` as a list, plain text carrying the link and
+  the real 30-minute TTL. The admin response was `"delivery": "SENT"` with
+  `reset_link: null`, and the **emailed** link then redeemed successfully.
+- On 8048 the admin endpoint returned a real **502 `EMAIL_DELIVERY_FAILED`**
+  naming the underlying connection error, while the public endpoint held
+  its generic 200 — and the same run incidentally confirmed the silent
+  per-account throttle live, logging `password_reset_throttled` and
+  writing no row while still returning that same 200.
+- Postgres was inspected directly afterwards: every `token_hash` is 64
+  hex characters, no raw token appears in any row, and grepping all three
+  servers' stdout for the raw tokens and for `reset-password?token=`
+  returned **zero** matches — the link never reaches a log.
+
+One real bug was found by the tests rather than by review: the app's
+sessionmaker sets `expire_on_commit=False` (`apps/api/app/db/base.py`), so
+an integration test that commits and re-selects gets its own
+identity-mapped object back rather than the row the route just wrote. The
+first draft of `test_a_successful_reset_clears_a_login_lockout` therefore
+read a stale `failed_login_count` and failed. Fixed in the test harness
+(`_refresh` = commit + `expire_all`), not by relaxing the assertion — the
+assertion was correct and the read was lying.
+
+Infrastructure: an isolated `postgres:16-alpine` container on remapped host
+port 55446, created solely for this branch and removed with its volume
+afterwards. No `.env` file was created at any point — every variable was
+shell-exported for this session only. `LIVE_TRADING_ENABLED` was never
+touched, no live-trading route or broker path was modified, and this
+branch's diff contains nothing under `apps/api/app/execution/`.
+
+Status: Implemented and verified as above. Email delivery is
+NOT_CONFIGURED on a default checkout, which is a working state for this
+feature, not a missing one.

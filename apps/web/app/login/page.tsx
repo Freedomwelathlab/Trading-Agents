@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { EXPIRED_REASON } from "@/lib/session";
@@ -159,6 +160,16 @@ function LoginForm() {
               {submitting ? "Signing in..." : "Sign in"}
             </button>
           </form>
+
+          {/* Phase 46 / D063. Always shown, never conditional on a failed
+              attempt: a user who cannot log in should not have to fail
+              first to discover that a reset exists. */}
+          <Link
+            href="/forgot-password"
+            className="text-center text-xs font-semibold text-accent hover:underline"
+          >
+            Forgot password?
+          </Link>
         </div>
 
         <p className="mt-5 text-center text-xs leading-relaxed text-ink-faint">

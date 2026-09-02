@@ -1,4 +1,8 @@
-import { CreateUserForm, UpdateUserForm } from "@/components/admin/UsersAdmin";
+import {
+  CreateUserForm,
+  ResetUserPasswordForm,
+  UpdateUserForm,
+} from "@/components/admin/UsersAdmin";
 import { CreateRoleForm, UpdateRoleForm } from "@/components/admin/RolesAdmin";
 import {
   CreateBrokerGrantForm,
@@ -45,6 +49,11 @@ export default function AdminPage() {
           <CreateUserForm />
           <UpdateUserForm />
         </div>
+        {/* Phase 46 / D063. Its own row rather than a third column: on a
+            NOT_CONFIGURED deployment this panel renders a live reset link,
+            which deserves the full width and an unambiguous warning rather
+            than being squeezed beside two unrelated forms. */}
+        <ResetUserPasswordForm />
         <UsersList />
 
         <SectionHeading>Roles</SectionHeading>
