@@ -231,6 +231,85 @@ class Settings(BaseSettings):
     deployment constructs no trade context and opens no connection.
     Never commit real values; keep them in a local, gitignored `.env`."""
 
+    email_provider_base_url: str | None = None
+    email_provider_api_key: str | None = None
+    email_provider_from_address: str | None = None
+    """Phase 46 (docs/DECISIONS.md D063): transactional email delivery for
+    the password-reset link. All three optional and all-or-nothing, exactly
+    like the LONGPORT_* and LLM_PROVIDER_* trios above and for the same
+    reason - email is genuinely optional to configure, and an absent vendor
+    must render as NOT_CONFIGURED rather than as a silently-dropped message
+    the app then claims to have sent.
+
+    Deliberately vendor-name-agnostic (not RESEND_*/POSTMARK_*/SES_*). The
+    wire contract is a generic transactional-email HTTP API:
+    `POST {base_url}/emails`, `Authorization: Bearer {api_key}`, JSON body
+    `{"from", "to": [...], "subject", "text"}`, any 2xx meaning accepted -
+    which is Resend's shape and is close enough to several others to be
+    reachable through a one-file adapter. See
+    apps/api/app/notifications/transactional_email.py for the exact
+    contract and apps/api/app/notifications/provider.py for the port any
+    other vendor would implement instead.
+
+    When these are unset the reset flow still works end to end: a token is
+    still created, and an admin holding `admin:manage` can read the raw
+    link out of POST /admin/users/{id}/password-reset. What never happens
+    is the app reporting an email as sent when no vendor exists to send it
+    (docs/TRADING_SAFETY.md's no-fabrication rule, applied to
+    notifications). Never commit real values."""
+
+    auth_password_reset_token_ttl_minutes: int = 30
+    """Phase 46 (D063): how long an issued reset token stays redeemable.
+
+    Thirty minutes, not hours: this token is a full account takeover in one
+    string, it travels through email (a channel this app does not control
+    and cannot revoke from), and the legitimate user is by construction
+    sitting at the reset page right now. The expiry is stamped onto the row
+    at creation, so changing this value never retroactively extends or
+    revokes a link already in someone's inbox. Must be positive."""
+
+    auth_password_reset_max_requests_per_hour: int = 5
+    """Phase 46 (D063): how many reset tokens may be issued for ONE account
+    per rolling hour, counted from `password_reset_tokens` itself.
+
+    Counting persisted rows rather than an in-process tally is what makes
+    this limit hold across uvicorn/gunicorn workers, and it costs no new
+    table and no new dependency - the same reasoning D049 used to reject a
+    Redis-backed counter for the login lockout.
+
+    Tripping it never changes the response: the endpoint still answers the
+    same generic 200, because a throttle that only fires for registered
+    emails would itself be the enumeration oracle the generic response
+    exists to prevent. Set to 0 to disable this layer."""
+
+    auth_password_reset_max_requests_per_ip_per_hour: int = 20
+    """Phase 46 (D063): a per-client-IP fixed-window cap on
+    POST /auth/password-reset/request, answered with 429.
+
+    This is the layer that bounds a flood of UNKNOWN emails, which the
+    per-account limit above cannot see (an unknown email creates no row, on
+    purpose - creating one would make storage itself an oracle).
+
+    Honestly scoped: it is an in-process counter, so with N workers the
+    effective ceiling is N times this number, and it resets on restart. It
+    is a cost-imposing measure against casual abuse, not a security
+    boundary - a real one belongs at the reverse proxy, which is also the
+    only layer that can see the true client IP rather than whatever
+    `X-Forwarded-For` claims (this app deliberately does not trust that
+    header; see apps/api/app/auth/reset_throttle.py). Set to 0 to
+    disable."""
+
+    auth_password_reset_url_base: str = "http://localhost:3000/reset-password"
+    """Phase 46 (D063): the front-end URL a reset link points at. The token
+    is appended as `?token=...`.
+
+    This is a link-construction detail only. Nothing about a token's
+    validity depends on it - the backend never parses this URL back, and a
+    token issued under one value redeems fine under another. The default is
+    the local `next dev` origin so the flow works out of the box in
+    development; a real deployment must set it to its own origin, or every
+    emailed link will point at the operator's laptop."""
+
     llm_provider_base_url: str | None = None
     llm_provider_api_key: str | None = None
     llm_provider_model: str | None = None
@@ -268,9 +347,12 @@ class Settings(BaseSettings):
     auth_lockout_duration_minutes: int = 15
     """Phase 39 (docs/DECISIONS.md D049): how long an account stays locked
     once `auth_max_failed_login_attempts` consecutive failures are
-    reached. The lock expires on its own - there is no unlock endpoint and
-    no email flow, so a duration long enough to require one would strand a
-    legitimate user with no recourse. Fifteen minutes is short enough to
+    reached. The lock expires on its own - there is still no unlock
+    endpoint, so a duration long enough to require one would strand a
+    legitimate user with no recourse. (Since Phase 46/D063 a successful
+    password reset also clears the lock, which is a recovery path but not
+    an unlock endpoint: it requires possession of a real reset link.)
+    Fifteen minutes is short enough to
     be a nuisance rather than a lockout-as-denial-of-service against the
     real account holder, and long enough to make sustained guessing
     pointless. Must be positive whenever the lockout is enabled."""
@@ -320,6 +402,31 @@ class Settings(BaseSettings):
                 "AUTH_MAX_FAILED_LOGIN_ATTEMPTS is greater than 0. A zero or negative "
                 "duration would lock an account and immediately unlock it, which is "
                 "no protection at all."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_sane_password_reset_settings(self) -> "Settings":
+        """Phase 46 (D063). Every one of these fails in the dangerous
+        direction if it is wrong, so all three are caught at startup rather
+        than at the first reset request: a non-positive TTL issues tokens
+        that are already expired (or, read the other way, a nonsense
+        window), and a negative throttle is never a meaningful value - 0 is
+        the documented way to disable a throttle deliberately."""
+        if self.auth_password_reset_token_ttl_minutes <= 0:
+            raise ValueError(
+                "AUTH_PASSWORD_RESET_TOKEN_TTL_MINUTES must be positive. A zero or "
+                "negative TTL would issue reset tokens that are expired on arrival."
+            )
+        if self.auth_password_reset_max_requests_per_hour < 0:
+            raise ValueError(
+                "AUTH_PASSWORD_RESET_MAX_REQUESTS_PER_HOUR must be >= 0. Use 0 to "
+                "disable the per-account reset throttle deliberately."
+            )
+        if self.auth_password_reset_max_requests_per_ip_per_hour < 0:
+            raise ValueError(
+                "AUTH_PASSWORD_RESET_MAX_REQUESTS_PER_IP_PER_HOUR must be >= 0. Use 0 "
+                "to disable the per-IP reset throttle deliberately."
             )
         return self
 

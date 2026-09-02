@@ -92,6 +92,49 @@ class User(Base):
     )
 
 
+class PasswordResetToken(Base):
+    """One issued password-reset capability (docs/DECISIONS.md D063,
+    migration 0013).
+
+    The raw token exists in exactly two places and neither of them is this
+    table: the reset link the user was handed, and the response body of the
+    admin endpoint when no email provider is configured. What is stored
+    here is `sha256(token)`, for the same reason `users.hashed_password`
+    holds a bcrypt digest rather than the password - a database dump must
+    not be a set of working reset links. See migration 0013 for why SHA-256
+    is the right primitive for a 256-bit random token where bcrypt is the
+    right one for a human-chosen password.
+
+    `used_at` means CONSUMED, not specifically "redeemed": redemption sets
+    it on the token being redeemed AND on every other still-unused token
+    for the same user, so an old link in an older email stops working the
+    moment a newer one is used. NULL is the only redeemable state and is
+    never restored.
+
+    Rows are never updated other than that one NULL -> timestamp
+    transition, and are never deleted by the application. Expired and used
+    rows are left in place: they are the only record that a reset was ever
+    requested for an account, which is exactly the kind of thing an
+    operator wants to be able to look at after the fact.
+    """
+
+    __tablename__ = "password_reset_tokens"
+    __table_args__ = (
+        Index("ix_password_reset_tokens_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AssetClass(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
     EQUITY = "equity"
     ETF = "etf"

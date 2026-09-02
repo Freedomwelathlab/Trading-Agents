@@ -127,3 +127,63 @@ def test_a_non_positive_lockout_duration_fails_while_the_lockout_is_enabled():
             auth_max_failed_login_attempts=5,
             auth_lockout_duration_minutes=0,
         )
+
+
+def test_no_email_provider_is_configured_by_default(monkeypatch: pytest.MonkeyPatch):
+    """D063's NOT_CONFIGURED default. The reset flow still works without
+    these - it just hands the link to an admin instead of emailing it - so
+    the meaningful assertion is that all three are absent together, which
+    is what makes build_email_provider return None."""
+    for name in (
+        "EMAIL_PROVIDER_BASE_URL",
+        "EMAIL_PROVIDER_API_KEY",
+        "EMAIL_PROVIDER_FROM_ADDRESS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(
+        _env_file=None, jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256"
+    )
+    assert settings.email_provider_base_url is None
+    assert settings.email_provider_api_key is None
+    assert settings.email_provider_from_address is None
+
+
+def test_the_password_reset_defaults_are_a_short_ttl_and_real_throttles():
+    """These defaults are the posture, not placeholders: an operator who
+    never sets them must still get a 30-minute single-use link and both
+    throttle layers switched on."""
+    settings = Settings(
+        _env_file=None, jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256"
+    )
+    assert settings.auth_password_reset_token_ttl_minutes == 30
+    assert settings.auth_password_reset_max_requests_per_hour == 5
+    assert settings.auth_password_reset_max_requests_per_ip_per_hour == 20
+
+
+def test_a_non_positive_reset_token_ttl_fails_at_config_load():
+    """A zero or negative TTL issues links that are expired on arrival —
+    caught at startup rather than discovered by a user who cannot reset."""
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
+            auth_password_reset_token_ttl_minutes=0,
+        )
+
+
+def test_a_negative_reset_throttle_fails_at_config_load():
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
+            auth_password_reset_max_requests_per_hour=-1,
+        )
+
+
+def test_a_negative_per_ip_reset_throttle_fails_at_config_load():
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            jwt_secret_key="test-secret-at-least-32-bytes-long-for-hs256",
+            auth_password_reset_max_requests_per_ip_per_hour=-1,
+        )

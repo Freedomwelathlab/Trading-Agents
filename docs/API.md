@@ -130,9 +130,130 @@ Details that matter to a client:
 - A wrong password while locked does **not** extend the lock, so a third
   party cannot hold a user out indefinitely by guessing.
 - A successful login resets the counter to zero; the lock expires on its
-  own. There is no unlock endpoint and no email flow.
+  own. There is still no unlock endpoint. Since Phase 46 (D063) a
+  **successful password reset** also clears the lock, which is the closest
+  thing to a recovery path — someone who forgot their password very likely
+  locked themselves out guessing at it first, and leaving the lock in force
+  would strand them behind a fresh, correct password.
 - Set `AUTH_MAX_FAILED_LOGIN_ATTEMPTS=0` to disable the lockout entirely,
   in which case 423 is never returned.
+
+## `POST /auth/password-reset/request`
+
+Public and unauthenticated (Phase 46, D063) — it has to be, since a caller
+who could authenticate would not need it.
+
+Request: `{"email": "someone@example.com"}`
+
+**Always 200, always with this exact body**, whatever happened:
+
+```json
+{"detail": "If that email address is registered, a password reset link has been issued for it. The link can be used once and expires shortly. If no email arrives, contact an administrator - this deployment may not have email delivery configured."}
+```
+
+Five branches converge on it: address not registered, account deactivated,
+per-account throttle tripped, no email provider configured, and email send
+failed. A client must not attempt to distinguish them and must render this
+message rather than substituting one of its own — a UI that turned this
+into "check your inbox" would reintroduce a claim the API deliberately does
+not make, and one that is false on any deployment with no email provider.
+
+Note the wording: it says a link was *issued*, not *sent*. That is the only
+sentence true in all five cases.
+
+- **429** when the per-IP throttle
+  (`AUTH_PASSWORD_RESET_MAX_REQUESTS_PER_IP_PER_HOUR`, default 20) is
+  exceeded. Keyed on the client address, never the email, so it reveals
+  nothing about which addresses exist. It is an in-process, per-worker
+  counter — a real rate limit belongs at the reverse proxy.
+- The per-**account** limit
+  (`AUTH_PASSWORD_RESET_MAX_REQUESTS_PER_HOUR`, default 5) never produces a
+  429; it silently stops issuing tokens and returns the same 200, because a
+  status that only fired for registered addresses would be the enumeration
+  oracle this endpoint exists to close.
+- No row is written for an unknown or inactive address, so storage cannot
+  be used as an oracle either.
+
+## `POST /auth/password-reset/confirm`
+
+Public and unauthenticated. Redeems a token from a reset link.
+
+Request: `{"token": "<from the link>", "new_password": "<at least 8 chars>"}`
+
+Response (200): `{"detail": "Password updated. Sign in with your new password."}`
+
+A successful reset also clears any active login lockout (D049) for that
+account, and marks **every** other outstanding unused token for that user
+as consumed — an older link in an older email stops working the moment a
+newer one is used.
+
+**400 for every failure, with one sentinel and no elaboration:**
+
+```json
+{"detail": "INVALID_OR_EXPIRED_TOKEN: this reset link is not valid. Reset links can be used once and expire; request a new one."}
+```
+
+Unknown token, expired token, already-used token, and a token whose user
+has since been deactivated are indistinguishable on purpose — saying "this
+expired" would confirm that a real reset was requested for a real account.
+There is never a stack trace, and never a 404-vs-410 distinction a caller
+could probe with.
+
+422 (not 400) for a `new_password` under 8 characters or a missing field —
+that is the request schema rejecting the body before any token is looked
+at, so the token survives and can still be redeemed with a valid password.
+
+This endpoint issues **no session**. A user signs in afterwards with the
+password they just set.
+
+## `POST /admin/users/{user_id}/password-reset`
+
+Requires `admin:manage`. Issues a reset link for one user on an admin's
+behalf (Phase 46, D063). Empty body.
+
+Unlike the public endpoint, this one is specific: the caller already holds
+`admin:manage` and named a real id, so there is nothing left to enumerate.
+
+Response (201) with **no** email provider configured — the committed
+default:
+
+```json
+{
+  "user_id": "...",
+  "expires_at": "2026-09-02T12:30:00Z",
+  "delivery": "NOT_CONFIGURED_returned_directly",
+  "reset_link": "http://localhost:3000/reset-password?token=..."
+}
+```
+
+`reset_link` is a **live, single-use credential**, not a display string.
+This is the whole point of the endpoint: on a self-hosted deployment with
+no email vendor it is the only way a reset link reaches anybody.
+
+Response (201) with an email provider configured:
+
+```json
+{"user_id": "...", "expires_at": "...", "delivery": "SENT", "reset_link": null}
+```
+
+`reset_link` is withheld once email works — otherwise configuring a
+provider would not have changed who can obtain a link. `"SENT"` means the
+vendor **accepted** the message; nothing in this system can observe an
+inbox, and no field claims delivery.
+
+- **404** for an unknown `user_id`.
+- **400 `USER_INACTIVE:`** for a deactivated account — it cannot log in, so
+  a working password for it would be theatre.
+- **502 `EMAIL_DELIVERY_FAILED:`** when a configured provider refuses the
+  message. There is deliberately no third `delivery` value meaning "we
+  tried and it failed": the just-issued token is invalidated before the 502
+  is raised, so a failed attempt never leaves a live capability behind a
+  response nobody acted on.
+
+There is deliberately **no** endpoint that lets an admin set a user's
+password directly — an admin who could type it would know it, which is
+strictly worse than handing over a single-use link the user redeems
+themselves. `PATCH /admin/users/{user_id}` still has no password field.
 
 ## CSRF posture
 

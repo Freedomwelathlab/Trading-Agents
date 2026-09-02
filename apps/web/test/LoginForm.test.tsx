@@ -73,4 +73,14 @@ describe("LoginPage", () => {
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/dashboard"));
   });
+
+  it("always offers the forgot-password route, not only after a failure", () => {
+    // Phase 46 / D063: a user who cannot log in should not have to fail
+    // first to discover that a reset exists.
+    render(<LoginPage />);
+    expect(screen.getByRole("link", { name: /forgot password/i })).toHaveAttribute(
+      "href",
+      "/forgot-password",
+    );
+  });
 });

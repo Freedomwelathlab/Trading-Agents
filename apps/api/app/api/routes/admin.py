@@ -45,9 +45,13 @@ from apps.api.app.api.schemas_admin import (
     UpdateUserRequest,
 )
 from apps.api.app.api.schemas_brokers import BrokerResponse
+from apps.api.app.auth import password_reset, reset_service
 from apps.api.app.auth.dependencies import require_permission
 from apps.api.app.auth.permissions import Permission
+from apps.api.app.auth.routes.password_reset import get_email_provider
+from apps.api.app.auth.schemas import AdminPasswordResetResponse
 from apps.api.app.auth.security import hash_password
+from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import (
@@ -60,6 +64,7 @@ from apps.api.app.db.models import (
     Role,
     User,
 )
+from apps.api.app.notifications.provider import EmailProvider, EmailProviderError
 
 router = APIRouter(
     prefix="/admin",
@@ -247,6 +252,116 @@ async def update_user(
     await session.commit()
     return CreateUserResponse(
         id=user.id, email=user.email, is_active=user.is_active, role_id=user.role_id
+    )
+
+
+@router.post(
+    "/users/{user_id}/password-reset",
+    response_model=AdminPasswordResetResponse,
+    status_code=201,
+)
+async def admin_issue_password_reset(
+    user_id: uuid.UUID,
+    current_user: User = Depends(require_permission(Permission.ADMIN)),
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    email_provider: EmailProvider | None = Depends(get_email_provider),
+) -> AdminPasswordResetResponse:
+    """Phase 46 (docs/DECISIONS.md D063): issue a password reset link for one
+    user, on an admin's behalf.
+
+    This endpoint exists because of the NOT_CONFIGURED case, not in spite
+    of it. With no email provider wired - the committed default, and the
+    only state a self-hosted deployment starts in - the public
+    self-service flow still creates a real token but has no way to deliver
+    it. Rather than let the feature be half-built until someone buys an
+    email vendor, an admin can read the real link out of this response and
+    relay it over whatever channel they already trust.
+
+    Unlike the public endpoint, this one is allowed to be specific: the
+    caller holds `admin:manage` and named a real user id, so there is
+    nothing left to enumerate. It therefore 404s an unknown id and 400s an
+    inactive account instead of hiding both behind a generic 200.
+
+    The two delivery outcomes are mutually exclusive by construction. When
+    a provider IS configured, the link goes in the email and `reset_link`
+    is null - a configured deployment must not quietly keep handing live
+    credentials back through the API, or the "we send email now" change
+    would have changed nothing. When the send FAILS, this answers 502 and
+    the just-issued token is invalidated first, so a failed attempt never
+    leaves a live capability behind a response nobody acted on.
+
+    Deliberately NOT built here: setting a password directly. An admin who
+    could type a user's new password would know it, which is a strictly
+    worse position than handing over a single-use link the user redeems
+    themselves. `PATCH /admin/users/{id}` still has no password field for
+    the same reason.
+    """
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"No user with id {user_id}.")
+    if not user.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"USER_INACTIVE: user {user_id} is deactivated and cannot log in, so a "
+                "password reset would set a credential that still would not work. "
+                "Reactivate the user first (PATCH /admin/users/{user_id})."
+            ),
+        )
+
+    now = password_reset.utcnow()
+    issued = await reset_service.issue_token(session, user, now, settings)
+    link = password_reset.build_reset_link(issued.raw_token, settings)
+
+    if email_provider is None:
+        logger.warning(
+            "admin_password_reset_issued",
+            user_id=str(user.id),
+            actor_user_id=str(current_user.id),
+            delivery="NOT_CONFIGURED_returned_directly",
+        )
+        return AdminPasswordResetResponse(
+            user_id=user.id,
+            expires_at=issued.expires_at,
+            delivery="NOT_CONFIGURED_returned_directly",
+            reset_link=link,
+        )
+
+    try:
+        await email_provider.send(
+            to=user.email,
+            subject=password_reset.RESET_EMAIL_SUBJECT,
+            text=password_reset.build_reset_email_body(link, settings),
+        )
+    except EmailProviderError as exc:
+        await reset_service.invalidate_token(session, issued.token_id, now)
+        logger.error(
+            "admin_password_reset_email_send_failed",
+            user_id=str(user.id),
+            actor_user_id=str(current_user.id),
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"EMAIL_DELIVERY_FAILED: the configured email provider refused the "
+                f"message, so no reset link reached {user.email}. The token issued for "
+                f"this attempt has been invalidated. Underlying error: {exc}"
+            ),
+        ) from exc
+
+    logger.info(
+        "admin_password_reset_issued",
+        user_id=str(user.id),
+        actor_user_id=str(current_user.id),
+        delivery="SENT",
+    )
+    return AdminPasswordResetResponse(
+        user_id=user.id,
+        expires_at=issued.expires_at,
+        delivery="SENT",
+        reset_link=None,
     )
 
 
