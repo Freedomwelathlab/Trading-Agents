@@ -4,11 +4,16 @@ import {
   CreateBrokerGrantForm,
   DeleteBrokerGrantForm,
 } from "@/components/admin/BrokerGrantsAdmin";
+import {
+  ChangeBrokerModeForm,
+  CreateBrokerForm,
+} from "@/components/admin/BrokerModeAdmin";
 import AppShell from "@/components/shell/AppShell";
 import { Alert, SectionHeading } from "@/components/ui/primitives";
 import {
   UsersList,
   RolesList,
+  BrokersList,
   BrokerGrantsList,
 } from "@/components/admin/AdminListings";
 
@@ -25,6 +30,13 @@ import {
  *
  * Phase 45 / D060 gave this page the dashboard's shell and tokens for
  * consistency. No form, endpoint or rendered state changed.
+ *
+ * Phase 47 added the "Brokers" section: the first frontend for D058's
+ * `POST /admin/brokers` and `PATCH /admin/brokers/{id}/mode`, which had
+ * been built and tested backend-side with no UI on the grounds that a
+ * live-trading surface deserved its own reviewed phase. Both backend
+ * endpoints are unchanged; the forms reach them through route handlers
+ * exactly like every other form on this page.
  */
 export default function AdminPage() {
   return (
@@ -53,6 +65,15 @@ export default function AdminPage() {
           <UpdateRoleForm />
         </div>
         <RolesList />
+
+        <SectionHeading note="kind decides which adapter real orders go to">
+          Brokers
+        </SectionHeading>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <CreateBrokerForm />
+          <ChangeBrokerModeForm />
+        </div>
+        <BrokersList />
 
         <SectionHeading>Broker grants</SectionHeading>
         <div className="grid gap-5 lg:grid-cols-2">

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import {
   UsersList,
   RolesList,
+  BrokersList,
   BrokerGrantsList,
 } from "@/components/admin/AdminListings";
 import { sessionNavigation } from "@/lib/session";
@@ -158,5 +159,66 @@ describe("BrokerGrantsList", () => {
     (fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("down"));
     render(<BrokerGrantsList />);
     await waitFor(() => expect(screen.getByText(/DATA_UNAVAILABLE/)).toBeInTheDocument());
+  });
+});
+
+describe("BrokersList", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Phase 47: the D058 mode form needs a broker's id and its current kind.
+  it("renders each broker's real kind from GET /brokers", async () => {
+    mockJson(200, {
+      brokers: [
+        {
+          id: "b-1",
+          name: "paper-acct",
+          kind: "paper",
+          provider: "longport",
+          is_active: true,
+        },
+        {
+          id: "b-2",
+          name: "live-acct",
+          kind: "live",
+          provider: "longport",
+          is_active: false,
+        },
+      ],
+      limit: 50,
+      offset: 0,
+    });
+
+    render(<BrokersList />);
+
+    await waitFor(() => expect(screen.getByText("paper-acct")).toBeInTheDocument());
+    expect(screen.getByText("live-acct")).toBeInTheDocument();
+    expect(screen.getByText("paper")).toBeInTheDocument();
+    expect(screen.getByText("live")).toBeInTheDocument();
+    expect(
+      (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0],
+    ).toContain("/api/brokers");
+  });
+
+  it("shows a real empty result as empty, never a sample broker", async () => {
+    mockJson(200, { brokers: [], limit: 50, offset: 0 });
+    render(<BrokersList />);
+    await waitFor(() =>
+      expect(screen.getByText(/No brokers you hold a grant for/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("renders a real backend error instead of a table", async () => {
+    mockJson(500, { detail: "Internal Server Error" }, false);
+    render(<BrokersList />);
+    await waitFor(() =>
+      expect(screen.getByText(/Internal Server Error/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 });

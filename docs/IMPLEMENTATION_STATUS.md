@@ -1912,6 +1912,62 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
   were removed afterwards; no `.env` was ever created, and the user's own
   5432/6379/8000/3005 services were left untouched.
 
+- Phase 47: broker paper/live mode UI — the frontend D058 deferred
+  (2026-09-02, D062). **Frontend-only**: no backend route, schema or
+  business rule was changed. D058 built and tested `POST /admin/brokers`
+  and `PATCH /admin/brokers/{broker_id}/mode` with no UI at all, on the
+  stated grounds that "a live-trading UI deserves its own reviewed
+  phase"; until now the one row-level switch deciding which adapter a real
+  order reaches could only be flipped by a hand-rolled HTTP call. New:
+  `components/admin/BrokerModeAdmin.tsx` (a create-broker form and a
+  change-mode form), two pass-through proxies under
+  `app/api/admin/brokers/`, a `BrokersList` added to the existing
+  `AdminListings.tsx`, and a "Brokers" section on `/admin`. The
+  confirmation gate is the point of the phase: `confirm_live` is sent
+  **only** when a dedicated, separately-labelled checkbox is ticked **and**
+  the target kind is `live` — never pre-checked, omitted entirely (not
+  sent as `false`) for a paper target, never injected by either proxy, and
+  cleared whenever the target kind changes so a stale tick cannot survive
+  a live → paper → live round trip. Submitting unticked is deliberately
+  **not** blocked client-side: the backend's own 400
+  `LIVE_KIND_CONFIRMATION_REQUIRED` is rendered verbatim, because a
+  confirmation living only in the browser is not one the server can
+  enforce and a disabled button would have made that real refusal
+  unreachable through the product. The 409 for a broker with recorded
+  orders is rendered with its full text including its remedy sentence.
+  The broker list reads D034's `GET /brokers`, which is **grant-scoped to
+  the caller, not platform-wide** — stated in the panel, since an admin
+  without a grant will not see a broker there.
+  **Two gaps found and deliberately NOT papered over.** (1)
+  `AgentTradeResponse` exposes no per-analyst field whatsoever — D059's
+  Technical/Fundamental/News analysts run server-side and feed the
+  TraderAgent's prompt, but nothing about them is returned, so the
+  response cannot even report whether any ran. `AgentTradeForm` now says
+  so next to the real result rather than rendering three panels built from
+  nothing; a real breakdown needs a backend response-shape change.
+  (2) **There is no order/fill list endpoint** — `orders`/`fills` have
+  been persisted since Phase 4, but no `GET /brokers/{id}/orders` or
+  `/trades` exists in `apps/api/app/api/routes/` or `docs/API.md`, so the
+  intended trade-history panel was not built. The platform keeps an
+  append-only audit trail no user can read back; this is the largest
+  remaining product gap and needs a backend phase.
+  **116 frontend tests over 14 files pass**, up from the 102/13 baseline
+  (re-confirmed by running the suite before any edit); 14 added, none
+  deleted, skipped or weakened. `npm run build` exits 0 with both new
+  handlers registered; `npm run lint` ends at the identical pre-existing
+  3 problems (2 errors, 1 warning), all in untouched files. Live-verified
+  in a real browser against an isolated stack (Postgres 55447, Redis
+  63447, uvicorn 8047, Next 3047) seeded via `scripts/seed_e2e.py` plus
+  one real paper trade, so a broker genuinely held a recorded order: seven
+  scenarios covering both real refusals (400 and 409), a real successful
+  paper → live flip on a clean broker, and the stale-tick guard. Both
+  colour schemes checked. `LIVE_TRADING_ENABLED` was never touched, no
+  live credential was ever set, `/health` reported
+  `live_trading_enabled: false` throughout, and the only broker ever
+  designated `live` was a throwaway row in a throwaway database. Stack,
+  venv and containers removed afterwards; no `.env` created; the sibling
+  phase's `tos-p46-pg` and the user's own containers left untouched.
+
 ## Known Issues
 
 None open.
@@ -1921,3 +1977,25 @@ market-hours gate is weekend-only — intraday after-hours and exchange
 holidays are not checked (Phase 35/D042) — and each API worker process
 still runs its own independent scheduler loop, so >1 worker would multiply
 snapshot rows (D030).
+
+Two backend gaps identified by Phase 47 (D062) while building the frontend
+for them, both needing a backend phase — neither was worked around in the
+UI, and neither is a defect in existing code:
+
+1. **No order/fill list endpoint.** `orders` and `fills` have been
+   persisted since Phase 4, but nothing exposes them: there is no
+   `GET /brokers/{broker_id}/orders` or `/trades` in
+   `apps/api/app/api/routes/` and none in `docs/API.md`. The platform
+   keeps an append-only audit trail that no user can read back through the
+   product, and no trade-history UI can exist until a listing endpoint
+   (plus its response schema and pagination, following D027/D031's
+   `{items, limit, offset}` convention) does.
+2. **`AgentTradeResponse` returns no per-analyst output.** D059's
+   Technical, Fundamental and News analysts run server-side and feed the
+   TraderAgent's prompt, but the response carries only the final decision
+   (`side`, `quantity`, `rationale`) plus the risk/portfolio verdicts — no
+   analyst field at all, so a client cannot even tell which analysts
+   contributed. Surfacing their real reasoning requires widening the
+   response shape; note each analyst is failure-isolated and may
+   legitimately have produced nothing, so any such field must be
+   nullable per analyst rather than implying all three always ran.

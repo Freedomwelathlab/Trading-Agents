@@ -185,6 +185,19 @@ export default function AgentTradeForm() {
             {result.detail && <p className="mt-2 leading-relaxed">{result.detail}</p>}
           </div>
           <PortfolioVerdict {...result} />
+          <Alert tone="info" role="status" testId="analyst-breakdown-unavailable">
+            <span className="font-semibold">No per-analyst breakdown.</span>{" "}
+            Everything above is a field this response actually contains. The
+            agent-trade response carries the TraderAgent&rsquo;s final decision
+            (<code className="font-mono">side</code>,{" "}
+            <code className="font-mono">quantity</code>,{" "}
+            <code className="font-mono">rationale</code>) and the two
+            deterministic verdicts — and no analyst field of any kind. It
+            therefore cannot be said here which of the Technical, Fundamental or
+            News analysts contributed to this proposal, or what any of them
+            concluded. Showing that needs a backend response-shape change, not a
+            frontend one.
+          </Alert>
         </>
       )}
     </Panel>

@@ -819,6 +819,20 @@ change description and/or replace permissions, posts to
 `/api/admin/broker-grants`) and `DeleteBrokerGrantForm` (grant ID, posts
 `DELETE` to `/api/admin/broker-grants/[grantId]`, renders a real 204
 confirmation or a real error, e.g. 404 for an unknown grant).
+`apps/web/components/admin/BrokerModeAdmin.tsx` (Phase 47, D062) — the
+frontend D058 deferred. `CreateBrokerForm` (name, provider, `kind`
+paper/live select, active, posts to `/api/admin/brokers`) and
+`ChangeBrokerModeForm` (broker ID + target kind, `PATCH` to
+`/api/admin/brokers/[brokerId]/mode`). Both embed a shared
+`LiveConfirmation` checkbox: `confirm_live: true` is added to the payload
+only while that box is ticked AND the target kind is `live`, the box is
+never pre-checked, is disabled for a paper target, and is cleared on any
+kind change. Submitting unticked is not blocked — the backend's real 400
+`LIVE_KIND_CONFIRMATION_REQUIRED` and its 409 for a broker with recorded
+orders are rendered verbatim with their status. The read-only broker
+listing lives in `AdminListings.tsx` as `BrokersList`, reusing
+`useAdminList` against D034's grant-scoped `GET /brokers` (there is no
+platform-wide broker listing endpoint; the panel says so).
 `apps/web/components/PortfolioView.tsx` (D026) — broker ID + a
 `SYMBOL=price, SYMBOL2=price2` marks field parsed client-side, posts to
 `/api/portfolio/[brokerId]`, renders the full `PortfolioSnapshot`
@@ -841,7 +855,15 @@ network failure), `apps/web/test/UsersAdmin.test.tsx` (6 tests, D023),
 `apps/web/test/RolesAdmin.test.tsx` (4 tests, D023),
 `apps/web/test/BrokerGrantsAdmin.test.tsx` (6 tests, D023) — the admin
 tests cover success, a real 403 (non-admin caller), a real 404/409 where
-applicable, and network failure. `apps/web/test/PortfolioView.test.tsx`
+applicable, and network failure.
+`apps/web/test/BrokerModeAdmin.test.tsx` (9 tests, Phase 47/D062) —
+asserts the payload itself, not just the render: no `confirm_live` key
+for a paper target, none for a live target with the box unticked (with
+the backend's real 400 rendered), `confirm_live: true` only once ticked,
+the tick cleared across a live → paper → live round trip, the correct
+`PATCH` path and body, the real 409 for a broker with recorded orders
+rendered verbatim, and a real 403. The three `BrokersList` tests live in
+`AdminListings.test.tsx` alongside the other listings. `apps/web/test/PortfolioView.test.tsx`
 (6 tests, D026) — a real rendered snapshot (cash, a full position row,
 all three totals), an empty-positions render, the real 400
 `DATA_UNAVAILABLE:` sentinel for a missing mark, a real 403, a real 404,

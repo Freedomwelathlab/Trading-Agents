@@ -5589,3 +5589,138 @@ paper-trading Longbridge credentials in the root `.env`, never read or
 logged by this verification) were confirmed still running and untouched
 before and after.
 Status: Implemented and verified as above.
+
+---
+
+**D062 — Broker paper/live mode UI (Phase 47): closing D058's deliberately-deferred frontend, and refusing to invent the analyst breakdown the API does not return**
+
+Numbering note: this entry is D062, the next free number after D061 at the
+time of writing. A sibling Phase 46 worktree is building off the same
+`main`; if it also lands a decision, the numbers stay disjoint because
+each phase reserves its own up front (the convention since D028).
+
+**Part A — the mode UI D058 deferred.** D058 built and tested `POST
+/admin/brokers` and `PATCH /admin/brokers/{broker_id}/mode` backend-side
+and shipped no frontend at all, on the explicit grounds that "a
+live-trading UI deserves its own reviewed phase". Until now the only way
+to designate a broker `kind: "live"` — the single row-level switch that
+decides which adapter a real order reaches — was a hand-rolled HTTP call.
+`apps/web/components/admin/BrokerModeAdmin.tsx` is that UI. It is
+frontend-only: no backend route, schema, or business rule was touched,
+and the two new route handlers under `apps/web/app/api/admin/brokers/`
+are pass-through proxies in the identical shape as every sibling admin
+proxy.
+
+Three properties of the confirmation gate are load-bearing, not styling:
+
+1. **`confirm_live` is sent only when the operator ticked the dedicated
+   checkbox AND the target kind is `live`.** For a paper target the key is
+   omitted from the payload entirely rather than sent as `false`, so a
+   body can never carry a live-trading affirmation nobody made. The
+   checkbox is never pre-checked and is disabled while the target is
+   paper. Neither proxy injects or defaults the flag either — a proxy that
+   supplied it would turn a server-enforced safeguard into one this layer
+   could satisfy on the user's behalf.
+
+2. **Submitting without the tick is deliberately NOT blocked
+   client-side.** The request goes out without `confirm_live` and the
+   backend's own 400 `LIVE_KIND_CONFIRMATION_REQUIRED` is rendered
+   verbatim. This is D058's own argument applied to its UI: a confirmation
+   that exists only in the frontend is not one the server can enforce, so
+   the server must remain the thing that refuses — and the operator should
+   see it refuse rather than have a disabled button imply the rule lives
+   in the browser. A greyed-out submit would also have made the real 400
+   unreachable through the product, which is precisely the response this
+   phase most needed to prove renders honestly.
+
+3. **Changing the target kind clears the tick.** Otherwise a confirmation
+   made while `live` was selected could survive a switch to `paper` and
+   back, letting a stale affirmation authorise a designation the operator
+   never re-considered.
+
+Backend refusals are rendered as the backend worded them, prefixed with
+the real status and nothing else — the 409 for a broker with recorded
+orders keeps its full explanation *and its remedy sentence* ("Create a new
+broker instead"), because that sentence is the only part that tells the
+operator what to actually do. No local paraphrase, no friendlier
+substitute.
+
+**The broker listing went into `AdminListings.tsx`, not the new file.**
+There is no platform-wide admin broker listing endpoint, so the list reads
+D034's `GET /brokers` — which is scoped to the brokers the *calling* user
+holds a grant for. That is stated in the panel rather than left implicit:
+an admin without a grant for a broker will not see it, and a list that
+silently implied completeness would be exactly the wrong thing to trust
+when deciding what is or is not designated live. (Observed live: the two
+brokers created through the new form never appear in it, because the admin
+holds no grant for them.) It reuses the existing `useAdminList` hook
+instead of a second hand-rolled fetch — which also kept the frontend lint
+baseline unchanged, since a fresh mount-load effect would have added a
+third `react-hooks/set-state-in-effect` error to the two already present.
+
+**Part B — what was deliberately NOT built, and why.** The phase brief
+asked for a per-analyst breakdown in the agent-trade result and a trade
+history panel. Both were investigated against the real code and both are
+blocked on the backend, so neither was fabricated:
+
+- **`AgentTradeResponse` carries no analyst field of any kind.** It is
+  `TradeSubmissionResponse` plus `side`, `quantity`, `rationale`
+  (`apps/api/app/api/schemas.py`). D059's three analysts do run
+  server-side — `_technical_context` / `_fundamental_context` /
+  `_news_context` in `apps/api/app/api/routes/trades.py` — but their
+  output feeds the TraderAgent's prompt and is never returned. The
+  response cannot even say *whether* any of them ran, since each is
+  failure-isolated and returns `None`. So `AgentTradeForm` now states that
+  plainly next to the result instead of showing three panels built from
+  nothing. Surfacing real analyst reasoning requires a response-shape
+  change, which is backend work and out of scope for a frontend phase.
+- **No order/fill list endpoint exists.** Phase 4 persists `orders` and
+  `fills`, but every `GET` route in `apps/api/app/api/routes/` was
+  enumerated and confirmed against `docs/API.md`: there is no
+  `GET /brokers/{id}/orders`, no `/trades`, and no listing schema. A
+  `TradeHistory.tsx` could therefore only have been built against an
+  endpoint that does not exist, so it was not built at all. This is
+  flagged as the single largest remaining product gap: the platform
+  records an append-only audit trail no user can read back.
+
+Verification: `npm test` in `apps/web` → **116 passed, 14 files**, up from
+the 102/13 baseline this branch started from (D060's count, re-confirmed
+by running the suite before any edit); 14 tests added, **none deleted,
+skipped or weakened**. `npm run build` exits 0 with both new route
+handlers registered (`ƒ /api/admin/brokers`, `ƒ /api/admin/brokers/
+[brokerId]/mode`). `npm run lint` ends at the **same 3 problems (2 errors,
+1 warning)** as before this phase, all in files it does not touch
+(`BrokerDiscovery.tsx`, `SessionStatus.tsx`, `lib/session.ts`); the one new
+error an earlier draft introduced was removed by the `useAdminList` reuse
+above rather than suppressed. The pre-existing `tsc --noEmit` failure in
+`app/layout.tsx` (`Cannot find name 'LayoutProps'`, a Next-generated type)
+is unchanged and unrelated.
+
+Live-verified in a real browser against an isolated throwaway stack
+(Postgres 55447, Redis 63447, uvicorn 8047, Next 3047; `/health` reported
+`trading_mode: paper`, `live_trading_enabled: false` throughout), seeded
+via the existing `scripts/seed_e2e.py` plus one **real** paper trade
+submitted through `POST /brokers/{id}/trades` so a broker genuinely had a
+recorded order. Seven scenarios, all against the real backend: create
+paper → 201; create live **without** the tick → the real 400
+`LIVE_KIND_CONFIRMATION_REQUIRED` verbatim; create live **with** the tick
+→ 201 `kind: live`; the stale-tick guard (live → paper → live leaves the
+box unticked); flip a broker holding a real order → the real 409 with its
+remedy sentence intact; flip a clean broker to live without the tick →
+400; and with the tick → 200 with `kind` genuinely changed paper → live.
+Both colour schemes checked at 1280px. `AgentTradeForm` was exercised
+live and returned the real `NOT_CONFIGURED: no LLM provider is wired`
+sentinel, with the analyst note correctly absent (it renders only
+alongside a real result); the note's own rendering is covered by component
+test rather than live, since no LLM provider is wired in a throwaway
+stack and none was going to be.
+
+Safety: `LIVE_TRADING_ENABLED` was never touched and no live credential
+was ever set, so the live execution path stayed inert for the whole phase;
+the only broker ever designated `live` was a throwaway row in a throwaway
+database with no credentials behind it, which is a DB designation and not
+a trade. No `.env` was created — all config was shell-exported for the
+session. Stack, venv and containers were removed afterwards; the sibling
+phase's `tos-p46-pg` container and the user's own Supabase containers were
+confirmed untouched.
+Status: Implemented and verified as above.

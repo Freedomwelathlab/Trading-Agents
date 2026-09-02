@@ -222,6 +222,46 @@ describe("AgentTradeForm", () => {
     expect(screen.queryByText(/Portfolio Manager/i)).not.toBeInTheDocument();
   });
 
+  // --- Phase 47: the analyst breakdown the response does not carry ---
+
+  it("states that no per-analyst breakdown exists, and invents none", async () => {
+    mockOnce({
+      order_id: "ap-analysts",
+      status: "filled",
+      approved: true,
+      block_reason: null,
+      detail: null,
+      fill_quantity: "1",
+      fill_price: "123.45",
+      side: "buy",
+      quantity: "1",
+      rationale: "clean breakout above resistance",
+    });
+    await submit();
+
+    // The response schema (AgentTradeResponse) carries no analyst field of
+    // any kind, so the UI must say so rather than imply a breakdown.
+    expect(
+      screen.getByTestId("analyst-breakdown-unavailable"),
+    ).toHaveTextContent(/No per-analyst breakdown/i);
+
+    // No fabricated per-analyst panel, score or verdict anywhere.
+    expect(screen.queryByTestId("technical-analyst")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("fundamental-analyst")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("news-analyst")).not.toBeInTheDocument();
+
+    // The real fields the response DOES carry are still rendered.
+    expect(screen.getByText(/clean breakout above resistance/)).toBeInTheDocument();
+    expect(screen.getByText("buy")).toBeInTheDocument();
+  });
+
+  it("shows no analyst note before a trade has been proposed", () => {
+    render(<AgentTradeForm />);
+    expect(
+      screen.queryByTestId("analyst-breakdown-unavailable"),
+    ).not.toBeInTheDocument();
+  });
+
   it("surfaces the real NOT_CONFIGURED sentinel, not a fabricated trade", async () => {
     (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,

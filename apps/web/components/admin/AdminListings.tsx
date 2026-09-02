@@ -138,6 +138,13 @@ function ListError({ status, detail }: { status: number | null; detail: string }
   );
 }
 
+type BrokerRow = {
+  id: string;
+  name: string;
+  kind: string;
+  provider: string;
+  is_active: boolean;
+};
 type UserRow = { id: string; email: string; is_active: boolean; role_id: string | null };
 type RoleRow = {
   id: string;
@@ -251,6 +258,90 @@ export function RolesList() {
                 <td className="pr-3 font-mono">
                   {r.permissions.length > 0 ? r.permissions.join(", ") : "—"}
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Phase 47. The broker listing the D058 mode form needs: it is where an
+ * operator reads a broker's id and its current `kind` (the paper/live
+ * designation `PATCH /admin/brokers/{id}/mode` changes).
+ *
+ * There is no platform-wide admin broker listing endpoint, so this reads
+ * D034's `GET /brokers`, which is scoped to the brokers the CALLING user
+ * holds a grant for. That is stated in the panel rather than left
+ * implicit: an admin without a grant for a broker will not see it here,
+ * and a list that silently implied completeness would be the wrong thing
+ * to trust when deciding what is or is not designated live.
+ */
+export function BrokersList() {
+  const { limit, setLimit, offset, setOffset, state, load } = useAdminList<BrokerRow>(
+    "/api/brokers",
+    "brokers",
+  );
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-panel)]">
+      <h3 className="mb-3 text-sm font-semibold tracking-tight text-ink">
+        Brokers
+      </h3>
+      <p className="mb-2 text-xs leading-relaxed text-ink-faint">
+        Brokers <em>you</em> hold a grant for, from <code>GET /brokers</code> —
+        there is no platform-wide broker listing endpoint, so this is not
+        necessarily every broker that exists. <code>kind</code> is the
+        paper/live designation the mode form changes.
+      </p>
+      <Pager
+        limit={limit}
+        setLimit={setLimit}
+        offset={offset}
+        setOffset={setOffset}
+        loading={state.loading}
+        onLoad={load}
+        label="Brokers"
+      />
+      {state.errorDetail && <ListError status={state.status} detail={state.errorDetail} />}
+      {state.rows && state.rows.length === 0 && (
+        <p className="mt-3 text-sm text-ink-faint">
+          No brokers you hold a grant for.
+        </p>
+      )}
+      {state.rows && state.rows.length > 0 && (
+        <table className="mt-3 w-full text-left text-xs">
+          <thead>
+            <tr className="uppercase tracking-wide text-ink-faint">
+              <th className="pr-3">id</th>
+              <th className="pr-3">name</th>
+              <th className="pr-3">kind</th>
+              <th className="pr-3">provider</th>
+              <th className="pr-3">is_active</th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.rows.map((b) => (
+              <tr key={b.id}>
+                <td className="pr-3 font-mono">{b.id}</td>
+                <td className="pr-3">{b.name}</td>
+                <td className="pr-3 font-mono">
+                  {b.kind === "live" ? (
+                    <span className="font-semibold text-red-700 dark:text-red-400">
+                      {b.kind}
+                    </span>
+                  ) : (
+                    b.kind
+                  )}
+                </td>
+                <td className="pr-3">{b.provider}</td>
+                <td className="pr-3">{String(b.is_active)}</td>
               </tr>
             ))}
           </tbody>
