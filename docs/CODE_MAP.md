@@ -562,7 +562,67 @@ special permission, since it's read-only and not a trading action. As of
 D017, `POST /brokers/{broker_id}/trades` uses this same
 `get_market_data_router`/`MarketDataRouter` when a trade omits
 `estimated_price` — this endpoint lets a caller preview that price
-without submitting a trade.
+without submitting a trade. As of Phase 50 (D067) the route no longer owns
+the NOT_CONFIGURED / NO_DATA_AVAILABLE decision itself — see "Quote
+resolution" below — but its 503/404 wire contract is unchanged.
+
+## Quote resolution (shared)
+
+Purpose: one place where "this symbol has no price" is decided, so the
+single-quote route and the watchlist-quotes route cannot drift apart about
+what that means (D067).
+Main files: `apps/api/app/marketdata/resolution.py` (`resolve_quote()`,
+`ResolvedQuote`, `row_sentinel()`, `NOT_CONFIGURED_DETAIL`)
+Interface: `resolve_quote(router | None, symbol) -> ResolvedQuote` —
+returns a **value**, never raises an `HTTPException`. Exactly one of
+`snapshot` / `unavailable` is set; `not_configured` distinguishes "no
+vendor is wired at all" (D008/D015) from "this symbol has no data" without
+any caller string-matching.
+Dependencies: `apps.api.app.marketdata.router` (`MarketDataRouter`,
+`NoDataAvailableError`), `apps.api.app.marketdata.models`
+Tests: covered through both callers —
+`tests/api/test_watchlists.py::test_quotes_uses_the_same_resolution_path_as_the_single_quote_endpoint`
+and `::test_single_quote_endpoint_still_503s_when_no_vendor_is_configured`
+pin that the shared function keeps each caller's own contract.
+Important: returning a value rather than raising is what lets the two
+callers render the same condition differently and both be right — a
+missing quote is the whole response for `GET /market-data/{symbol}/quote`
+(503/404) and one row of a list for `GET /watchlists/{id}/quotes`
+(200 + `DATA_UNAVAILABLE:` sentinel). There is no branch in either that
+produces a price the vendor did not return.
+
+## Watchlist routes
+
+Purpose: user-scoped named symbol lists, and one endpoint that prices a
+whole list — the research half of the research-to-trade dashboard (D067).
+Main files: `apps/api/app/api/schemas_watchlists.py`
+(`CreateWatchlistRequest`, `AddWatchlistItemRequest`, `WatchlistResponse`,
+`ListWatchlistsResponse`, `WatchlistQuote`, `WatchlistQuotesResponse`,
+`normalize_symbol()`), `apps/api/app/api/routes/watchlists.py`
+(`POST/GET /watchlists`, `DELETE /watchlists/{id}`,
+`POST /watchlists/{id}/items`, `DELETE /watchlists/{id}/items/{symbol}`,
+`GET /watchlists/{id}/quotes`), `Watchlist`/`WatchlistItem` in
+`apps/api/app/db/models.py`, migration
+`migrations/versions/0015_watchlists.py`
+Dependencies: `apps.api.app.auth.dependencies` (`get_current_user` only —
+no permission, **no `BrokerGrant`**),
+`apps.api.app.api.dependencies.get_market_data_router`,
+`apps.api.app.marketdata.resolution`
+Tests: `tests/api/test_watchlists.py` (20 integration tests against real
+Postgres), `apps/web/test/Watchlist.test.tsx` (12)
+Important: the **first user-scoped id-addressed resource** here — every
+other one hangs off a broker. Ownership is checked in exactly one helper
+(`_owned_watchlist`) that all four id-addressed routes call: 404 when no
+such id exists, 403 when it exists but isn't the caller's, matching
+`require_broker_access`. No auto-created default watchlist — a GET never
+writes. `uq_watchlist_item_watchlist_symbol` plus normalization on both
+the request body and the DELETE path segment is what makes the duplicate
+409 real rather than case-dodgeable. `GET /watchlists/{id}/quotes` returns
+a row per stored symbol whatever the vendor does — never a dropped row,
+never a stand-in price — and resolves sequentially against a 200-symbol
+cap so one refresh is not a burst of vendor calls. Frontend counterpart:
+`apps/web/components/Watchlist.tsx` + the five proxies under
+`apps/web/app/api/watchlists/`.
 
 ## Emergency stop (safety)
 
