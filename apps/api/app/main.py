@@ -25,6 +25,10 @@ from apps.api.app.core.logging import configure_logging, get_logger
 from apps.api.app.core.request_id import RequestIDMiddleware
 from apps.api.app.db.base import get_engine, get_session_factory
 from apps.api.app.execution.live_broker import build_live_broker_adapter
+from apps.api.app.execution.reconciliation import (
+    LiveOrderReconciler,
+    build_reconciler_cycle_lock,
+)
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_fundamentals_provider,
     build_longbridge_history_provider,
@@ -123,6 +127,36 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         app.state.portfolio_snapshot_scheduler = scheduler
 
+    # Phase 49 (D066): the LIVE ORDER RECONCILER - a SIBLING of the snapshot
+    # scheduler above, not a modification of it. Both are opt-in, both are
+    # off by default, both are in-process asyncio tasks owned by this
+    # lifespan, and they take different advisory-lock object keys so they
+    # never exclude each other.
+    #
+    # This one is doubly inert. It is not constructed at all unless
+    # LIVE_ORDER_RECONCILER_ENABLED is set, and even then every cycle
+    # short-circuits with NOT_CONFIGURED unless `live_broker_adapter` above
+    # is a real adapter - which needs TRADING_MODE=live AND
+    # LIVE_TRADING_ENABLED=true AND the LONGPORT_LIVE_* trio. On the
+    # committed defaults it is None and nothing runs; enabled on a default
+    # deployment it logs one skip per interval and touches neither the
+    # database nor a broker.
+    app.state.live_order_reconciler = None
+    if settings.live_order_reconciler_enabled:
+        reconciler = LiveOrderReconciler(
+            get_session_factory(),
+            live_broker=app.state.live_broker_adapter,
+            interval_seconds=settings.live_order_reconciler_interval_seconds,
+            # D047's mechanism on this job's own object key. Matters more
+            # here than for snapshots: N workers each resolving the same
+            # order means N calls to a real venue and N racing UPDATEs.
+            cycle_lock=build_reconciler_cycle_lock(
+                enabled=settings.live_order_reconciler_cycle_lock_enabled
+            ),
+        )
+        reconciler.start()
+        app.state.live_order_reconciler = reconciler
+
     logger.info(
         "trading_os_startup",
         trading_mode=settings.trading_mode.value,
@@ -169,6 +203,17 @@ async def lifespan(app: FastAPI):
         portfolio_snapshot_cycle_lock=(
             "pg_advisory" if settings.portfolio_snapshot_cycle_lock_enabled else "DISABLED"
         ),
+        # D066: "enabled" here means the LOOP is running, not that anything
+        # will be reconciled. With live_broker=NOT_CONFIGURED above, every
+        # cycle short-circuits before touching the database or a broker.
+        live_order_reconciler=(
+            f"enabled:{settings.live_order_reconciler_interval_seconds}s"
+            if settings.live_order_reconciler_enabled
+            else "DISABLED"
+        ),
+        live_order_reconciler_cycle_lock=(
+            "pg_advisory" if settings.live_order_reconciler_cycle_lock_enabled else "DISABLED"
+        ),
     )
     yield
 
@@ -181,6 +226,15 @@ async def lifespan(app: FastAPI):
     # race a mid-flight cycle against a closing pool.
     if app.state.portfolio_snapshot_scheduler is not None:
         await app.state.portfolio_snapshot_scheduler.stop()
+
+    # D066: the reconciler is stopped in the same phase and for the same
+    # reason - `stop()` cancels its task and then awaits it, so by the time
+    # this returns no cycle can still hold a pooled session or be mid-way
+    # through committing a resolved order. Stopped alongside the scheduler,
+    # before the engine below is disposed; the relative order of these two
+    # does not matter because they share nothing but the pool.
+    if app.state.live_order_reconciler is not None:
+        await app.state.live_order_reconciler.stop()
 
     # The engine created at import time in apps/api/app/db/base.py owns a
     # live asyncpg connection pool. Process exit reclaims those sockets

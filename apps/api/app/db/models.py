@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -246,22 +247,85 @@ class BrokerGrant(Base):
 class OrderStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
     FILLED = "filled"
     REJECTED = "rejected"
+    """Rejected by THIS SYSTEM - the Risk Engine, the emergency stop, the
+    duplicate-order check or the Portfolio Manager. It does NOT mean a
+    broker rejected anything; a venue rejection is BROKER_CLOSED_UNFILLED
+    below, with the venue's own word for it in `broker_status`. Keeping the
+    two apart matters because a REJECTED order never reached a broker at
+    all, while the other did."""
+
+    SUBMITTED_UNCONFIRMED = "submitted_unconfirmed"
+    """Phase 49 (docs/DECISIONS.md D066). THE ONLY NON-TERMINAL STATUS. A
+    real order exists at a real broker, every gate approved it, and the
+    broker has not (yet) reported whether it executed.
+
+    Before this phase such an order left no row at all: the route answered
+    `502 LIVE_ORDER_UNCONFIRMED` and the transaction rolled back, so the
+    single most consequential thing this system can do - hand a live venue
+    a real order - was the one thing its append-only audit trail did not
+    record. A row in this status is that record, and it is what
+    `LiveOrderReconciler` (apps/api/app/execution/reconciliation.py) later
+    resolves into one of the terminal statuses above/below from the
+    broker's own answer.
+
+    `broker_order_id` is never null on a row in this status - it is the
+    handle the reconciler needs - and `fills` never has a row for one,
+    because no fill has been reported."""
+
+    BROKER_CLOSED_UNFILLED = "broker_closed_unfilled"
+    """Phase 49 (D066). Terminal. The BROKER reports the order reached an
+    end state having executed nothing: cancelled, expired, or rejected by
+    the venue. Which of those it was is recorded verbatim in
+    `broker_status` rather than being flattened into three more enum values
+    - this system acts identically on all of them (stop watching, record
+    no fill), and the venue's own wording is more useful to a human reading
+    the audit trail than a paraphrase of it would be."""
 
 
 class Order(Base):
     """Append-only record of every trade proposal the OMS decided on -
-    approved or rejected. Never updated after insert; a re-attempt is a new
-    row, not a status change on this one, so the audit trail always shows
-    exactly what was actually decided at the time (spec Sec17).
+    approved or rejected. A re-attempt is a new row, not a status change on
+    this one, so the audit trail always shows exactly what was actually
+    decided at the time (spec Sec17).
 
     Money columns are NUMERIC, never float (spec requirement for anything
     financial). `symbol` is denormalized rather than FK'd to `assets` - no
     asset-lookup/creation service exists yet; revisit once one does.
+
+    THE ONE PERMITTED UPDATE (Phase 49, docs/DECISIONS.md D066)
+    ----------------------------------------------------------
+    Exactly one transition may ever be applied to an existing row:
+    `SUBMITTED_UNCONFIRMED` -> `FILLED` or `BROKER_CLOSED_UNFILLED`, by
+    `LiveOrderReconciler`, setting `reconciled_at` and `broker_status`. The
+    reconciler's UPDATE carries `WHERE status = 'submitted_unconfirmed'`, so
+    a row that already reached a terminal status can never be rewritten by
+    anything, ever - which is the property the append-only rule actually
+    exists to protect.
+
+    That is not a softening of the rule so much as an admission of what it
+    was always about. `SUBMITTED_UNCONFIRMED` does not record a DECISION
+    this system made; the decision was already complete and unchanging when
+    the row was written. It records that a real order was handed to a real
+    venue and that the outcome was, at that instant, genuinely unknown.
+    Resolving an unknown outcome into the known one the broker later
+    reported does not rewrite history - refusing to would leave the audit
+    trail permanently, knowably wrong instead.
     """
 
     __tablename__ = "orders"
     __table_args__ = (
         Index("ix_orders_broker_symbol_submitted", "broker_id", "symbol", "submitted_at"),
+        # D066: the reconciler's only query - "every unresolved live order" -
+        # must not degrade into a full scan of an append-only table that
+        # grows forever. Partial, so it indexes only the handful of rows
+        # that are ever actually unresolved rather than every order ever
+        # placed.
+        Index(
+            "ix_orders_unconfirmed",
+            "broker_id",
+            "submitted_at",
+            postgresql_where=text("status = 'SUBMITTED_UNCONFIRMED'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -301,6 +365,39 @@ class Order(Base):
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    """Phase 49 (docs/DECISIONS.md D066). The BROKER's own identifier for a
+    real order this system placed at a real venue - never a locally
+    generated one, and never populated for a paper order (the paper
+    simulator has no venue and issues no id). Null for every pre-Phase-49
+    row and for every order that never reached a broker at all.
+
+    UNIQUE, because it is the reconciler's join key back to reality and
+    because two `orders` rows claiming the same venue order would make the
+    audit trail ambiguous about a thing real money moved through. It is
+    unique rather than a foreign key for the obvious reason: the row it
+    references lives at the broker, not in this database."""
+
+    broker_status: Mapped[str | None] = mapped_column(String(32))
+    """Phase 49 (D066). The venue's OWN status string, verbatim and
+    unparaphrased - e.g. `Filled`, `Canceled`, `Expired`, `Rejected`. Set by
+    the reconciler at the moment it resolves a `SUBMITTED_UNCONFIRMED` row,
+    and null before then and on every non-live order.
+
+    This exists so `BROKER_CLOSED_UNFILLED` does not have to fan out into
+    three near-identical enum values that this system would treat
+    identically anyway. A human reading the audit trail gets the venue's
+    actual word for what happened; the enum records only what this system
+    concluded from it."""
+
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Phase 49 (D066). When `LiveOrderReconciler` resolved this order
+    against the broker. Null means never reconciled, which for a
+    `SUBMITTED_UNCONFIRMED` row means the outcome is still genuinely
+    unknown - deliberately NOT defaulted to `submitted_at`, since 'we have
+    not looked yet' and 'we looked and it was still open' must stay
+    distinguishable."""
 
 
 class Fill(Base):

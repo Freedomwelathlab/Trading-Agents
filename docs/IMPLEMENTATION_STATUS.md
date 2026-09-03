@@ -4,6 +4,84 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 49: reconciliation of accepted-but-unexecuted LIVE orders — the
+  gap Phase 43/D058 recorded as not built (2026-09-03, D066). **No real
+  order was ever placed, no real broker was ever contacted, and
+  `LIVE_TRADING_ENABLED` was never set to `true` — not in a default, not in
+  a fixture, not transiently.** Backend only; `apps/web` untouched, and
+  `apps/api/app/api/routes/trades.py` was NOT modified (a sibling phase
+  owned that file).
+  **(0) The gap was worse than documented, and reading the code found it.**
+  D058 and docs/TRADING_SAFETY.md both described the missing piece as "no
+  reconciler". In fact **nothing was persisted at all**:
+  `LiveOrderNotFilledError` is raised inside `submit_trade()`, *before*
+  `submit_trade_and_record()` builds its `OrderRow`, and the route's
+  `502 LIVE_ORDER_UNCONFIRMED` means `session.commit()` is never reached —
+  so the request rolled back and the system forgot it had placed a real
+  order. `OrderStatus` also had only `FILLED`/`REJECTED`, neither of which
+  is true of an unknown outcome. The producing half therefore had to be
+  built first; both halves are this phase.
+  **(1) `SUBMITTED_UNCONFIRMED` and `BROKER_CLOSED_UNFILLED`** — two new
+  `OrderStatus` values plus `orders.broker_order_id` (UNIQUE),
+  `orders.broker_status`, `orders.reconciled_at`, in migration `0014`
+  (verified upgrade + downgrade + upgrade round-trip against real
+  Postgres). `BROKER_CLOSED_UNFILLED` is deliberately distinct from
+  `REJECTED`, which means *this system* blocked the trade and it never
+  reached a venue. The venue's own status string is preserved verbatim in
+  `broker_status` rather than fanned out into three near-identical enum
+  values.
+  **(2) The unconfirmed order is recorded and committed** —
+  `_record_unconfirmed_order()` in `apps/api/app/oms/persistence.py`, the
+  one documented exception to that module's no-commit rule. Safe
+  structurally, not incidentally: the live branch of `_execute_trade()`
+  never calls `load_paper_broker()`, so no `FOR UPDATE` lock is held and no
+  paper write is pending. The recorded quantity is the one **actually sent**
+  (post-Portfolio-Manager), carried out on a new port-level
+  `OrderNotConfirmedError` that `LiveOrderNotFilledError` now subclasses —
+  so the pure OMS needs no import of a concrete live adapter and every
+  existing `except` arm, including both in `trades.py`, catches exactly
+  what it did before. If that context is ever missing, **no row is written**
+  rather than one guessing at the quantity.
+  **(3) `LiveOrderReconciler`** (`apps/api/app/execution/reconciliation.py`)
+  — an opt-in interval loop, a **sibling** of `PortfolioSnapshotScheduler`
+  (started/stopped in the same lifespan, not replacing it), on D047's exact
+  advisory-lock mechanism with its own object key (`b"recn"`) so the two
+  jobs never exclude each other. `LIVE_ORDER_RECONCILER_ENABLED` defaults
+  false, and even enabled every cycle short-circuits **before** the lock and
+  before any SQL unless a real live adapter exists — so on the committed
+  configuration it costs one log line per interval and nothing else.
+  `LiveBrokerAdapter.get_order_status()` is a new real method over the same
+  `order_detail()` SDK call, added rather than a second client.
+  **(4) Nothing is inferred from the passage of time.** An order the broker
+  still calls working is left completely untouched — not aged out, not
+  timed out, `reconciled_at` not even stamped. `_TERMINAL_STATUSES` was read
+  off the installed SDK by direct introspection (which caught that it
+  spells cancellation `Canceled`); every unlisted status, `PartialFilled`
+  and `Unknown` included, counts as still open. A failing broker call skips
+  that one order and changes nothing. Fills come only from the broker's own
+  `executed_quantity`/`executed_price`, never the order's
+  `estimated_price`. The single permitted UPDATE carries
+  `WHERE status = 'submitted_unconfirmed'` and is decided by `rowcount`, so
+  a terminal row can never be rewritten and a fill can never be
+  double-written — enforced in Postgres, not by this code being careful.
+  **(5) Observability** — `/health` gains
+  `live_order_reconciler: "DISABLED"|"enabled:<n>s"` (still zero-I/O), and
+  the startup log gains it plus `live_order_reconciler_cycle_lock`.
+  **657 tests passing** (615 pre-existing baseline re-measured on this
+  branch before any edit, + 42 new: 25 unit in
+  `tests/execution/test_reconciliation.py`, 17 DB-backed integration in
+  `tests/api/test_live_order_reconciler.py`); **none deleted, skipped or
+  weakened**. `ruff check .` and `mypy apps` clean across 94 source files;
+  `bash scripts/secret_scan.sh` clean. Verified against an isolated
+  throwaway stack on remapped ports (Postgres 55449, Redis 56449 — never
+  the dev stack's 5432/6379/8000/3005), including a real reconciliation
+  cycle moving an order from `submitted_unconfirmed` to `filled` with a real
+  `fills` row written from a fake live-broker double's figures.
+  Not built (deliberately): a reconciliation/order-history endpoint (D062
+  already flags that as its own coherent phase — and Phase 48/D065 has since
+  landed one on `main`), any frontend, and partial-fill progression
+  (`fills.order_id` is UNIQUE; a partially-filled order simply stays under
+  observation until the venue calls it done).
 - Phase 1: repo skeleton, typed `Settings` with fail-closed live-mode gate,
   secret-redacting structlog, SQLAlchemy 2.0 async models
   (`users`/`roles`/`assets`/`brokers`), migration `0001_initial`

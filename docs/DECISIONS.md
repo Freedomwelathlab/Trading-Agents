@@ -5996,3 +5996,257 @@ branch's diff contains nothing under `apps/api/app/execution/`.
 Status: Implemented and verified as above. Email delivery is
 NOT_CONFIGURED on a default checkout, which is a working state for this
 feature, not a missing one.
+
+
+**D066 — Phase 49: reconciliation of accepted-but-unexecuted live orders — the unconfirmed order is now RECORDED, and a background job resolves it from the broker's own answer**
+
+Numbering note: this worktree (`worktree-agent-a4db540a896c3de5e`) branched
+from `main` at `ba04187`, where the last entry was **D063**. Re-checked
+immediately before finalizing, `main` had advanced to `5ae3a98`
+("read-only order/fill history endpoints (Phase 48, D065)"), and D064 is
+absent from `main` — i.e. claimed by a sibling worktree still in flight.
+This entry therefore claims the next free number, **D066**, and **Phase
+49**. Following the convention D030/D031/D032 established and D035/D039
+restated for concurrent worktrees: the number is claimed at merge time, and
+if a sibling merges a D066 first this entry is renumbered on the way in
+rather than after the fact.
+
+**Interaction with Phase 48/D065, which landed on `main` while this was in
+progress.** That phase added read-only order/fill history endpoints. This
+phase adds two `OrderStatus` values and three `orders` columns those
+endpoints will encounter, so whichever merges second must check that the
+history serializer renders `submitted_unconfirmed` /
+`broker_closed_unfilled` (and, ideally, surfaces `broker_order_id` /
+`broker_status` / `reconciled_at`) rather than assuming a two-value enum.
+Nothing here depends on that work and no file it touches was modified from
+this branch; this is flagged so the merge is deliberate rather than
+discovered.
+
+## The gap this closes, stated precisely
+
+D058 (Phase 43) built the live execution path and got the hardest part
+right: `LiveBrokerAdapter.submit_order()` reads the order back once and, if
+the broker has not executed it, raises `LiveOrderNotFilledError` carrying
+the **real** broker order id rather than inventing a fill at the caller's
+estimated price. The route renders that as `502 LIVE_ORDER_UNCONFIRMED`.
+That refusal to fabricate is unchanged by this phase.
+
+What was missing turned out to be worse than "no reconciler was built",
+which is how D058 and docs/TRADING_SAFETY.md both described it. Reading the
+actual code first (rather than trusting that description) showed that
+**nothing was persisted at all**:
+
+- `LiveOrderNotFilledError` is raised from inside `submit_trade()`, i.e.
+  *before* `submit_trade_and_record()` reaches the line that constructs the
+  `OrderRow`.
+- `trades.py` catches it and raises `HTTPException`, so its
+  `await session.commit()` is never reached and the request's session is
+  rolled back on close.
+
+So the single most consequential thing this system can do — hand a real
+venue a real order — left **no row in its own append-only audit trail**.
+The broker order id existed in one log line and one HTTP response body. The
+premise "the order is left in a pending status forever" was not accurate:
+there was no order row to be in any status, and `OrderStatus` had only
+`FILLED` and `REJECTED`, neither of which is true of an order whose outcome
+is unknown.
+
+Closing the reconciliation gap therefore required building the producing
+half first. Both halves are this phase.
+
+## Part 1 — the producing half: `SUBMITTED_UNCONFIRMED`
+
+Two new `OrderStatus` values, three new nullable `orders` columns, one
+migration (`0014`).
+
+**`SUBMITTED_UNCONFIRMED` — the only non-terminal status.** A real order
+exists at a real broker, every gate approved it, and the outcome is
+genuinely unknown. `broker_order_id` is never null on such a row and
+`fills` never has a row for one.
+
+**`BROKER_CLOSED_UNFILLED` — terminal.** The broker reports the order
+finished having executed nothing. Deliberately *not* folded into the
+existing `REJECTED`, which means **this system** blocked the trade and it
+never reached a venue. Conflating "our risk engine stopped it" with "the
+venue cancelled it" in a money-moving audit trail would destroy the one
+distinction a reader most needs.
+
+**Three cancel-ish statuses, one enum value, and `orders.broker_status`.**
+The obvious alternative was `BROKER_CANCELLED` / `BROKER_REJECTED` /
+`BROKER_EXPIRED`. Rejected: this system acts identically on all three (stop
+watching, write no fill), so three values would encode a distinction the
+code does not make, and would still be a *paraphrase* of the venue's word.
+Instead `orders.broker_status` records the venue's own status string
+verbatim — `Canceled`, `Expired`, `Rejected`, `Filled` — which is strictly
+more information and follows the same "carry the vendor's own message
+rather than a paraphrase" habit as `ScheduledSnapshotOutcome.detail`
+(D030).
+
+**`_record_unconfirmed_order()` commits, and nothing else in
+`apps/api/app/oms/persistence.py` does.** That module's docstring
+previously said it deliberately never commits (D014: committing early would
+release `load_paper_broker()`'s `SELECT ... FOR UPDATE` before the paper
+book is saved, reopening a double-spend race). The exception is safe for a
+*structural* reason, not a lucky one: `OrderNotConfirmedError` can only come
+from an adapter talking to a real venue, and the **live** branch of
+`_execute_trade()` never calls `load_paper_broker()` — a live book lives at
+the venue, not in `broker_accounts` (spec §62). No row lock is outstanding
+and no paper write is pending; the session holds exactly the row just
+added. On the paper path the code is unreachable, because
+`PaperBrokerAdapter` fills synchronously.
+
+**The quantity is the one actually sent, never the proposal's.** The
+exception unwinds past every local in `submit_trade()`, including the
+post-Portfolio-Manager `effective` proposal. Recording `proposal.quantity`
+would put a number in an append-only trail that was never sent to any
+venue — precisely the class of error this codebase exists to avoid. So
+`submit_trade()` attaches an `UnconfirmedSubmissionContext` to the
+exception on the way out and re-raises unchanged.
+
+That context lives on a new **port-level** `OrderNotConfirmedError`
+(`apps/api/app/execution/broker.py`), which `LiveOrderNotFilledError` now
+subclasses. The pure, DB-free OMS must not import a concrete live adapter,
+and every existing `except LiveOrderNotFilledError` / `except
+LiveBrokerError` arm — including the two in `trades.py` — catches exactly
+what it caught before. **`trades.py` was not modified in this phase.**
+
+If the context is somehow absent, `_record_unconfirmed_order()` writes **no
+row at all** and logs loudly, rather than substituting the proposal's
+quantity.
+
+## Part 2 — `LiveOrderReconciler`
+
+`apps/api/app/execution/reconciliation.py`. An opt-in interval loop, a
+sibling of `PortfolioSnapshotScheduler` (D030) rather than a modification
+of it, following that phase's pattern deliberately rather than inventing a
+second one: an in-process `asyncio` task owned by the FastAPI lifespan, no
+new dependency, started and stopped in `main.py` alongside the existing
+scheduler.
+
+**Three independent things must be true before it touches a broker.**
+`LIVE_ORDER_RECONCILER_ENABLED` defaults to **false**. Even enabled, every
+cycle short-circuits with `SKIPPED_DISABLED` unless a real
+`LiveBrokerAdapter` exists, which still needs `TRADING_MODE=live` **and**
+`LIVE_TRADING_ENABLED=true` **and** the `LONGPORT_LIVE_*` trio (D058's gate,
+unchanged and never re-implemented — the reconciler is *handed* whatever
+the lifespan already built, and never constructs an adapter or reads a
+credential itself). The short-circuit runs **before** the lock and before
+any SQL, so an enabled-but-unconfigured deployment costs one log line per
+interval: no database round-trip, no connection, no broker call. Same
+ordering rationale as D042 putting the market-hours gate ahead of the
+snapshot cycle's broker query.
+
+**Nothing is ever inferred about an order from the passage of time.** An
+order the broker still reports as working is left *completely* untouched —
+not aged out, not timed out, not assumed cancelled, and `reconciled_at` is
+not even stamped, so "we have not looked yet" stays distinguishable from
+"we looked and it was still open". `_TERMINAL_STATUSES` is a closed set read
+off the installed SDK by direct introspection of
+`longport.openapi.OrderStatus` (the D008/D015/D021 discipline, which caught
+that the SDK spells it `Canceled`); **everything else — `New`, `Unknown`,
+`PartialFilled`, and any status a future SDK adds — is treated as still
+open.** That asymmetry is the fail-closed direction: another cycle costs one
+API call, whereas declaring an order finished on a status this code does not
+understand would permanently record an outcome the broker never reported.
+
+`PartialFilled` is non-terminal here even though `submit_order()` accepts it
+as a real fill. The two answer different questions: at submit time a caller
+is synchronously waiting and a partial execution is the best true answer
+available; at reconcile time nobody is waiting, so freezing a half-done
+quantity into an append-only trail would record a number that was true for
+a moment and wrong forever.
+
+**A broker call that fails skips that order and changes nothing** — a
+failure to *observe* is not evidence about the thing observed. Same
+discipline D030 applies to a broker it cannot price.
+
+**The one permitted UPDATE, guarded in SQL.** `orders` is documented
+append-only. The reconciler applies exactly one transition,
+`SUBMITTED_UNCONFIRMED` → `FILLED` | `BROKER_CLOSED_UNFILLED`, and its
+UPDATE carries `WHERE status = 'submitted_unconfirmed'`; the outcome is
+decided by `rowcount`. A terminal row therefore matches nothing and can
+never be rewritten — by this job, by a second worker whose lock lapsed, or
+by a re-run — and the `fills` insert happens only when that UPDATE actually
+matched, with `fills.order_id`'s UNIQUE constraint as an independent
+backstop. The guarantee lives in the database, not in this code being
+careful.
+
+This is not a softening of the append-only rule so much as an admission of
+what it protects. `SUBMITTED_UNCONFIRMED` does not record a *decision* —
+the decision was complete and unchanging when the row was written. It
+records that the outcome was, at that instant, unknown. Resolving an
+unknown outcome into the one the broker later reported does not rewrite
+history; refusing to would leave the audit trail permanently, knowably
+wrong instead.
+
+**The fill is built entirely from the broker's own figures** —
+`executed_quantity` / `executed_price` from `order_detail`, never the
+order's `estimated_price`. A terminal status carrying no price is *not* a
+fill: `LiveOrderStatus.executed` requires both, because a fill is a claim
+about a price and completing it would mean inventing the one number it is
+about. `filled_at` uses the venue's own timestamp when it gave one, falling
+back to the reconciliation instant — the earliest moment this system can
+prove the fill existed — never to `submitted_at`, which would claim a time
+nobody reported.
+
+**The work query enforces `kind = live` in SQL**, joined to `brokers`. A
+paper order can never legitimately reach this status, and if one somehow
+did, sending its id to a real venue would be asking a live account about a
+simulated order. Structural, not conventional (spec §51).
+
+## Multi-worker safety: D047's mechanism, this job's own key
+
+Reused rather than re-litigated, and reused *literally* —
+`SnapshotCycleLock` gained a `job_name` field (defaulting to
+`portfolio_snapshot`, so D047's log event names are reproduced
+byte-for-byte and no existing construction site or log query changes) and
+the reconciler takes the same `classid` namespace with its own
+`RECONCILER_LOCK_OBJID` (`b"recn"`). That is exactly the "future second
+background job" the module's TWO int4 KEYS section anticipated, and the
+concrete payoff of having chosen the two-key form over a hashed bigint.
+
+**Sharing the objid would have been a subtle disaster**, which is why there
+is a dedicated test for it: a reconciliation cycle and a snapshot cycle are
+unrelated work, and one key would make every reconciler cycle silently skip
+whenever a snapshot was in flight — a failure indistinguishable from "there
+was nothing to do".
+
+The lock matters more here than for snapshots. Two workers duplicating a
+snapshot writes two rows in a chart; two workers resolving the same live
+order means two calls to a real venue's API and two racing UPDATEs. The
+guarded UPDATE above means correctness does not depend on the lock alone.
+
+## Observability
+
+`/health` gains `live_order_reconciler: "DISABLED" | "enabled:<n>s"`, and
+the startup log gains that plus `live_order_reconciler_cycle_lock`, in the
+same vocabulary as `market_data_vendor` / `llm_provider` /
+`portfolio_snapshot_scheduler`. Adding a key to `/health` is additive and
+every existing consumer reads named keys, but more importantly it does not
+weaken the property D054's docstring actually protects: it is a plain read
+of in-process `Settings`, no I/O, no dependency. It earns its place because
+the reconciler is the only background job that reaches a real trading
+venue, and whether it is running was otherwise visible only in a startup log
+line that has long since scrolled away.
+
+## What was deliberately NOT built
+
+- **No reconciliation endpoint.** No `GET`/`POST` route lists or forces
+  reconciliation of unconfirmed orders. D062 already flagged "the platform
+  records an append-only audit trail no user can read back" as the largest
+  product gap; that is one coherent piece of work (an order-history API),
+  not something to half-build here.
+- **No frontend.** Backend-only phase.
+- **Partial-fill progression is still not tracked.** `fills.order_id` is
+  UNIQUE, so the schema expresses one fill per order. A `PartialFilled`
+  order stays under observation until the venue calls it done, and the
+  final figures are what get recorded. Making partials first-class is a
+  schema change and its own phase.
+- **`LIVE_TRADING_ENABLED` was not touched**, in any default, fixture, or
+  test — not transiently. Every test drives the production
+  `LiveBrokerAdapter` against a fake SDK client via
+  `dependency_overrides`, exactly as D058's tests do.
+
+Status: Implemented and verified. On a default checkout the reconciler is
+not constructed, `/health` reports `live_order_reconciler: "DISABLED"`, and
+the live path is exactly as inert as it was before this phase.

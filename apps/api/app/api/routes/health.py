@@ -65,12 +65,38 @@ logger = get_logger(__name__)
 async def health() -> dict[str, Any]:
     """Liveness. Cheap, dependency-free, and always 200 while the process
     is able to answer at all — see the module docstring for why this one
-    must NOT check the database."""
+    must NOT check the database.
+
+    Phase 49 (D066) added `live_order_reconciler`. That is an ADDITIVE key,
+    and it is the same kind of value the two beside it already are: a plain
+    read of in-process `Settings`, no I/O, no dependency. The "body shape
+    unchanged since Phase 1" note above was about not *breaking* the
+    contract — every existing consumer reads named keys and is unaffected —
+    and it must stay true of the property that actually matters here, which
+    is that this handler touches nothing. It still does not.
+
+    Why it is worth a key at all: the reconciler is the only background job
+    in this system that reaches a real trading venue, and whether it is
+    running is otherwise visible only in a startup log line that has long
+    since scrolled away. An operator asking "is anything going to resolve my
+    unconfirmed orders?" should be able to get a straight answer from an
+    unauthenticated probe without reading logs or the process's environment.
+    """
     settings = get_settings()
     return {
         "status": "ok",
         "trading_mode": settings.trading_mode.value,
         "live_trading_enabled": settings.live_trading_enabled,
+        # "enabled:<n>s" states only that the LOOP runs on that interval.
+        # It is deliberately NOT a claim that anything can be reconciled:
+        # with no live path configured every cycle short-circuits, which is
+        # what `live_trading_enabled: false` above already tells the reader.
+        # Same NOT_CONFIGURED/DISABLED vocabulary as the startup log.
+        "live_order_reconciler": (
+            f"enabled:{settings.live_order_reconciler_interval_seconds}s"
+            if settings.live_order_reconciler_enabled
+            else "DISABLED"
+        ),
     }
 
 
