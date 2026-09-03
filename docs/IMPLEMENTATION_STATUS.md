@@ -2215,7 +2215,23 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
 
 ## Known Issues
 
-None open.
+`tests/api/test_agent_trades.py::test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicate`
+is environmentally flaky when a real `LLM_PROVIDER_BASE_URL` is active in
+`.env` (e.g. OmniRoute) AND that endpoint is slow or unreachable. The test
+mocks `TraderAgent` via `get_trader_agent` but does not override
+`TechnicalAnalyst`'s provider, so the request still attempts a real call;
+when that call hangs (~36s observed, twice, before failing) the wall-clock
+gap between the test's two identical submissions grows large enough that
+D024's duplicate-detection window closes, and the second submission comes
+back `filled` instead of the expected `rejected`. Root-caused during Phase
+48/49 merge verification (2026-09-03) via a full untruncated traceback and
+the `technical_analyst_unavailable` log lines it left behind; reproduced
+twice, confirmed unrelated to any code change (passes cleanly whenever the
+provider responds promptly, e.g. in CI or with `LLM_PROVIDER_BASE_URL`
+unset in `.env` itself, not just the shell). Not fixed in this pass — the
+real fix is to override `get_technical_analyst`/`get_fundamental_analyst`/
+`get_news_analyst` in this specific test the same way `get_trader_agent`
+already is, so the test no longer depends on any real network endpoint.
 
 Open, known-and-scoped limitations (not defects): the snapshot scheduler's
 market-hours gate is weekend-only — intraday after-hours and exchange
