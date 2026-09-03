@@ -136,6 +136,79 @@ class PasswordResetToken(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class Watchlist(Base):
+    """A named list of symbols one user is researching (Phase 50,
+    migration 0015).
+
+    User-scoped, not broker-scoped: a watchlist is a research artifact and
+    has nothing to do with which brokers the owner may trade through, so
+    there is deliberately no `broker_id` here and no BrokerGrant check on
+    any of its routes (see apps/api/app/api/routes/watchlists.py). The
+    owner is the only reader and the only writer; there is no sharing
+    model and none is implied by this schema.
+
+    Watchlists are created explicitly (`POST /watchlists`), never lazily
+    on first read - a GET that silently writes a "default" row would make
+    a read endpoint mutate the database, and would leave a phantom empty
+    watchlist behind for every user who ever merely looked.
+
+    `user_id` is ON DELETE CASCADE for the same reason
+    `password_reset_tokens.user_id` is (D063): a watchlist has no meaning
+    independent of the person whose research it describes, unlike
+    `orders.submitted_by_user_id`, which is deliberately nullable so an
+    order's audit trail outlives its submitter. Nothing here is an audit
+    trail; these rows are working state, and they are the one kind of row
+    in this schema a user may freely delete.
+    """
+
+    __tablename__ = "watchlists"
+    __table_args__ = (Index("ix_watchlists_user_created", "user_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    items: Mapped[list["WatchlistItem"]] = relationship(
+        order_by="WatchlistItem.symbol", cascade="all, delete-orphan"
+    )
+
+
+class WatchlistItem(Base):
+    """One symbol on one watchlist (Phase 50, migration 0015).
+
+    `(watchlist_id, symbol)` is UNIQUE, so a symbol cannot appear twice on
+    the same list - the second add is a 409, not a duplicate row that
+    would then produce the same quote twice in
+    `GET /watchlists/{id}/quotes`. Symbols are normalized (trimmed and
+    upper-cased) by the route before they reach this table, so the
+    constraint is a real one rather than one "aapl" can walk around.
+
+    `symbol` is a plain String, denormalized rather than FK'd to `assets`,
+    for the same reason `orders.symbol` is (D006): no asset-lookup service
+    exists, and a watchlist must be able to hold a symbol the user is
+    researching precisely because the system has never traded it.
+    """
+
+    __tablename__ = "watchlist_items"
+    __table_args__ = (
+        UniqueConstraint("watchlist_id", "symbol", name="uq_watchlist_item_watchlist_symbol"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    watchlist_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class AssetClass(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
     EQUITY = "equity"
     ETF = "etf"

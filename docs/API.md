@@ -1181,5 +1181,107 @@ This is **not** the orders listing with rejections filtered out — it is a
 different grain. A rejected order contributes no row here and exactly one
 row there.
 
+## `POST /watchlists` — create
+
+Requires `Authorization: Bearer <token>` — any active user, no special
+permission and **no broker grant** (Phase 50). A watchlist is user-scoped
+research state, not a broker-scoped resource.
+
+Request: `{"name": "Semis"}`. `name` is 1–64 chars after trimming; blank
+or over-length is a **422**. Names are not unique — two watchlists may
+share one.
+
+Response (**201**, `WatchlistResponse`):
+```json
+{"id": "…uuid…", "name": "Semis", "created_at": "…", "symbols": []}
+```
+
+There is no auto-created default watchlist. A user who has created none
+has none, and `GET /watchlists` says so with an empty list — a read
+endpoint never writes a row.
+
+## `GET /watchlists` — list your own
+
+Same auth. Returns exactly the calling user's own watchlists, each with
+its stored symbols (no prices — see the quotes endpoint). Query params:
+`limit` (default 50, max 500 — 422 outside that range), `offset`
+(default 0, 422 if negative), same convention as D027/D031/D034. Ordered
+by `(created_at, id)`; the id is the tiebreaker that makes `offset`
+paging deterministic.
+
+Response (200, `ListWatchlistsResponse`): `{"watchlists": [...], "limit":
+50, "offset": 0}`. Another user's watchlist never appears.
+
+## `DELETE /watchlists/{watchlist_id}`
+
+Same auth, owner-only. **204** on success — the list's items go with it
+(`ON DELETE CASCADE`, migration `0015`). **404** if no watchlist has that
+id; **403** if one does but the caller does not own it — the same order
+and codes `require_broker_access` uses, so "not there" and "not yours"
+never answer alike. This is a real delete, not a soft one: a watchlist is
+working state, not an audit trail.
+
+## `POST /watchlists/{watchlist_id}/items` — add a symbol
+
+Same auth, owner-only. Request: `{"symbol": "AAPL.US"}`. The symbol is
+trimmed and upper-cased before storage, so `"aapl.us"` and `"AAPL.US"`
+are the same entry.
+
+**201** with the updated `WatchlistResponse`. **409** if the symbol is
+already on this list (the database's unique constraint, not a
+check-then-insert). **409** if the list already holds 200 symbols — the
+per-list cap that bounds the quotes endpoint's vendor fan-out. **422**
+for a blank symbol. **403/404** as above.
+
+No vendor validation: a symbol is accepted whether or not any configured
+provider knows it. An unpriceable symbol surfaces honestly at the quotes
+endpoint rather than being refused here.
+
+## `DELETE /watchlists/{watchlist_id}/items/{symbol}`
+
+Same auth, owner-only. The path segment is normalized the same way, so
+`.../items/aapl.us` removes `AAPL.US`. **204** on success, **404** if
+that symbol is not on the list, **403/404** for the watchlist itself as
+above.
+
+## `GET /watchlists/{watchlist_id}/quotes`
+
+Same auth, owner-only. Every symbol on the list with its live quote,
+resolved through the **same** path as
+`GET /market-data/{symbol}/quote` (`apps/api/app/marketdata/resolution.py`
+— one function, two callers, so the two endpoints cannot drift apart).
+
+Response (200, `WatchlistQuotesResponse`):
+```json
+{
+  "watchlist_id": "…uuid…",
+  "name": "Semis",
+  "market_data_configured": true,
+  "quotes": [
+    {"symbol": "AAPL.US", "price": "195.25", "as_of": "…",
+     "source": "longbridge", "unavailable": null},
+    {"symbol": "NOSUCH.US", "price": null, "as_of": null, "source": null,
+     "unavailable": "DATA_UNAVAILABLE: NO_DATA_AVAILABLE: no configured provider returned data for 'NOSUCH.US'. …"}
+  ]
+}
+```
+
+The response is **always exactly as long as the watchlist**. A symbol the
+vendor cannot price keeps its row with `price`/`as_of`/`source` all null
+and a `DATA_UNAVAILABLE:`-prefixed `unavailable` carrying the real
+underlying cause — never a dropped row and never a stand-in price.
+
+With **no market-data vendor wired at all** (D008/D015) this is still a
+**200**: `market_data_configured` is `false` and every row is unavailable
+with `DATA_UNAVAILABLE: NOT_CONFIGURED: …`. That deliberately differs
+from `GET /market-data/{symbol}/quote`, which 503s for the same
+condition — there the quote *is* the whole response, here it is one
+column of a list the user is still entitled to see.
+
+Symbols are resolved sequentially, not concurrently: the vendors behind
+`MarketDataRouter` are rate-limited third parties, and the 200-symbol cap
+plus sequential resolution keeps one page refresh from becoming a burst
+of upstream requests.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

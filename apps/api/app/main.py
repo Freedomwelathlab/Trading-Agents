@@ -19,6 +19,7 @@ from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
+from apps.api.app.api.routes.watchlists import router as watchlists_router
 from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.auth.routes.password_reset import router as password_reset_router
 from apps.api.app.auth.routes.session import router as session_router
@@ -281,6 +282,10 @@ app.include_router(orders_router)
 app.include_router(order_fills_router)
 app.include_router(backtests_router)
 app.include_router(brokers_router)
+# Phase 50: user-scoped, not broker-scoped - registered next to the
+# market-data router it shares a resolution path with rather than with the
+# /brokers routes it shares no scoping rule with.
+app.include_router(watchlists_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are

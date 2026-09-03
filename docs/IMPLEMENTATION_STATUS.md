@@ -2045,6 +2045,74 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
   designated `live` was a throwaway row in a throwaway database. Stack,
   venv and containers removed afterwards; no `.env` created; the sibling
   phase's `tos-p46-pg` and the user's own containers left untouched.
+- Phase 50: watchlists — the research half of the research-to-trade
+  dashboard (2026-09-03, D067). Before this phase the trade side of that
+  loop was complete (D058/D062) while the research side was a single
+  symbol input box, so following a handful of names and looking at them
+  together had no representation in the product.
+  **(1) Schema** — migration `0015` adds `watchlists` (`id`, `user_id`
+  FK ON DELETE CASCADE, `name`, `created_at`, plus
+  `ix_watchlists_user_created`) and `watchlist_items` (`id`,
+  `watchlist_id` FK ON DELETE CASCADE, `symbol`, `added_at`, plus
+  `uq_watchlist_item_watchlist_symbol`). Two tables rather than a
+  `symbols text[]` column so the one-symbol-per-list invariant is a
+  database constraint two concurrent adds cannot both pass, not an
+  application check.
+  **(2) Five endpoints** — `POST /watchlists`, `GET /watchlists`,
+  `DELETE /watchlists/{id}`, `POST /watchlists/{id}/items`,
+  `DELETE /watchlists/{id}/items/{symbol}`, plus the payoff,
+  `GET /watchlists/{id}/quotes`. These are the **first user-scoped**
+  id-addressed resources in the codebase: authentication only, no
+  `Permission`, and deliberately **no `BrokerGrant`** — a watchlist
+  authorizes nothing and a user with no broker access must still be able
+  to research. Ownership lives in one helper all four id-addressed routes
+  call; "not there" is 404 and "not yours" is 403, the same order and
+  codes `require_broker_access` uses. Watchlists are created explicitly —
+  there is no lazily-created default, because a GET must not write a row.
+  Symbols are trimmed and upper-cased on the way in and on the DELETE path
+  segment, so `"aapl.us"` and `"AAPL.US"` are one entry and a duplicate is
+  a real 409.
+  **(3) One shared quote-resolution path** — the NOT_CONFIGURED /
+  NO_DATA_AVAILABLE decision moved out of `routes/marketdata.py` into
+  `apps/api/app/marketdata/resolution.py`, which returns a `ResolvedQuote`
+  value instead of raising. `GET /market-data/{symbol}/quote` maps it to
+  its unchanged 503/404, and the watchlist route maps it to a per-row
+  sentinel — one function, two callers, so the two surfaces cannot drift
+  apart about what "no price" means.
+  **(4) No fabrication, structurally** — a `WatchlistQuote` carries either
+  a price block copied off a real `MarketSnapshot` or a
+  `DATA_UNAVAILABLE:`-prefixed string, never neither and never both, and
+  the response is always exactly as long as the watchlist. An unpriceable
+  symbol keeps its row; with no vendor wired at all the endpoint still
+  returns 200, `market_data_configured: false`, and one honest sentinel
+  per row (a 503 there would hide the user's own symbols to report
+  something the payload already says). Resolution is sequential and a list
+  caps at 200 symbols, so one page refresh cannot become a burst of
+  rate-limited vendor calls.
+  **(5) Frontend** — `apps/web/components/Watchlist.tsx` on the Phase 45 /
+  D060 design system, five proxy route handlers under
+  `apps/web/app/api/watchlists/`, and a new "Research" section on the
+  dashboard holding `Watchlist` and `QuoteLookup` together. Per D034's
+  ordering convention neither is broker-scoped, so both sit outside the
+  broker-scoped block — `QuoteLookup` moved out of the "Position &
+  performance" grid, where it had only ever lived for width.
+  Verified on an isolated throwaway stack (Postgres `55432`, Redis
+  `56379`, API `18050`/`18051` — never the dev stack's ports): migration
+  `downgrade base` → `upgrade head` round-trip clean; backend **615 → 635**
+  passing (20 new), frontend **140 → 152** passing (12 new, 17/17 files,
+  nothing weakened or deleted); `ruff check .`, `mypy apps` (96 files),
+  `npm run build` and `bash scripts/secret_scan.sh` all clean. Live-checked
+  over real HTTP: create / add / duplicate-409 / list / quotes /
+  cross-user-403 / remove-204 / 404s / delete-204 / 401, with quotes
+  exercised both on the committed default (no vendor credentials — every
+  row `DATA_UNAVAILABLE: NOT_CONFIGURED: …`, not one invented price) and
+  against a stub vendor (two real prices and one
+  `DATA_UNAVAILABLE: NO_DATA_AVAILABLE: …` row in the same response).
+  `LIVE_TRADING_ENABLED`, the Risk Engine, the Portfolio Manager and the
+  emergency stop were untouched; the branch diff contains nothing under
+  `apps/api/app/execution/` and does not touch
+  `apps/api/app/api/routes/trades.py`, both of which the concurrent
+  Phase 48/49 worktrees were editing.
 - Phase 46: self-service password reset, with email as an optional vendor
   (2026-09-02, D063). Closes the gap D049 opened: before this phase the
   only recovery path for a forgotten password was a direct SQL update, and

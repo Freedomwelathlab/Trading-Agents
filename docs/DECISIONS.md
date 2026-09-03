@@ -6415,3 +6415,172 @@ line that has long since scrolled away.
 Status: Implemented and verified. On a default checkout the reconciler is
 not constructed, `/health` reports `live_order_reconciler: "DISABLED"`, and
 the live path is exactly as inert as it was before this phase.
+
+---
+
+**D067 — Phase 50: watchlists, the research half of the research-to-trade dashboard, and one shared quote-resolution path**
+
+Numbering note: this worktree branched from `main` at D063 and originally
+claimed D064, the next free number at branch time. Two concurrently-run
+sibling worktrees (Phase 48's order/fill history and Phase 49's live-order
+reconciliation) branched around the same point and merged to `main` first
+as **D065** and **D066** — so this entry is renumbered to **D067** at
+merge time to avoid a collision, following the same convention used since
+D028/D030/D031/D032 for parallel worktrees landing on the same D-number.
+D064 is left unused rather than reassigned: renumbering a decision after
+the fact is exactly what that convention exists to prevent.
+
+Date: 2026-09-03
+
+Decision: Build real watchlists — a `watchlists` / `watchlist_items`
+schema (migration `0015` — this worktree also branched before Phase 49's
+migration `0014` merged and originally claimed `0014` itself; renumbered
+at merge time for the same reason as the D-number above), five
+user-scoped endpoints under `/watchlists`,
+a `GET /watchlists/{id}/quotes` that prices a whole list, and a
+`Watchlist.tsx` panel on the dashboard — and, as part of it, factor the
+single-symbol quote decision out of `routes/marketdata.py` into
+`apps/api/app/marketdata/resolution.py` so the list endpoint and the
+single-quote endpoint resolve prices through one function rather than two
+copies of one idea.
+
+Until this phase the dashboard could answer "what is AAPL trading at" one
+symbol at a time and nothing else. The trade side of the research-to-trade
+loop was complete (D058/D062) while the research side was a single input
+box, so the thing an operator actually does — follow a handful of names
+and look at them together — had no representation in the product at all.
+
+**Why user-scoped and not broker-scoped.** Every other id-addressed
+resource in this codebase hangs off a broker: `/brokers/{id}/trades`,
+`/brokers/{id}/portfolio`, and even D034's discovery listing is scoped by
+`BrokerGrant`. A watchlist is not like those. It is a list of symbols
+someone is reading about, it authorizes nothing, and gating it on a grant
+would mean a user with no broker access cannot research anything — which
+is backwards, since researching is what you do *before* you have a
+position. So these routes are authentication-only (`get_current_user`),
+with ownership checked against `watchlists.user_id`, and they are the
+first resource here scoped that way. The frontend follows the same logic:
+`Watchlist` sits with `QuoteLookup` under a new "Research" heading rather
+than inside the broker-scoped block, and `QuoteLookup` moved out of the
+"Position & performance" grid with it, since it was never broker-scoped
+either and only lived there for width.
+
+**Why "not yours" is 403 and not 404.** The tempting privacy answer is a
+blanket 404 that refuses to confirm a watchlist exists. This codebase
+already answers that question, in `require_broker_access` and again in
+D034's `GET /brokers/{id}`: look the row up first (404 if there is no such
+id), then check access (403 if there is but it isn't yours). Answering
+differently here would make watchlists the one resource whose status codes
+mean something else, and the information a 403 leaks — that some UUID
+someone already holds is a real watchlist — is not worth a second
+convention. Ownership is enforced in exactly one helper
+(`_owned_watchlist`) which all four id-addressed routes call, so there is
+no route where the check could be forgotten.
+
+**Why explicit creation, with no auto-created default.** The alternative —
+create "My watchlist" lazily on first read — makes a GET write to the
+database, and leaves an empty row behind for every user who ever merely
+loaded the dashboard. `GET /watchlists` on a fresh account returns `[]`,
+which is a true statement, and the panel renders a create form. A test
+asserts that reading twice still creates nothing.
+
+**Why two tables rather than a `symbols text[]` column.** The single
+invariant this feature has is that a symbol appears at most once per list,
+and on an array column that is an application-level check two concurrent
+adds can both pass. `uq_watchlist_item_watchlist_symbol` makes it the
+database's problem: the route pre-checks only to return the 409 cheaply,
+and the constraint is what actually guarantees it. Symbols are normalized
+(trimmed, upper-cased) on the way in — and on the DELETE path segment on
+the way out — so the constraint is real rather than one `"aapl"` walks
+around.
+
+**The no-fabrication decision, which is the point of the whole endpoint.**
+A list-of-quotes endpoint has three tempting ways to lie when a vendor
+cannot price a symbol: drop the row, return zero, or return the last thing
+it saw. All three are forbidden by spec §57 and `docs/TRADING_SAFETY.md`,
+and none of them is reachable in this design — `WatchlistQuote` carries
+either a price block copied off a real `MarketSnapshot` or a
+`DATA_UNAVAILABLE:`-prefixed sentinel, never neither and never both, and
+the response is always exactly as long as the watchlist. The underlying
+cause is preserved after the prefix rather than replaced, so
+`NOT_CONFIGURED:` (no vendor wired at all) stays distinguishable from
+`NO_DATA_AVAILABLE:` (this symbol has no price).
+
+The one genuinely debatable call: with **no** vendor configured, this
+endpoint returns **200** with every row unavailable, where
+`GET /market-data/{symbol}/quote` returns **503** for the identical
+condition. That is deliberate and the two are both right. There, the quote
+is the entire response, so there is nothing to return; here it is one
+column of a list the user is still entitled to read, and a 503 would hide
+their own symbols from them to report a fact the payload already states in
+`market_data_configured`.
+
+**Why `resolution.py` exists.** Writing the list endpoint meant needing
+the same two distinctions the single-quote route makes, and the honest
+options were a second copy or a shared function. A second copy is how the
+two would eventually disagree about what "no price" means. So the decision
+returns a value (`ResolvedQuote`) instead of raising an HTTP error, and
+each caller maps it to its own contract — which is what let the
+single-quote route keep its exact 503/404 strings while gaining a second
+caller. Two tests pin that: one asserts the watchlist and the single-quote
+endpoint report the same price and source for the same symbol under the
+same vendor, the other that the single-quote route still 503s on
+NOT_CONFIGURED and 404s on NO_DATA_AVAILABLE.
+
+**Sequential resolution, and a per-list cap.**
+`GET /watchlists/{id}/quotes` resolves symbols one at a time rather than
+with `asyncio.gather`, and a watchlist holds at most 200 symbols. The
+vendors behind `MarketDataRouter` are rate-limited third parties; fanning
+one page refresh out into hundreds of simultaneous upstream requests is
+how one user's dashboard becomes everyone's rate-limit rejection. If a
+real latency problem ever appears, bounded concurrency is the fix — not
+unbounded.
+
+Alternatives rejected: (a) a `GET /watchlists/{id}` detail route — the
+listing already carries each list's symbols, so it would have been a
+second way to ask one question; (b) unique watchlist names per user — a
+constraint on how a person organizes their own reading, when the id is
+what every route addresses anyway; (c) validating symbols against the
+vendor at add time — it would refuse research on anything not currently
+priceable, and would silently change behaviour the moment a vendor was
+configured.
+
+Verification (all against an isolated throwaway stack on remapped ports —
+Postgres `55432`, Redis `56379`, API `18050`/`18051` — never the dev
+stack's 5432/6379/8000/3005):
+
+- `alembic upgrade head`, then a full `downgrade base` → `upgrade head`
+  round-trip, clean, with `0014` at the head.
+- Backend: **615 → 635** tests passing (20 new in
+  `tests/api/test_watchlists.py`). The 615 figure was measured on this
+  branch *after* the `resolution.py` refactor and before the new test file
+  existed, so it also demonstrates the refactor changed no existing
+  behaviour.
+- Frontend: **140 → 152** tests passing (12 new in
+  `apps/web/test/Watchlist.test.tsx`), 17/17 files. No existing test was
+  weakened, skipped or deleted. `npm run build` clean, with all five
+  `/api/watchlists/...` route handlers registered.
+- `ruff check .` and `mypy apps` (96 source files) clean;
+  `bash scripts/secret_scan.sh` clean.
+- Live-verified over real HTTP against a running instance: create, add
+  (including a lower-case symbol proving normalization), duplicate → 409,
+  list, quotes, cross-user → 403 on all four id-addressed routes, remove
+  via a lower-case path segment → 204, missing watchlist → 404, symbol not
+  on list → 404, delete → 204 then 404, unauthenticated → 401. Quotes were
+  verified twice: once on the committed default (no vendor credentials on
+  this machine — every row came back
+  `DATA_UNAVAILABLE: NOT_CONFIGURED: …`, not one fabricated price), and
+  once against a second instance with a *stub* vendor injected by a
+  dependency override, which produced two real prices and one
+  `DATA_UNAVAILABLE: NO_DATA_AVAILABLE: …` row in the same response, with
+  the single-quote endpoint returning 200/404 for the same two symbols.
+
+Scope discipline: this branch's diff contains nothing under
+`apps/api/app/execution/` and does not touch
+`apps/api/app/api/routes/trades.py` — both were being edited by the
+concurrent Phase 48/49 worktrees. `LIVE_TRADING_ENABLED`, the Risk Engine,
+the Portfolio Manager and the emergency stop are all untouched; no route
+added here can place, size, or influence an order.
+
+Status: Implemented and verified as above.
+
