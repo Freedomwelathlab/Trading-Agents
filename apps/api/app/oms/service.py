@@ -32,7 +32,13 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
-from apps.api.app.execution.broker import BrokerAdapter, Fill, OrderRequest
+from apps.api.app.execution.broker import (
+    BrokerAdapter,
+    Fill,
+    OrderNotConfirmedError,
+    OrderRequest,
+    UnconfirmedSubmissionContext,
+)
 from apps.api.app.portfolio_manager.manager import decide as portfolio_decide
 from apps.api.app.portfolio_manager.models import (
     PortfolioAction,
@@ -132,7 +138,41 @@ def submit_trade(
                 )
 
     order = OrderRequest(symbol=effective.symbol, side=effective.side, quantity=effective.quantity)
-    fill = broker.submit_order(order, market_price=effective.estimated_price)
+    try:
+        fill = broker.submit_order(order, market_price=effective.estimated_price)
+    except OrderNotConfirmedError as exc:
+        # Phase 49 (D066). A REAL order now exists at a REAL broker and this
+        # function is about to unwind past every local variable describing
+        # it. Attaching that description to the exception is what lets
+        # `submit_trade_and_record()` persist a truthful `orders` row -
+        # specifically `effective.quantity`, which is what was actually sent
+        # and differs from `proposal.quantity` whenever the Portfolio
+        # Manager shrank the order (D029).
+        #
+        # This is the ONE thing this pure function does about a live-broker
+        # condition, and it deliberately neither swallows the exception nor
+        # changes its type: every existing caller still sees exactly the
+        # exception it saw before this phase. Caught at the port
+        # (`OrderNotConfirmedError`, apps/api/app/execution/broker.py) rather
+        # than as the concrete `LiveOrderNotFilledError`, so this module
+        # stays free of any dependency on a specific broker.
+        exc.submission_context = UnconfirmedSubmissionContext(
+            effective_quantity=effective.quantity,
+            risk_detail=decision.detail,
+            portfolio_action=(
+                portfolio_decision.action.value if portfolio_decision else None
+            ),
+            portfolio_binding_constraint=(
+                portfolio_decision.binding_constraint.value
+                if portfolio_decision and portfolio_decision.binding_constraint
+                else None
+            ),
+            portfolio_detail=portfolio_decision.detail if portfolio_decision else None,
+            portfolio_requested_quantity=(
+                portfolio_decision.requested_quantity if portfolio_decision else None
+            ),
+        )
+        raise
     return OMSResult(
         status=OMSStatus.FILLED,
         risk_decision=decision,

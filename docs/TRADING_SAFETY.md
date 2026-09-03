@@ -112,16 +112,53 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
   flipped — that would make simulated and real history indistinguishable
   in an append-only audit trail.
 
-**Standing rule, unchanged by Phase 43:** building the live path is not
-enabling it. `LIVE_TRADING_ENABLED` stays `false` in every default and
+- `apps/api/app/oms/persistence.py` + `apps/api/app/execution/reconciliation.py`
+  — reconciliation of an accepted-but-unexecuted live order (Phase 49,
+  D066). Two things changed, and the first matters even with the
+  reconciler switched off:
+  1. **A live order the broker accepts but does not execute is now
+     RECORDED.** Before this phase it was not: the `502
+     LIVE_ORDER_UNCONFIRMED` path rolled the request's transaction back, so
+     the broker's order id survived only in a log line and the system's own
+     append-only trail had no row for a real order at a real venue.
+     `orders` gained a non-terminal `submitted_unconfirmed` status plus
+     `broker_order_id` / `broker_status` / `reconciled_at`. The recorded
+     quantity is the one actually sent to the broker, never the proposal's;
+     if that is somehow unknown, **no row is written** rather than one
+     guessing.
+  2. **`LiveOrderReconciler` resolves those rows from the broker's own
+     answer**, on an interval. It is opt-in
+     (`LIVE_ORDER_RECONCILER_ENABLED`, default `false`) and inert without a
+     configured live path regardless — it never constructs an adapter and
+     never reads a credential, so on the committed configuration every
+     cycle short-circuits before touching the database or a broker.
+     It never invents a status or a fill. A fill is written only from the
+     broker's own `executed_quantity`/`executed_price`; an order the broker
+     still reports as working is left completely untouched (never aged out
+     or timed out on a clock); an unrecognised broker status counts as
+     still-open rather than finished; and a failed broker call skips that
+     order for the cycle, because a failure to observe is not evidence
+     about the thing observed. `submitted_unconfirmed` → terminal is the
+     ONLY update `orders` ever permits, guarded in SQL by
+     `WHERE status = 'submitted_unconfirmed'`, so a resolved order can
+     never be rewritten and a fill can never be double-written.
+  A `broker_closed_unfilled` order (cancelled/expired/rejected **by the
+  venue**) is deliberately a different status from `rejected`, which means
+  **this system** blocked the trade and it never reached a broker at all.
+  Never read the two as interchangeable.
+
+**Standing rule, unchanged by Phases 43 and 49:** building the live path is
+not enabling it. `LIVE_TRADING_ENABLED` stays `false` in every default and
 every test. Flipping it still requires explicit user approval given in
 that moment, per this document's confirmation section above.
 
 ## Not yet enforced (because not yet built)
 
 The full audit/decision-chain tables. On the live path specifically: limit
-orders, reconciliation of an accepted-but-unfilled live order, fractional
-shares (refused outright rather than rounded), and multi-currency live
-accounts (one `LIVE_ACCOUNT_CURRENCY`; a missing balance in it fails the
-trade rather than substituting another currency). Do not write code that
-assumes any of these exist.
+orders, fractional shares (refused outright rather than rounded), and
+multi-currency live accounts (one `LIVE_ACCOUNT_CURRENCY`; a missing
+balance in it fails the trade rather than substituting another currency).
+Partial fills are recorded only once the venue reports the order finished —
+`fills` holds one row per order, so a partially-filled order stays under
+observation rather than having its in-progress quantity written down. Do
+not write code that assumes any of these exist.

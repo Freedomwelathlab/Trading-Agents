@@ -69,7 +69,7 @@ repo (see the module docstring).
 
 Purpose: schema history.
 Location: `migrations/` (Alembic, async env)
-Current head: `0013_password_reset_tokens` (`0001` users/roles/assets/
+Current head: `0014_orders_live_reconciliation` (`0001` users/roles/assets/
 brokers, `0002` orders/fills, `0003` adds `orders.submitted_by_user_id`,
 `0004` adds `roles.permissions`, `0005` adds `broker_grants`, `0006` adds
 `broker_accounts`/`broker_positions`, `0007` adds the composite
@@ -79,10 +79,21 @@ query, `0008` adds `portfolio_snapshots`/`portfolio_snapshot_positions`,
 `0010` adds `emergency_stop_events` — D039, `0011` adds
 `portfolio_snapshots.cost_basis_method` — D044, `0012` adds
 `users.failed_login_count`/`users.locked_until` — D049, `0013` adds
-`password_reset_tokens` — D063)
+`password_reset_tokens` — D063, `0014` adds the `submitted_unconfirmed` /
+`broker_closed_unfilled` `orderstatus` labels plus
+`orders.broker_order_id` (UNIQUE) / `orders.broker_status` /
+`orders.reconciled_at` and a partial index on the unconfirmed rows — D066)
 Important: enum columns use `create_type=False` on the Python-side ENUM
 object to avoid a double-CREATE-TYPE error against `create_table` — see the
-comment history in `0001_initial.py` if adding a new enum column.
+comment history in `0001_initial.py` if adding a new enum column. **Adding
+a VALUE to an existing enum is different**: Postgres refuses to use a label
+in the same transaction that added it, so `0014` issues
+`op.execute("COMMIT")` before its `ALTER TYPE ... ADD VALUE` statements
+(its partial index references one as a literal). That migration is
+therefore non-atomic by necessity — safe because every step is additive.
+Its `downgrade()` rebuilds the type rather than dropping labels (Postgres
+has no `DROP VALUE`) and **refuses to run** if any row still uses one,
+rather than rewriting a real broker-confirmed order to fit the old enum.
 
 ## Risk Engine
 
@@ -123,15 +134,43 @@ compared against — see D024 for the full reasoning.
 
 ## Execution (broker adapters)
 
-Purpose: broker-agnostic port + a deterministic paper implementation.
+Purpose: broker-agnostic port + a deterministic paper implementation + a
+real (inert-by-default) live adapter and the job that reconciles its
+unconfirmed orders.
 Main files: `apps/api/app/execution/broker.py` (`BrokerAdapter` Protocol,
-`OrderRequest`, `Fill`), `apps/api/app/execution/paper_broker.py`
+`OrderRequest`, `Fill`, and — D066 — the port-level
+`OrderNotConfirmedError`/`UnconfirmedSubmissionContext`),
+`apps/api/app/execution/paper_broker.py`
 (`PaperBrokerAdapter`), `apps/api/app/execution/persistence.py`
-(`load_paper_broker`, `save_paper_broker` — see D014)
+(`load_paper_broker`, `save_paper_broker` — see D014),
+`apps/api/app/execution/live_broker.py` (D058 — `LiveBrokerAdapter`,
+`build_live_broker_adapter()` returning `None` unless live trading is
+fully configured, `LiveBrokerError`/`LiveOrderNotFilledError`; D066 added
+`get_order_status()` and the `LiveOrderStatus` classification),
+`apps/api/app/execution/reconciliation.py` (D066 — `LiveOrderReconciler`
+(asyncio task, started/stopped by the lifespan in
+`apps/api/app/main.py` as a SIBLING of the snapshot scheduler),
+`run_reconciliation_cycle()`, `resolve_order()`, `unresolved_live_orders()`,
+`build_reconciler_cycle_lock()`, and the typed
+`ReconciliationOutcome`/`ReconciliationStatus`/`ReconciliationCycleResult`
+results)
 Dependencies: `apps.api.app.risk.models` (reuses `Side`, `AccountState`),
-`apps.api.app.db.models` (`BrokerAccount`, `BrokerPosition`, persistence only)
+`apps.api.app.db.models` (`BrokerAccount`, `BrokerPosition`, persistence only;
+`Order`/`Fill`/`Broker` for the reconciler),
+`apps.api.app.portfolio.cycle_lock` (D047's advisory lock, reused on this
+job's own object key rather than reimplemented)
 Tests: `tests/execution/test_paper_broker.py` (pure, no DB),
-`tests/execution/test_persistence.py` (DB-backed load/save round-trips)
+`tests/execution/test_persistence.py` (DB-backed load/save round-trips),
+`tests/execution/test_live_broker.py` (23 unit tests, fake SDK client, no
+network), `tests/execution/test_reconciliation.py` (25 unit tests — broker
+status classification, the adapter's status lookup, the
+NOT_CONFIGURED short-circuit proven with an exploding session factory, and
+the two jobs' distinct lock keys),
+`tests/api/test_live_order_reconciler.py` (17 integration tests against
+real Postgres — the unconfirmed order really committed despite the 502,
+each resolution path, a real fill from the broker's own figures, a
+contending second connection really holding the real advisory lock, and
+`/health` reporting DISABLED by default)
 Important: `PaperBrokerAdapter` itself is still pure in-memory (no DB
 import) — persistence is a wrapping layer around it (D014), same pattern
 as D006's `submit_trade`/`submit_trade_and_record` split. Market orders
@@ -174,6 +213,16 @@ reachable from outside the process). **It deliberately does not commit**
 (only `flush()`es) — the caller (`trades.py`) commits once after also
 calling `save_paper_broker()`, so `load_paper_broker()`'s row lock (D014)
 covers the whole trade, not just the order/fill write.
+
+**The one exception, D066:** when the broker accepts a live order it has
+not executed, `submit_trade()` attaches an `UnconfirmedSubmissionContext`
+to the escaping `OrderNotConfirmedError` (so the quantity ACTUALLY sent
+survives the unwind) and `_record_unconfirmed_order()` writes **and
+commits** a `submitted_unconfirmed` `orders` row before re-raising.
+It must commit because `trades.py` turns that exception into a 502 and
+never reaches its own commit — and it is safe to, because the live branch
+of `_execute_trade()` never takes D014's row lock (a live book lives at the
+venue, not in `broker_accounts`). Unreachable on the paper path.
 
 ## Execution context
 

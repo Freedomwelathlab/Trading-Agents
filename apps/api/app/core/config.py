@@ -207,6 +207,49 @@ class Settings(BaseSettings):
     advisory locks were chosen over Redis (provisioned but unwired), a
     leader-election library, or a scheduler library."""
 
+    live_order_reconciler_enabled: bool = False
+    """Opt-in switch for the LIVE ORDER RECONCILER loop (Phase 49,
+    docs/DECISIONS.md D066) - the background job that asks the real broker
+    what became of orders recorded as `submitted_unconfirmed` and resolves
+    them to what the broker actually reports.
+
+    Defaults to FALSE, the same fail-closed posture as
+    `portfolio_snapshot_scheduler_enabled` above and for the same reason:
+    this is unattended behaviour that reaches a real trading venue on a
+    timer with no human in the loop.
+
+    Enabling it alone does nothing at all. The reconciler short-circuits
+    every cycle unless a live execution path actually exists - which still
+    requires `trading_mode=live` AND `live_trading_enabled=true` AND the
+    `LONGPORT_LIVE_*` credential trio, exactly as `build_live_broker_adapter()`
+    demands. On the repository's committed defaults, turning this on
+    produces a logged NOT_CONFIGURED skip and nothing else: no broker call,
+    no database write."""
+
+    live_order_reconciler_interval_seconds: int = 300
+    """How often the reconciler polls when enabled. Five minutes by default
+    - far shorter than the snapshot scheduler's hour, because an unresolved
+    live order is an open question about real money rather than a point on
+    a chart, and far longer than a retry loop, because the broker is a rate-
+    limited third party and an unfilled order that has not resolved in five
+    minutes will not resolve any faster for being asked twice as often.
+
+    Must be positive; the reconciler refuses to construct otherwise (a zero
+    interval would busy-loop a real trading venue's API, which is a good way
+    to get credentials throttled or revoked)."""
+
+    live_order_reconciler_cycle_lock_enabled: bool = True
+    """Phase 49 (D066): before doing any work, each reconciliation cycle
+    takes a non-blocking Postgres session-level advisory lock on its OWN key
+    (`RECONCILER_LOCK_OBJID`, distinct from the snapshot job's), so running
+    the API under several uvicorn/gunicorn workers means one worker polls
+    the broker per interval instead of all of them.
+
+    Defaults TRUE for the same reason `portfolio_snapshot_cycle_lock_enabled`
+    does - "on" is the side that does less - and it matters more here: N
+    workers each independently resolving the same order is N calls to a real
+    venue's API and N racing UPDATEs against the same row."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None
@@ -382,6 +425,22 @@ class Settings(BaseSettings):
                 "PORTFOLIO_SNAPSHOT_INTERVAL_SECONDS must be positive. A zero or "
                 "negative interval would busy-loop the snapshot cycle against the "
                 "database and the market data vendor."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_positive_reconciler_interval(self) -> "Settings":
+        """Same discipline as the snapshot interval above (Phase 49, D066),
+        and the stakes are higher: a non-positive interval here would
+        busy-loop a REAL trading venue's API rather than a market-data
+        vendor's, which is how credentials get throttled or revoked. Caught
+        at config load so it fails startup with a clear message rather than
+        surfacing from inside the lifespan."""
+        if self.live_order_reconciler_interval_seconds <= 0:
+            raise ValueError(
+                "LIVE_ORDER_RECONCILER_INTERVAL_SECONDS must be positive. A zero or "
+                "negative interval would busy-loop the reconciliation cycle against a "
+                "real broker's API."
             )
         return self
 

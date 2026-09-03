@@ -112,12 +112,26 @@ future background job in this repo; the objid below is what distinguishes
 them."""
 
 SNAPSHOT_LOCK_OBJID = 1936613744
-"""Object key for THIS job: the ASCII bytes ``b"snap"`` read big-endian
-(0x736E6170). Together with the classid above this pair is the stable
-identity of "the portfolio snapshot cycle", and it must never change
+"""Object key for the snapshot job: the ASCII bytes ``b"snap"`` read
+big-endian (0x736E6170). Together with the classid above this pair is the
+stable identity of "the portfolio snapshot cycle", and it must never change
 without a deliberate decision: two application versions using different
 keys would not exclude each other, which is precisely the failure this
 module exists to prevent."""
+
+RECONCILER_LOCK_OBJID = 1919247214
+"""Object key for the LIVE ORDER RECONCILER (Phase 49, docs/DECISIONS.md
+D066): the ASCII bytes ``b"recn"`` read big-endian (0x7265636E).
+
+This is the "future second background job" the TWO int4 KEYS section above
+anticipated, and it is exactly why the two-key form was chosen over a
+hashed bigint: the reconciler takes the SAME classid namespace and its own
+objid, so the two jobs cannot collide and cannot accidentally exclude each
+other either. A reconciliation cycle and a snapshot cycle are unrelated
+work and must be able to run at the same time - sharing one key would have
+made every reconciler cycle silently skip whenever a snapshot was in
+flight, which is a failure that would look exactly like "the reconciler
+works fine, there was just nothing to do"."""
 
 
 class SnapshotCycleLockDecision(str, Enum):  # noqa: UP042 (str mixin for log/JSON interop)
@@ -173,6 +187,21 @@ class SnapshotCycleLock:
     classid: int = SNAPSHOT_LOCK_CLASSID
     objid: int = SNAPSHOT_LOCK_OBJID
 
+    job_name: str = "portfolio_snapshot"
+    """Prefix for this lock's log event names, so a second job's contention
+    is greppable as its own thing rather than masquerading as the snapshot
+    scheduler's (Phase 49, D066). Defaults to the snapshot job, which
+    reproduces the pre-Phase-49 event names byte-for-byte
+    (`portfolio_snapshot_cycle_lock_not_acquired` /
+    `..._release_unexpected`), so every existing construction site and every
+    existing log query is unaffected.
+
+    Pair a new `job_name` with a new `objid`. They are separate fields
+    because they answer different questions - one is what an operator reads,
+    the other is what Postgres compares - but a job that changed only one of
+    them would be either invisible in the logs or silently sharing another
+    job's mutual exclusion."""
+
     async def _try_acquire(self, session: AsyncSession) -> bool:
         acquired = await session.scalar(
             text("SELECT pg_try_advisory_lock(:classid, :objid)"),
@@ -222,13 +251,13 @@ class SnapshotCycleLock:
             # working, not a fault, and logging it at warning would train
             # operators to ignore the level that real snapshot skips use.
             logger.info(
-                "portfolio_snapshot_cycle_lock_not_acquired",
+                f"{self.job_name}_cycle_lock_not_acquired",
                 classid=self.classid,
                 objid=self.objid,
                 reason=(
-                    "another process already holds the portfolio snapshot advisory lock, "
-                    "so this worker skipped its cycle without querying brokers or the "
-                    "market data vendor. Expected under multiple API workers (D047)."
+                    f"another process already holds the {self.job_name} advisory lock, "
+                    "so this worker skipped its cycle without doing any of the cycle's "
+                    "work. Expected under multiple API workers (D047)."
                 ),
             )
             yield SnapshotCycleLockDecision.SKIPPED_LOCK_HELD
@@ -245,7 +274,7 @@ class SnapshotCycleLock:
                 # closes - so failing the cycle here would turn a bookkeeping
                 # surprise into a lost snapshot.
                 logger.error(
-                    "portfolio_snapshot_cycle_lock_release_unexpected",
+                    f"{self.job_name}_cycle_lock_release_unexpected",
                     classid=self.classid,
                     objid=self.objid,
                     detail=(

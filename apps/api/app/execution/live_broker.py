@@ -74,12 +74,17 @@ but unfilled live order is its own (not yet built) problem.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
 from apps.api.app.core.config import Settings, TradingMode
-from apps.api.app.execution.broker import Fill, OrderRequest
+from apps.api.app.execution.broker import (
+    Fill,
+    OrderNotConfirmedError,
+    OrderRequest,
+)
 from apps.api.app.risk.models import AccountState, Side
 
 
@@ -89,14 +94,20 @@ class LiveBrokerError(Exception):
     rule applies hardest here."""
 
 
-class LiveOrderNotFilledError(LiveBrokerError):
+class LiveOrderNotFilledError(LiveBrokerError, OrderNotConfirmedError):
     """The broker accepted the order but has not (yet) executed any of it.
-    Carries the real `order_id` so the position can be reconciled by hand;
-    this is NOT a rejection and the order may still execute."""
+    Carries the real `order_id` so the position can be reconciled; this is
+    NOT a rejection and the order may still execute.
+
+    Phase 49 (D066) added the `OrderNotConfirmedError` base so the OMS can
+    attach the decision context that produced the order without importing
+    this live-specific module. `LiveBrokerError` is kept FIRST in the bases
+    so the existing `except LiveBrokerError` arms in
+    apps/api/app/api/routes/trades.py keep catching this exactly as before;
+    nothing about the Phase 43 behaviour changes."""
 
     def __init__(self, message: str, *, order_id: str) -> None:
-        super().__init__(message)
-        self.order_id = order_id
+        OrderNotConfirmedError.__init__(self, message, order_id=order_id)
 
 
 class LiveTradeClient(Protocol):
@@ -124,6 +135,86 @@ class LiveTradeClient(Protocol):
 
 
 _EXECUTED_STATUSES = frozenset({"Filled", "PartialFilled"})
+
+_TERMINAL_STATUSES = frozenset(
+    {"Filled", "Canceled", "Expired", "Rejected", "PartialWithdrawal"}
+)
+"""Longbridge `OrderStatus` names meaning "this order will not progress any
+further" (Phase 49, D066).
+
+Every name here was read off the installed SDK by direct introspection of
+`longport.openapi.OrderStatus`, not from documentation or memory (the
+D008/D015/D021 discipline). The full member list at the time of writing is
+Canceled, Expired, Filled, New, NotReported, PartialFilled,
+PartialWithdrawal, PendingCancel, PendingReplace, ProtectedNotReported,
+Rejected, Replaced, ReplacedNotReported, Unknown, VarietiesNotReported,
+WaitToCancel, WaitToNew, WaitToReplace. Note the SDK's spelling is
+`Canceled`, one 'l'.
+
+**Everything not listed here is treated as STILL OPEN**, including
+`PartialFilled`, `Unknown`, and any status a future SDK version adds. That
+asymmetry is deliberate and is the fail-closed direction: leaving a live
+order under observation for another cycle costs one API call, whereas
+declaring it finished on a status this code does not actually understand
+would permanently record an outcome the broker never reported.
+
+`PartialFilled` in particular is NOT terminal here, even though the
+submit-time path above accepts it as a real fill. The two are answering
+different questions. At submit time a caller is synchronously waiting and a
+partial execution is genuinely the best true answer available. At
+reconciliation time there is no one waiting, so the honest move is to keep
+watching until the venue itself says the order is done - recording a
+half-done order as final would freeze a number that is still moving, in an
+append-only audit trail, forever."""
+
+
+@dataclass(frozen=True)
+class LiveOrderStatus:
+    """One real, broker-reported answer to "what happened to order X".
+
+    Every field comes from the broker's own `order_detail` response. There
+    is no default, no fallback and no derived value: `raw_status` is the
+    venue's own status string verbatim, and `executed_quantity` /
+    `executed_price` are `None` unless the broker actually reported them.
+    The three mutually-exclusive booleans below are the ONLY interpretation
+    applied anywhere, so there is exactly one place to look to see what this
+    system believes a broker status means."""
+
+    order_id: str
+    raw_status: str
+    executed_quantity: Decimal | None = None
+    executed_price: Decimal | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def terminal(self) -> bool:
+        return self.raw_status in _TERMINAL_STATUSES
+
+    @property
+    def executed(self) -> bool:
+        """The order is finished AND the broker reported a real quantity and
+        a real price for it. Both are required: a terminal status carrying
+        no price is not a fill this system will record, because completing
+        it would mean inventing the one number a fill is actually about."""
+        return (
+            self.terminal
+            and self.executed_quantity is not None
+            and self.executed_quantity > 0
+            and self.executed_price is not None
+        )
+
+    @property
+    def closed_unfilled(self) -> bool:
+        """Finished with nothing to record: cancelled, expired, or rejected
+        by the venue itself."""
+        return self.terminal and not self.executed
+
+    @property
+    def still_open(self) -> bool:
+        """Not finished - genuinely still working, or carrying a status this
+        code does not classify. Either way the correct action is to change
+        nothing and look again next cycle."""
+        return not self.terminal
 
 
 class LiveBrokerAdapter:
@@ -214,6 +305,70 @@ class LiveBrokerAdapter:
         cash = self.cash
         return AccountState(
             equity=cash + positions_value, cash=cash, current_exposure=exposure
+        )
+
+    # -- order status ------------------------------------------------------
+
+    def get_order_status(self, order_id: str) -> LiveOrderStatus:
+        """Read one live order back from the broker (Phase 49, D066).
+
+        This is the same real `TradeContext.order_detail()` call
+        `submit_order()` already makes, promoted to a public method so the
+        reconciler (apps/api/app/execution/reconciliation.py) can ask about
+        an order it did not itself submit. No new SDK surface and no second
+        client: the reconciler talks to the broker through this adapter, so
+        there is exactly one place in the codebase that maps a Longbridge
+        order-detail response onto this system's types.
+
+        Raises `LiveBrokerError` when the broker cannot be reached or its
+        response cannot be understood. It never returns a degraded or
+        assumed status - the caller's only correct response to a failure
+        here is to leave the order alone and try again later, which is what
+        the reconciler does.
+
+        Deliberately does NOT touch the cached account snapshot: this is a
+        read about one order, not a statement about the book.
+        """
+        try:
+            detail = self._client.order_detail(order_id)
+        except Exception as exc:
+            raise LiveBrokerError(
+                f"Could not read the status of live order {order_id}: {exc}"
+            ) from exc
+
+        raw_status = getattr(detail.status, "name", None) or str(detail.status)
+
+        executed_quantity_raw = getattr(detail, "executed_quantity", None)
+        executed_price_raw = getattr(detail, "executed_price", None)
+        try:
+            executed_quantity = (
+                None if executed_quantity_raw is None else Decimal(str(executed_quantity_raw))
+            )
+            executed_price = (
+                None if executed_price_raw is None else Decimal(str(executed_price_raw))
+            )
+        except (ArithmeticError, ValueError) as exc:
+            # A response we cannot parse is a response we do not understand.
+            # Failing here leaves the order untouched and under observation,
+            # which is strictly better than coercing a garbage value into a
+            # permanent fill row.
+            raise LiveBrokerError(
+                f"Live order {order_id} reported an unparseable execution "
+                f"quantity/price: {exc}"
+            ) from exc
+
+        updated_at = getattr(detail, "updated_at", None)
+        if not isinstance(updated_at, datetime):
+            updated_at = None
+        elif updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=UTC)
+
+        return LiveOrderStatus(
+            order_id=order_id,
+            raw_status=raw_status,
+            executed_quantity=executed_quantity,
+            executed_price=executed_price,
+            updated_at=updated_at,
         )
 
     # -- order submission -------------------------------------------------

@@ -38,9 +38,31 @@ reach the log sink intact while credentials are still redacted.
 
 ## `GET /health` — liveness
 
-Returns `{"status": "ok", "trading_mode": "<research|paper|live>", "live_trading_enabled": <bool>}`.
+Returns:
+
+```json
+{"status": "ok",
+ "trading_mode": "<research|paper|live>",
+ "live_trading_enabled": false,
+ "live_order_reconciler": "DISABLED"}
+```
+
 No auth. Reflects the actual configured `Settings`, never a fabricated value.
-Body shape unchanged since Phase 1.
+
+`live_order_reconciler` (Phase 49, D066) is `"DISABLED"` or
+`"enabled:<n>s"`, where `<n>` is `LIVE_ORDER_RECONCILER_INTERVAL_SECONDS`.
+It reports only whether the background reconciliation **loop is running** —
+never that anything can actually be reconciled. With
+`live_trading_enabled: false` (the committed default) every cycle
+short-circuits with `NOT_CONFIGURED` before touching the database or a
+broker, so the two fields must be read together. Added as a key because the
+reconciler is the only background job that reaches a real trading venue,
+and whether it runs was otherwise visible only in a startup log line.
+
+Every field is a plain read of in-process `Settings` — this endpoint still
+performs no I/O and checks no dependency (see below). Keys are additive
+across phases; consumers should read the keys they need and ignore the
+rest.
 
 This is a **liveness** probe (Phase 41, D054): it answers "is this process
 alive", performs no I/O, checks no dependency, and therefore stays 200 even
