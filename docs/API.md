@@ -1028,5 +1028,136 @@ of D017 — `POST /brokers/{broker_id}/trades` uses this same router when
 `estimated_price` is omitted from the trade request; this endpoint lets a
 caller preview the price such a submission would use.
 
+## `GET /brokers/{broker_id}/orders`
+
+Read-only order history (D065). Requires `Authorization: Bearer <token>`
+from a user whose role grants `portfolio:view` **and** who holds a
+`BrokerGrant` for this broker — the same `require_broker_access` gate as
+`GET /brokers/{broker_id}/portfolio`, not a new scheme. Nothing on this
+route writes.
+
+Query params: `limit` (default 50, max 500 — 422 outside that range),
+`offset` (default 0, 422 if negative) — same convention as D027/D031/D034.
+Ordered **newest first** by `(submitted_at DESC, id DESC)`; the id
+tiebreaker makes `offset` paging deterministic when two orders share a
+server-side timestamp. Note this is the opposite direction from
+`.../portfolio/history`, which is oldest-first because it is an equity
+curve.
+
+Response (200, `ListOrdersResponse`):
+```json
+{
+  "orders": [
+    {
+      "id": "…uuid…",
+      "broker_id": "…uuid…",
+      "broker_kind": "paper",
+      "symbol": "AAPL",
+      "side": "buy",
+      "quantity": "10.00000000",
+      "estimated_price": "100.00000000",
+      "stop_price": "95.00000000",
+      "status": "filled",
+      "risk_block_reason": null,
+      "risk_detail": null,
+      "portfolio_action": "approve",
+      "portfolio_binding_constraint": null,
+      "portfolio_detail": null,
+      "portfolio_requested_quantity": "10.00000000",
+      "submitted_by_user_id": "…uuid…",
+      "submitted_at": "2026-09-02T23:49:04.315262Z",
+      "fills": [
+        {
+          "id": "…uuid…",
+          "order_id": "…uuid…",
+          "quantity": "10.00000000",
+          "fill_price": "100.00000000",
+          "filled_at": "2026-09-02T23:49:04.315262Z"
+        }
+      ]
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
+Things this shape does and does not claim:
+
+- **`broker_kind` is joined from `brokers.kind`, not stored on the order.**
+  `orders` has no paper/live column — `Broker.kind` is the one
+  discriminator (spec §51, D058) — so this is the real broker row's kind
+  for `broker_id`, never an inference about which adapter ran. It is
+  repeated on every row so a blotter can label each line honestly.
+- **There is no order-type field**, because there is no order-type column.
+  `orders` records `side`/`quantity`/`estimated_price` and an optional
+  `stop_price`; emitting a constant `"market"` would look like a recorded
+  fact and is deliberately not done (D065).
+- **`estimated_price` is the requested price; the executed price is on the
+  fill.** They are equal under the paper broker by construction.
+- **Rejected orders are included.** `status` is `filled` or `rejected` and
+  never pending — a row is written once, after the decision, and never
+  updated (§17). A rejection carries `risk_block_reason`/`risk_detail`
+  when the Risk Engine stopped it and `portfolio_action: "reject"` when the
+  Portfolio Manager did; a null `portfolio_action` means the Portfolio
+  Manager never ran, never that it approved (D029).
+- **`quantity` vs `portfolio_requested_quantity`** differ exactly when
+  `portfolio_action` is `modify` — that is what makes a D029 resize
+  visible instead of silently rewritten.
+- `fills` is `[]` for a rejected order and has one entry for a filled one.
+  It is a list rather than a single object because `fills` is a separate
+  table precisely so partial fills are a later, schema-compatible addition.
+
+Error responses: 401 (no/invalid token), 403 (missing `portfolio:view`, or
+no `BrokerGrant` for this broker), 404 (unknown `broker_id`). An empty
+`orders` list is a 200, not an error.
+
+## `GET /brokers/{broker_id}/orders/{order_id}`
+
+One order and its fills (D065) — the same `OrderResponse` object the
+listing returns, rendered through the same code, so the two can never
+disagree about a given order. Same auth, same 401/403/404 as above.
+
+**404 when the order id is unknown *or* belongs to a different broker.**
+The lookup is filtered on `broker_id` as well as `order_id`, so a caller
+holding a grant on one broker cannot use this route to probe for order ids
+on another. The two cases are deliberately indistinguishable.
+
+## `GET /brokers/{broker_id}/fills`
+
+Flat execution blotter (D065) — one row per actual fill, newest first by
+`(filled_at DESC, id DESC)`. Same auth, same pagination, same error codes
+as the orders listing.
+
+`fills` carries no `broker_id` of its own, so scoping is a join through
+`orders.broker_id`, enforced in the query. Each row repeats the parent
+order's `symbol`/`side` (and the same joined `broker_kind`) so a blotter
+line is readable without a second request, and keeps `order_id` so it can
+always be traced back to the decision that produced it.
+
+```json
+{
+  "fills": [
+    {
+      "id": "…uuid…",
+      "order_id": "…uuid…",
+      "quantity": "10.00000000",
+      "fill_price": "100.00000000",
+      "filled_at": "2026-09-02T23:49:04.315262Z",
+      "broker_id": "…uuid…",
+      "broker_kind": "paper",
+      "symbol": "AAPL",
+      "side": "buy"
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
+This is **not** the orders listing with rejections filtered out — it is a
+different grain. A rejected order contributes no row here and exactly one
+row there.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

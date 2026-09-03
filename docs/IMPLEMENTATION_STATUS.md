@@ -2055,6 +2055,86 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
   `LIVE_TRADING_ENABLED` was never touched and nothing under
   `apps/api/app/execution/` was modified.
 
+- Phase 48: read-only order/fill history (2026-09-03, D065). Closes the
+  first of the two gaps Phase 47 (D062) recorded — "the platform keeps an
+  append-only audit trail that no user can read back", the one D062 called
+  the largest remaining product gap. `orders` and `fills` have been
+  written on every trade since Phase 4 (D006) and, until this phase,
+  readable only in `psql`: every Risk Engine block reason, every Portfolio
+  Manager verdict, every `submitted_by_user_id` and every real execution.
+  **Backend-only and read-only.** Three new endpoints —
+  `GET /brokers/{broker_id}/orders` (paginated, newest first),
+  `GET /brokers/{broker_id}/orders/{order_id}` (one order plus its fills),
+  and `GET /brokers/{broker_id}/fills` (a flat blotter, one row per actual
+  execution) — in a new `apps/api/app/api/routes/orders.py` with
+  `apps/api/app/api/schemas_orders.py`, registered in `main.py` next to the
+  portfolio router. Nothing opens a session for writing, constructs a
+  broker adapter, or touches the Risk Engine, the Portfolio Manager, the
+  emergency stop or `LIVE_TRADING_ENABLED`; the diff contains no change
+  under `apps/api/app/execution/`, `apps/api/app/oms/`,
+  `apps/api/app/risk/`, `apps/api/app/portfolio_manager/` or `apps/web/`,
+  and no migration.
+  **Authorization is the existing convention, not a new one**:
+  `require_broker_access(Permission.VIEW_PORTFOLIO)` — literally the
+  dependency every other broker-scoped read uses. No new `Permission`
+  member was added; order history is the history behind exactly the
+  positions and P&L `portfolio:view` already authorizes. 404 for an
+  unknown broker, 403 for one the caller holds no `BrokerGrant` for,
+  unchanged. The detail route additionally filters on `broker_id`, so
+  another broker's *real* order id returns 404 rather than confirming it
+  exists.
+  **Two things deliberately not invented.** (1) There is **no
+  `order_type` field**, because there is no such column — `orders` holds
+  `side`/`quantity`/`estimated_price` and an optional `stop_price`, and
+  emitting a constant `"market"` would read as a recorded fact per row.
+  (2) **`broker_kind` is a real join** from `brokers.kind` (the `Broker`
+  row `require_broker_access` already loaded), never an inference about
+  which adapter ran, because `orders` has no paper/live column — so a
+  future frontend can render PAPER/LIVE honestly per row. Both omissions
+  are stated in `docs/API.md` and in the schema module's docstring.
+  Rejected orders are **included** in the orders listing (they are the
+  part of the trail that shows the controls working); the fills route is a
+  different grain, not the same list filtered. Pagination is
+  `limit` (default 50, max 500) + `offset` in the `{items, limit, offset}`
+  envelope D027/D031/D034 use and D062's gap note asked for by name; 501,
+  0 and a negative offset are 422s, never silently clamped.
+  **636 backend tests passing, up from a 615-test baseline re-measured on
+  this branch before any edit** (that baseline run had 614 passing and one
+  pre-existing order-dependent flake in
+  `tests/api/test_broker_mode_toggle.py`, which passes in isolation and
+  passed in the post-change full run — it is unrelated to this phase,
+  which writes nothing). 21 new tests in `tests/api/test_order_history.py`,
+  none deleted, skipped or weakened. Every order they read back was
+  created by a real POST through the real trade path rather than a fixture
+  INSERT; the one exception is the live-kind labelling test, which inserts
+  its row directly because submitting a live trade would require an
+  actually-configured live execution path (D058) and nothing here may
+  enable one. `ruff check .` clean and `bash scripts/secret_scan.sh`
+  clean; `mypy apps` reports exactly one error, and it is in the
+  concurrently-developed `routes/watchlists.py` belonging to a sibling
+  phase, not in any file this phase created or modified.
+  **Live-verified over real HTTP**, not only through the test client: a
+  real `uvicorn` on 127.0.0.1:8148 against an isolated Postgres on
+  remapped port 55448 and Redis on 63448, seeded with three real users,
+  two real brokers and three real grants. 33 checks, all passing — four
+  real filled orders and one genuinely risk-rejected order
+  (`exceeds_max_position_size`, from the real engine); the empty-state
+  200s; newest-first ordering with the rejection included; the
+  two-page reassembly and `limit=501` → 422 / `limit=500` → 200; detail
+  byte-identical to its listing row; a real order id from broker B
+  returning 404 on broker A and 200 on B; 403 on all three routes for a
+  user holding no grant on that broker while the same user could still
+  read the broker they *do* hold a grant for; 405 on POST/DELETE with the
+  four-row trail intact afterwards; and `GET /health` reporting
+  `live_trading_enabled: false` throughout. The isolated stack never used
+  the user's own 5432/6379/8000/3005 ports, no `.env` was created, no live
+  credential exists in this branch, and no external vendor was contacted.
+  **Deliberately NOT built**: any write/cancel/amend route (`orders` is
+  append-only by design), symbol/date/status filtering, a cross-broker
+  "all my orders" listing, an index tuned for this sort order (a real but
+  separate migration — see D065), and the frontend trade-history panel,
+  which is a follow-up phase against this now-documented contract.
+
 ## Known Issues
 
 None open.
@@ -2065,18 +2145,18 @@ holidays are not checked (Phase 35/D042) — and each API worker process
 still runs its own independent scheduler loop, so >1 worker would multiply
 snapshot rows (D030).
 
-Two backend gaps identified by Phase 47 (D062) while building the frontend
-for them, both needing a backend phase — neither was worked around in the
-UI, and neither is a defect in existing code:
+Of the two backend gaps identified by Phase 47 (D062) while building the
+frontend for them, **the first is now CLOSED by Phase 48 (D065)** — the
+order/fill listing endpoints exist, are documented in `docs/API.md`, and
+are covered by 21 integration tests. One remains:
 
-1. **No order/fill list endpoint.** `orders` and `fills` have been
-   persisted since Phase 4, but nothing exposes them: there is no
-   `GET /brokers/{broker_id}/orders` or `/trades` in
-   `apps/api/app/api/routes/` and none in `docs/API.md`. The platform
-   keeps an append-only audit trail that no user can read back through the
-   product, and no trade-history UI can exist until a listing endpoint
-   (plus its response schema and pagination, following D027/D031's
-   `{items, limit, offset}` convention) does.
+1. ~~**No order/fill list endpoint.**~~ **CLOSED (Phase 48, D065.)**
+   `GET /brokers/{broker_id}/orders`, `.../orders/{order_id}` and
+   `.../fills` now expose the append-only trail, on the D027/D031
+   `{items, limit, offset}` convention as that gap note asked for. What is
+   still outstanding is the *frontend* — a trade-history panel built
+   against this contract is a follow-up phase, deliberately out of D065's
+   backend-only scope.
 2. **`AgentTradeResponse` returns no per-analyst output.** D059's
    Technical, Fundamental and News analysts run server-side and feed the
    TraderAgent's prompt, but the response carries only the final decision

@@ -548,6 +548,38 @@ counterpart: `apps/web/components/BrokerDiscovery.tsx` +
 `apps/web/lib/brokerSelection.ts` (pre-fills a broker id into the
 broker-scoped forms; a convenience, never an authorization).
 
+## Order/fill history routes
+
+Purpose: let a user read back the append-only `orders`/`fills` audit
+trail Phase 4 (D006) has been writing on every trade and nothing has ever
+exposed — the gap Phase 47 (D062) named as the largest remaining product
+one (D065).
+Main files: `apps/api/app/api/schemas_orders.py` (`OrderResponse`,
+`FillEntry`, `FillBlotterEntry`, `ListOrdersResponse`,
+`ListFillsResponse`), `apps/api/app/api/routes/orders.py`
+(`GET /brokers/{broker_id}/orders`,
+`GET /brokers/{broker_id}/orders/{order_id}`,
+`GET /brokers/{broker_id}/fills`)
+Dependencies: `apps.api.app.api.dependencies.require_broker_access`
+(with `Permission.VIEW_PORTFOLIO` — the same gate as the portfolio
+routes, no new permission), `apps.api.app.db.models` (`Order`, `Fill`)
+Tests: `tests/api/test_order_history.py` (21 integration tests against
+real Postgres; every order they read back was created by a real POST
+through the real trade path, not by a fixture INSERT)
+Important: **read-only by construction** — no session write, no broker
+adapter, no Risk Engine, no Portfolio Manager, and deliberately a
+separate module from `routes/trades.py` so that file keeps holding only
+the entrypoints which can move a trade toward a broker. `broker_kind` on
+every row is the joined `brokers.kind`, because `orders` has no
+paper/live column; there is no `order_type` field because there is no
+such column either (D065 — neither is inferred or defaulted). Rejected
+orders ARE listed (they are what shows the controls working); the fills
+route is a different grain, not the same list filtered. Pagination is
+`limit`/`offset` in an `{items, limit, offset}` envelope, matching
+D027/D031/D034. 404/403 come from `require_broker_access` unchanged, and
+the detail route filters on `broker_id` too, so another broker's real
+order id 404s rather than confirming its existence.
+
 ## Market data route
 
 Purpose: read-only `GET /market-data/{symbol}/quote`, the HTTP surface

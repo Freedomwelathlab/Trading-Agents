@@ -14,6 +14,8 @@ from apps.api.app.api.routes.emergency_stop import router as emergency_stop_rout
 from apps.api.app.api.routes.emergency_stop import status_router as emergency_stop_status_router
 from apps.api.app.api.routes.health import router as health_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
+from apps.api.app.api.routes.orders import fills_router as order_fills_router
+from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
@@ -216,6 +218,13 @@ app.include_router(emergency_stop_router)
 app.include_router(emergency_stop_status_router)
 app.include_router(marketdata_router)
 app.include_router(portfolio_router)
+# Phase 48 (D065): read-only order/fill history. Registered next to the
+# portfolio router rather than the trades router because it is the same
+# kind of thing - a broker-scoped read gated on `portfolio:view` - and
+# routes/trades.py deliberately stays the file that holds only the
+# entrypoints which can move a trade toward a broker.
+app.include_router(orders_router)
+app.include_router(order_fills_router)
 app.include_router(backtests_router)
 app.include_router(brokers_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new

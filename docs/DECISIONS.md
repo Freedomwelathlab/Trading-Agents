@@ -5996,3 +5996,167 @@ branch's diff contains nothing under `apps/api/app/execution/`.
 Status: Implemented and verified as above. Email delivery is
 NOT_CONFIGURED on a default checkout, which is a working state for this
 feature, not a missing one.
+
+---
+
+**D065 — Phase 48: read-only order/fill history endpoints, closing D062's "append-only audit trail no user can read back"**
+
+Numbering note: `docs/DECISIONS.md` ended at **D063** when this work began
+and this entry originally claimed **D064**, the next free number. A
+concurrently-running sibling phase (watchlists — `migrations/versions/
+0014_watchlists.py`, `apps/api/app/api/routes/watchlists.py`,
+`apps/api/app/api/schemas_watchlists.py`) had already stamped D064
+throughout its own source files, so this entry took **D065** instead and
+every D-reference in this phase's files was renumbered to match. Same
+convention used since D028/D030/D031/D032 and again at D063 for parallel
+work landing on one number — except that here the two phases shared a
+single checkout, so the collision was visible immediately rather than at
+merge time, and this phase yielded rather than the one that had already
+written the number into a migration.
+
+Date: 2026-09-03
+
+Decision: Add three read-only, broker-scoped endpoints over the `orders`
+and `fills` tables that have been written on every trade since Phase 4
+(D006) and never exposed:
+
+  GET /brokers/{broker_id}/orders             — paginated, newest first
+  GET /brokers/{broker_id}/orders/{order_id}  — one order plus its fills
+  GET /brokers/{broker_id}/fills              — flat execution blotter
+
+Reason: Phase 47 (D062) named this while building the frontend for it —
+"the platform keeps an append-only audit trail that no user can read back
+through the product … this is the largest remaining product gap." Every
+control this system is built around (the Risk Engine's block reasons, the
+Portfolio Manager's resize and reject verdicts, who submitted what, and
+what actually executed) has been recorded faithfully and been completely
+unreadable outside `psql`. A recorded decision nobody can see is not an
+audit trail in any useful sense.
+
+Alternatives considered and rejected:
+
+- **Adding the routes to `routes/trades.py`.** That module's docstring
+  opens by claiming to hold "the only HTTP entrypoints that can move a
+  trade toward the broker", and it is the file a reviewer opens to check
+  that claim. Putting listings there would make the sentence false at a
+  glance for no benefit. These routes live in a new
+  `apps/api/app/api/routes/orders.py`, registered next to the portfolio
+  router, for the same reason `routes/portfolio.py` is separate: it is a
+  broker-scoped read, not an execution path.
+- **A new `orders:view` permission.** Rejected as a boundary that does not
+  correspond to a real difference in capability. Order history is the
+  history *behind* exactly the positions and P&L `portfolio:view` already
+  authorizes, so these routes use
+  `require_broker_access(Permission.VIEW_PORTFOLIO)` — literally the
+  dependency every other broker-scoped read uses. The task of inventing a
+  permission scheme was deliberately not undertaken.
+- **Cursor pagination.** Rejected for consistency: D027, D031 and D034 all
+  use `limit`/`offset` in an `{items, limit, offset}` envelope, and D062's
+  own gap note asked for that convention by name. `limit` defaults to 50
+  and is capped at 500; 501, 0 and a negative `offset` are 422s from
+  FastAPI's own validation, never silently clamped.
+
+Two shape decisions worth recording, both about not inventing facts:
+
+1. **No `order_type` field, because there is no order-type column.**
+   `orders` records `side`, `quantity`, `estimated_price` and an optional
+   `stop_price`; it has no `order_type` or `time_in_force`. Emitting a
+   constant `"market"` would read as a recorded fact about each row rather
+   than as a property of the whole system, so the field is omitted
+   entirely and the omission is documented in `docs/API.md` and in
+   `schemas_orders.py`'s module docstring. A future frontend that wants to
+   display an order type must get a schema change first.
+2. **`broker_kind` is a real join, not an inference.** `orders` has no
+   paper/live column — `Broker.kind` is the one discriminator (spec §51,
+   D058) — so the paper/live label on every row is the actual `brokers.kind`
+   for that row's broker, taken from the `Broker` row
+   `require_broker_access` has already loaded. Nothing infers "this was
+   probably a paper order" from which adapter ran or from the presence of a
+   `broker_accounts` row. It is repeated per row rather than once per
+   response so a client merging pages from several brokers still labels
+   each line honestly.
+
+`OrderResponse` is rendered by one function shared by the listing and the
+detail route, so an order read one way cannot disagree with the same order
+read the other — the same discipline as `_to_history_entry` in
+`routes/portfolio.py`, and asserted in a test rather than left to
+convention. Rejected orders are deliberately **included** in the orders
+listing: an order the Risk Engine or Portfolio Manager refused is exactly
+the part of the trail that shows the controls working, and filtering them
+out would turn the endpoint into a record of successes. The fills blotter
+is a different grain rather than the same list filtered — a rejection
+contributes zero rows there and exactly one row to the orders listing.
+
+404 vs 403 is unchanged from `require_broker_access`: **404** for a broker
+id that does not exist, **403** for one that exists but which the caller
+holds no `BrokerGrant` for. The detail route additionally filters on
+`broker_id`, so a real order id belonging to another broker returns 404 —
+indistinguishable from an id that does not exist, so a caller with a grant
+on any one broker cannot use the route to probe order ids on every other.
+
+Fills for a page of orders are loaded with one explicit second `SELECT`
+grouped by `order_id`, **not** by adding an `Order.fills` relationship to
+`db/models.py`. A lazy-loading relationship on the ORM class the write path
+constructs is exactly the kind of change that surfaces as a `MissingGreenlet`
+somewhere inside `submit_trade_and_record()` rather than here, and this
+phase's whole premise is that it cannot touch the write path. The cost is
+one extra round trip per page.
+
+Deliberately NOT built: any write, cancel or amend route (`orders` is
+append-only by design — a re-attempt is a new row, D006); symbol/date/status
+filtering (nothing needs it yet, and the endpoints would have to grow query
+parameters this phase has no consumer for); a cross-broker "all my orders"
+listing (every existing read in this codebase is broker-scoped, and
+un-scoping one is an authorization design question, not a listing feature);
+an index tuned for `ORDER BY submitted_at DESC` on `broker_id` alone (the
+existing `ix_orders_broker_symbol_submitted` is a `(broker_id, symbol,
+submitted_at)` composite, so this sorts rather than scans it — a migration
+for that is a real but separate change, and current row counts do not
+justify one); and any frontend, which is a follow-up phase against this
+contract. `LIVE_TRADING_ENABLED`, the Risk Engine, the Portfolio Manager,
+the emergency stop, `apps/api/app/execution/`, `apps/api/app/oms/` and
+`apps/web/` were not touched at all — this branch's diff contains no
+change to any of them.
+
+Verified: **21 new integration tests** in `tests/api/test_order_history.py`
+against a real Postgres (empty listing; a filled order's every persisted
+field plus its real fill; newest-first ordering; a genuinely
+risk-rejected order carrying its block reason and zero fills; both D029
+quantities; the pagination boundary reassembling two pages into one; 422s
+on `limit=501`/`limit=0`/`offset=-1` across both listings with `limit=500`
+still accepted; detail byte-identical to the listing row; per-order fill
+grouping across a three-order page; a live-kind broker's order labelled
+`live`; unknown order id 404; a real order id from another broker 404 while
+still readable on its own broker; one broker's listing never containing
+another's; the fills blotter's grain, ordering and pagination; 403 without
+the permission, 403 without a grant, 403 for a second user holding a grant
+elsewhere, 404 for an unknown broker, 401 without a token; and 405 on
+POST/DELETE with the trail unchanged afterwards). Every order these tests
+read back was created by a real POST through the real trade path, never by
+a fixture INSERT — the one exception is the live-kind labelling test, which
+inserts the row directly because submitting a live trade would require an
+actually-configured live execution path (D058) and nothing in this phase
+may enable one.
+
+Also **live-verified over real HTTP**, not only through the test client:
+a real `uvicorn` on 127.0.0.1:8148 against a real Postgres on remapped
+port 55448 and Redis on 63448, seeded with three real users, two real
+brokers and three real grants. 33 checks, all passing — including four real
+filled orders and one genuinely risk-rejected order
+(`exceeds_max_position_size`, returned by the real engine, not simulated);
+the two-page reassembly; `limit=501` → 422 and `limit=500` → 200; detail
+byte-identical to its listing row; a real order id from broker B returning
+404 on broker A and 200 on B; 403 for a grant-less user on all three routes
+while that same user could still read the broker they *do* hold a grant for;
+405 on POST/DELETE with the four-row trail intact afterwards; and
+`GET /health` reporting `live_trading_enabled: false` throughout.
+
+Infrastructure: an isolated `timescale/timescaledb:2.15.3-pg16` + `redis:7`
+pair under a throwaway `tos-p48` compose project on host ports 55448/63448,
+and a fresh Python 3.13 venv outside the repo — never the user's own
+5432/6379/8000/3005 stack, following the D028/D033/D036/D043/D046/D063
+precedent. No `.env` file was created; every variable was passed
+per-command. No live credential exists in this branch and no external
+vendor was contacted.
+
+Status: Implemented and verified as above.
