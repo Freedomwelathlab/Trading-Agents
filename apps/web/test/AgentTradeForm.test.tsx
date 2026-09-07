@@ -222,44 +222,122 @@ describe("AgentTradeForm", () => {
     expect(screen.queryByText(/Portfolio Manager/i)).not.toBeInTheDocument();
   });
 
-  // --- Phase 47: the analyst breakdown the response does not carry ---
+  // --- Phase 52: the per-analyst reads the response now actually carries ---
 
-  it("states that no per-analyst breakdown exists, and invents none", async () => {
+  const TRADE_FIELDS = {
+    order_id: "ap-analysts",
+    status: "filled",
+    approved: true,
+    block_reason: null,
+    detail: null,
+    fill_quantity: "1",
+    fill_price: "123.45",
+    side: "buy",
+    quantity: "1",
+    rationale: "clean breakout above resistance",
+  };
+
+  it("renders all three analyst reads when the response carries all three", async () => {
     mockOnce({
-      order_id: "ap-analysts",
-      status: "filled",
-      approved: true,
-      block_reason: null,
-      detail: null,
-      fill_quantity: "1",
-      fill_price: "123.45",
-      side: "buy",
-      quantity: "1",
-      rationale: "clean breakout above resistance",
+      ...TRADE_FIELDS,
+      technical_analyst: {
+        stance: "bullish",
+        summary: "Trading above its 20-day average.",
+        confidence: "0.7",
+        indicator_context: "SMA(20)=118.20, RSI(14)=61.40",
+      },
+      fundamental_analyst: {
+        stance: "neutral",
+        summary: "A P/E of 25 with no growth figures reported.",
+        confidence: "0.4",
+        data_source: "longbridge",
+        fundamentals_as_of: "2026-09-01T12:00:00Z",
+      },
+      news_analyst: {
+        stance: "bearish",
+        summary: "Three recent headlines, none positive.",
+        confidence: "0.6",
+        headline_count: 3,
+      },
     });
     await submit();
 
-    // The response schema (AgentTradeResponse) carries no analyst field of
-    // any kind, so the UI must say so rather than imply a breakdown.
+    const technical = screen.getByTestId("technical-analyst");
+    expect(technical).toHaveAttribute("data-analyst-state", "read");
+    expect(technical).toHaveAttribute("data-stance", "bullish");
+    expect(technical).toHaveTextContent("Trading above its 20-day average.");
+    expect(technical).toHaveTextContent("0.7");
+    // D021's real, deterministically-computed values, shown verbatim.
+    expect(technical).toHaveTextContent("SMA(20)=118.20, RSI(14)=61.40");
+
+    const fundamental = screen.getByTestId("fundamental-analyst");
+    expect(fundamental).toHaveAttribute("data-analyst-state", "read");
+    expect(fundamental).toHaveTextContent(/P\/E of 25/);
+    expect(fundamental).toHaveTextContent("longbridge");
+
+    const news = screen.getByTestId("news-analyst");
+    expect(news).toHaveAttribute("data-analyst-state", "read");
+    expect(news).toHaveAttribute("data-stance", "bearish");
+    expect(news).toHaveTextContent("Three recent headlines, none positive.");
+    expect(news).toHaveTextContent("3");
+
+    // The obsolete Phase 47 caveat is gone: a breakdown now exists.
     expect(
-      screen.getByTestId("analyst-breakdown-unavailable"),
-    ).toHaveTextContent(/No per-analyst breakdown/i);
+      screen.queryByTestId("analyst-breakdown-unavailable"),
+    ).not.toBeInTheDocument();
 
-    // No fabricated per-analyst panel, score or verdict anywhere.
-    expect(screen.queryByTestId("technical-analyst")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("fundamental-analyst")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("news-analyst")).not.toBeInTheDocument();
-
-    // The real fields the response DOES carry are still rendered.
+    // The real trade fields are still rendered, unchanged.
     expect(screen.getByText(/clean breakout above resistance/)).toBeInTheDocument();
     expect(screen.getByText("buy")).toBeInTheDocument();
   });
 
-  it("shows no analyst note before a trade has been proposed", () => {
+  it("says a null analyst produced no read, and invents nothing for it", async () => {
+    mockOnce({
+      ...TRADE_FIELDS,
+      technical_analyst: null,
+      fundamental_analyst: null,
+      news_analyst: {
+        stance: "neutral",
+        summary: "Quiet news flow this week.",
+        confidence: "0.2",
+        headline_count: 2,
+      },
+    });
+    await submit();
+
+    for (const testId of ["technical-analyst", "fundamental-analyst"]) {
+      const panel = screen.getByTestId(testId);
+      expect(panel).toHaveAttribute("data-analyst-state", "no-read");
+      expect(panel).toHaveTextContent(/No read on this request/i);
+      // Never a fabricated stance or confidence standing in for absence.
+      expect(panel).not.toHaveAttribute("data-stance");
+      expect(panel).not.toHaveTextContent(/bullish|bearish|neutral/i);
+      expect(panel).not.toHaveTextContent(/confidence/i);
+    }
+
+    // Nullability is per analyst: the one that did run is shown in full.
+    const news = screen.getByTestId("news-analyst");
+    expect(news).toHaveAttribute("data-analyst-state", "read");
+    expect(news).toHaveTextContent("Quiet news flow this week.");
+  });
+
+  it("renders no analyst section at all for an older-shaped response", async () => {
+    // No analyst key of any kind — a body from before Phase 52. Nothing
+    // truthful can be said about the analysts, so nothing is said, exactly
+    // as PortfolioVerdict treats a response with no portfolio_* fields.
+    mockOnce(TRADE_FIELDS);
+    await submit();
+
+    expect(screen.queryByTestId("analyst-reads")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("technical-analyst")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("fundamental-analyst")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("news-analyst")).not.toBeInTheDocument();
+  });
+
+  it("shows no analyst section before a trade has been proposed", () => {
     render(<AgentTradeForm />);
-    expect(
-      screen.queryByTestId("analyst-breakdown-unavailable"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("analyst-reads")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("technical-analyst")).not.toBeInTheDocument();
   });
 
   it("surfaces the real NOT_CONFIGURED sentinel, not a fabricated trade", async () => {

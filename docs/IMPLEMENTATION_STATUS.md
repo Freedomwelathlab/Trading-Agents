@@ -1,4 +1,4 @@
-﻿# Implementation Status
+# Implementation Status
 
 Update this after meaningful implementation work — not for every commit.
 
@@ -2281,25 +2281,87 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
   separate migration — see D065), and the frontend trade-history panel,
   which is a follow-up phase against this now-documented contract.
 
-## Known Issues
+- Phase 52: per-analyst reads on the agent-trade response (2026-09-07,
+  D069). Closes the **second** and last of the two gaps Phase 47 (D062)
+  recorded — "`AgentTradeResponse` carries no analyst field at all… the
+  response can't even say whether any ran". D059's Technical, Fundamental
+  and News analysts have run server-side and fed the TraderAgent's prompt
+  since Phase 44; their reads were then discarded. They are now returned.
+  **Additive and read-only.** `POST /brokers/{broker_id}/agent-trades`
+  gains exactly three response fields — `technical_analyst`,
+  `fundamental_analyst`, `news_analyst` — backed by a shared
+  `AnalystReadOut` (`stance`/`summary`/`confidence`, mirroring
+  `TechnicalRead`/`FundamentalRead`/`NewsRead` field for field) plus one
+  subclass per analyst carrying only provenance the route already had:
+  `indicator_context` (the verbatim real `SMA(20)=…, RSI(14)=…` string from
+  D021's deterministic `indicators.py`, reported not recomputed),
+  `data_source` + `fundamentals_as_of` (straight off the vendor's
+  `CompanyFundamentals`), and `headline_count` (`len(headlines)` on the
+  exact list shown to the analyst). No request field, no new error
+  response, no migration, and nothing under `apps/api/app/execution/`,
+  `apps/api/app/oms/`, `apps/api/app/risk/`, `apps/api/app/portfolio_manager/`
+  or `apps/api/app/safety/`. `LIVE_TRADING_ENABLED` untouched.
+  **Nullable per analyst, exactly as D062 required.** All three keys are
+  always present; each is independently null because each analyst is
+  independently optional and independently failure-isolated. A null means
+  only that *this* analyst produced no read, and is never upgraded into a
+  synthesised neutral stance with a zero confidence (spec §57). It
+  deliberately carries no reason code — six real conditions collapse to it
+  and the specific one stays in the structured log, where it already was.
+  **Behaviour is unchanged, and that was checked rather than assumed.** The
+  three `_*_context()` helpers became `_*_read()` returning the structured
+  read; `_render_read()` became `_prompt_context()` rendering the same text
+  from it. A direct comparison over 24 stance × `Decimal` combinations
+  (including trailing-zero cases like `0.70`) confirms the trader-agent
+  prompt text is **byte-identical** to the pre-Phase-52 renderer.
+  **The documented flaky test is fixed, not re-documented.**
+  `tests/api/test_agent_trades.py` now has a `_no_real_analysts` autouse
+  fixture pinning all three analysts and all three market-data providers to
+  "not configured" for the whole module, so no test there can reach a real
+  `LLM_PROVIDER_BASE_URL`. Scoped to the module rather than the one named
+  test because the other five had identical exposure and merely weren't
+  timing-sensitive enough to have failed yet. The Known Issues entry is
+  deleted, not rewritten.
+  **Frontend** — `apps/web/components/AgentTradeForm.tsx` renders an
+  "Analyst reads" section with one clearly-labelled sub-panel per analyst:
+  the real stance/confidence/summary plus that analyst's provenance row
+  when a read exists, and an explicit "No read on this request" note when
+  the field is null. Three states are distinguished on purpose: an object
+  renders in full, `null` renders the honest no-read note, and an **absent**
+  key (an older-shaped response, which cannot be spoken for) renders
+  nothing at all — the same rule `PortfolioVerdict` already applies to a
+  body with no `portfolio_*` fields. The Phase 47 "no per-analyst
+  breakdown / needs a backend response-shape change" caveat is removed
+  because it is no longer true. `apps/web/app/dashboard/page.tsx` was not
+  touched — a sibling worktree was editing it.
+  **705 backend tests passing, up from a 698-test baseline measured on
+  this branch before any edit** — and that baseline was 697 passed **and
+  one failed**, the documented flake itself, which reproduced on the first
+  run because this machine's `.env` genuinely carries a
+  `LLM_PROVIDER_BASE_URL`. The post-change run is 705 passed, **0 failed**:
+  7 new tests in `tests/api/test_agent_trades.py` (6 → 13) and the
+  pre-existing failure gone. The previously-flaky duplicate-detection test
+  was then run standalone **six times, passing all six** (2.1–10.4s each)
+  against that same `.env`. Frontend **152 → 154**, 17/17 files, with the
+  two obsolete Phase 47 tests replaced by four covering all-three-present,
+  null-with-a-sibling-still-populated, older-shaped, and pre-submit.
+  `ruff check .`, `mypy apps` (99 source files), `npm run build` and
+  `bash scripts/secret_scan.sh` all clean.
+  **Live-verified over real HTTP** on a real `uvicorn` at 127.0.0.1:8152
+  against a second isolated Postgres/Redis (55433/56380), migrated and
+  seeded with `scripts/seed_e2e.py`: with all three analysts configured,
+  a real filled trade returned all three reads populated — including a
+  genuinely-computed `SMA(20)=105.5, RSI(14)=66.666…` — and with none
+  configured, the same trade filled with all three fields present and
+  `null`. `live_trading_enabled: false` on both runs; no external vendor
+  or LLM endpoint was contacted; both throwaway stacks were removed.
+  Test/live stacks used remapped ports throughout, never 5432/6379/8000/3005.
+  **Deliberately NOT built**: any reason code or status enum on a null
+  analyst field (see D069), structured numeric `sma`/`rsi` fields in place
+  of the verbatim `indicator_context` string, a `SentimentAnalyst` (still
+  out of scope per D059), and any change to which analysts run or when.
 
-`tests/api/test_agent_trades.py::test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicate`
-is environmentally flaky when a real `LLM_PROVIDER_BASE_URL` is active in
-`.env` (e.g. OmniRoute) AND that endpoint is slow or unreachable. The test
-mocks `TraderAgent` via `get_trader_agent` but does not override
-`TechnicalAnalyst`'s provider, so the request still attempts a real call;
-when that call hangs (~36s observed, twice, before failing) the wall-clock
-gap between the test's two identical submissions grows large enough that
-D024's duplicate-detection window closes, and the second submission comes
-back `filled` instead of the expected `rejected`. Root-caused during Phase
-48/49 merge verification (2026-09-03) via a full untruncated traceback and
-the `technical_analyst_unavailable` log lines it left behind; reproduced
-twice, confirmed unrelated to any code change (passes cleanly whenever the
-provider responds promptly, e.g. in CI or with `LLM_PROVIDER_BASE_URL`
-unset in `.env` itself, not just the shell). Not fixed in this pass — the
-real fix is to override `get_technical_analyst`/`get_fundamental_analyst`/
-`get_news_analyst` in this specific test the same way `get_trader_agent`
-already is, so the test no longer depends on any real network endpoint.
+## Known Issues
 
 Open, known-and-scoped limitations (not defects): the snapshot scheduler's
 market-hours gate is weekend-only — intraday after-hours and exchange
@@ -2307,10 +2369,8 @@ holidays are not checked (Phase 35/D042) — and each API worker process
 still runs its own independent scheduler loop, so >1 worker would multiply
 snapshot rows (D030).
 
-Of the two backend gaps identified by Phase 47 (D062) while building the
-frontend for them, **the first is now CLOSED by Phase 48 (D065)** — the
-order/fill listing endpoints exist, are documented in `docs/API.md`, and
-are covered by 21 integration tests. One remains:
+Both backend gaps identified by Phase 47 (D062) while building the frontend
+for them are now **CLOSED**:
 
 1. ~~**No order/fill list endpoint.**~~ **CLOSED (Phase 48, D065.)**
    `GET /brokers/{broker_id}/orders`, `.../orders/{order_id}` and
@@ -2319,12 +2379,14 @@ are covered by 21 integration tests. One remains:
    still outstanding is the *frontend* — a trade-history panel built
    against this contract is a follow-up phase, deliberately out of D065's
    backend-only scope.
-2. **`AgentTradeResponse` returns no per-analyst output.** D059's
-   Technical, Fundamental and News analysts run server-side and feed the
-   TraderAgent's prompt, but the response carries only the final decision
-   (`side`, `quantity`, `rationale`) plus the risk/portfolio verdicts — no
-   analyst field at all, so a client cannot even tell which analysts
-   contributed. Surfacing their real reasoning requires widening the
-   response shape; note each analyst is failure-isolated and may
-   legitimately have produced nothing, so any such field must be
-   nullable per analyst rather than implying all three always ran.
+2. ~~**`AgentTradeResponse` returns no per-analyst output.**~~
+   **CLOSED (Phase 52, D069.)** The response now carries
+   `technical_analyst`, `fundamental_analyst` and `news_analyst`, each
+   holding that analyst's real stance/summary/confidence plus the
+   provenance already present in the server's own inputs. Nullable **per
+   analyst**, exactly as that gap note required — a null is one analyst's
+   real absence and implies nothing about the other two, and is never
+   upgraded into a synthesised neutral read. The frontend renders all
+   three in `apps/web/components/AgentTradeForm.tsx`, and the Phase 47
+   "no analyst context in the response" caveat is gone because it is no
+   longer true.

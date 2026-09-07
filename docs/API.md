@@ -467,7 +467,8 @@ rejected the same way a human-submitted one would be, not silently
 allowed through.
 
 Response (200, `AgentTradeResponse` — `TradeSubmissionResponse` plus
-`side`, `quantity`, `rationale`):
+`side`, `quantity`, `rationale`, and since Phase 52 (D069) the three
+per-analyst read fields):
 ```json
 {
   "order_id": "...", "status": "filled", "approved": true,
@@ -476,7 +477,21 @@ Response (200, `AgentTradeResponse` — `TradeSubmissionResponse` plus
   "portfolio_detail": "No portfolio-level constraint is breached by this trade.",
   "portfolio_requested_quantity": "1",
   "fill_quantity": "1", "fill_price": "123.45",
-  "side": "buy", "quantity": "1", "rationale": "clean breakout above resistance"
+  "side": "buy", "quantity": "1", "rationale": "clean breakout above resistance",
+  "technical_analyst": {
+    "stance": "bullish",
+    "summary": "Price is above its 20-day average with RSI mid-range.",
+    "confidence": "0.7",
+    "indicator_context": "SMA(20)=118.20, RSI(14)=61.40"
+  },
+  "fundamental_analyst": {
+    "stance": "neutral",
+    "summary": "A P/E of 25 with no growth figures reported by the vendor.",
+    "confidence": "0.4",
+    "data_source": "longbridge",
+    "fundamentals_as_of": "2026-09-01T12:00:00Z"
+  },
+  "news_analyst": null
 }
 ```
 This route shares `_execute_trade()` with the human-submitted route, so
@@ -485,13 +500,50 @@ the Portfolio Manager (D029) applies identically here. Note that
 the Portfolio Manager shrank it, and `fill_quantity` is what actually
 traded.
 `rationale` is the agent's one-sentence explanation — informational only,
-never itself validated or acted on. If a `TechnicalAnalyst` is configured
-(D019) it reads the same live quote and, if a `HistoryProvider` is also
-configured (D021), real computed `SMA(20)`/`RSI(14)` values — its read
-becomes optional context in the `TraderAgent`'s prompt; absence or
-failure of either never blocks the request, and `rationale`/the response
-shape are unaffected either way (there's no field exposing the
-analyst's read directly in this response).
+never itself validated or acted on.
+
+### The three analyst fields (Phase 52, D069)
+
+`technical_analyst`, `fundamental_analyst` and `news_analyst` report what
+each of D059's three analysts actually returned **on this request**. They
+are additive: every other field above means exactly what it meant before
+Phase 52, and no analyst read can influence any of them.
+
+All three keys are **always present**. Each is **independently nullable**,
+because each analyst is independently optional and independently
+failure-isolated server-side:
+
+- **`null`** — *this* analyst produced no read on this request. It says
+  nothing whatsoever about the other two.
+- **an object** — that analyst's real, schema-validated output.
+
+`null` deliberately does **not** distinguish "not configured" from "ran
+and failed" (a missing analyst, a missing data vendor, a symbol the vendor
+doesn't cover, a vendor failure, or an unparseable LLM response all
+produce `null`). Both cases are already handled identically inside the
+trade path, and the specific reason is recorded in the server's structured
+logs (`technical_analyst_unavailable`, `fundamentals_provider_unavailable`,
+`news_analyst_unavailable`, …). Encoding a reason here would invite a
+consumer to render one; a synthesised "no signal" read is exactly what
+spec §57 forbids. **A missing read is `null`, never a manufactured neutral
+stance with a zero confidence.**
+
+Every read shares the same `AnalystReadOut` core — `stance`
+(`bullish`/`bearish`/`neutral`), `summary`, `confidence` (a decimal string
+in `[0, 1]`) — mirroring `TechnicalRead`/`FundamentalRead`/`NewsRead` field
+for field. Each then adds only provenance that already existed in the
+server's own inputs; nothing is derived for the response:
+
+| Field | Analyst | What it is |
+| --- | --- | --- |
+| `indicator_context` | technical | The verbatim `SMA(20)=…, RSI(14)=…` string the analyst was handed — real values computed deterministically by `indicators.py`, never by the LLM (D021). `null` when no `HistoryProvider` is configured, the vendor call failed, or the series was too short for either window; the analyst then commented on the single live quote alone. |
+| `data_source` | fundamental | Which `FundamentalsProvider` produced the figures, verbatim off `CompanyFundamentals.source`. |
+| `fundamentals_as_of` | fundamental | Timestamp of the most recent valuation point the vendor actually returned. `null` when the vendor dated nothing — never filled in with "now". |
+| `headline_count` | news | How many real headlines the read is based on, counted in code from the exact list shown to the analyst — never a number the model stated. Always ≥ 1. |
+
+Like the domain models they mirror, these carry **no** side, quantity,
+price or stop field, so nothing in an analyst read can be mistaken by a
+consumer for a trade proposal (docs/AGENT_POLICY.md, spec §62).
 
 Error responses: same 401/403/404 as the human-submitted route, plus 400
 `NOT_CONFIGURED:` if no LLM provider is wired
@@ -500,17 +552,22 @@ data vendor is wired; 502 `AGENT_OUTPUT_INVALID:` if the provider's
 response isn't parseable/valid JSON matching the expected schema — never
 a fabricated trade in either failure case.
 
-Request/response shape unchanged since D018. As of Phase 16 (D019), when
+The **request** shape is unchanged since D018. As of Phase 16 (D019), when
 a `TechnicalAnalyst` is configured (same `LLM_PROVIDER_*` connection as
 the trader agent — no separate config), its read of the same live quote
-is appended to the `TraderAgent`'s prompt as informational-only context,
-invisible to the caller — no new request or response field. If no
-analyst is configured, or its read fails/doesn't parse, the trade
+is appended to the `TraderAgent`'s prompt as informational-only context.
+If no analyst is configured, or its read fails/doesn't parse, the trade
 proceeds exactly as before Phase 16 with no context appended — this never
 produces a new error response, since the analyst is optional.
 
+Until Phase 52 that read was invisible to the caller; it is now reported
+in `technical_analyst` as described above. What did **not** change in
+Phase 52 is any of the behaviour: the same analysts run at the same point
+on the same conditions, and the prompt text built from their reads is
+byte-identical. The reads are simply returned as well as used.
+
 As of Phase 44 (D059) two more analysts join on exactly the same footing,
-still with **no new request or response field** and no new error response:
+with no new request field and no new error response:
 
 - `FundamentalAnalyst` — narrates real company fundamentals (company name,
   vendor category, P/E, P/B, P/S, dividend yield, and an earnings yield
@@ -527,13 +584,14 @@ its LLM analyst and its data vendor configured to contribute anything: with
 no vendor data there is nothing real to narrate, and narrating without data
 is exactly what spec §57 forbids.
 
-All three analysts now run concurrently and are independently
+All three analysts run concurrently and are independently
 failure-isolated. Any of these — no analyst configured, no vendor
 configured, a symbol the vendor doesn't cover (`DataUnavailableError`), a
-vendor failure, or an unparseable LLM response — silently omits that one
-analyst's paragraph of context. None of them can block the trade, change
-the response shape, or supply a price, side, or quantity. A
-`SentimentAnalyst` is deliberately **not** implemented — see D059.
+vendor failure, or an unparseable LLM response — omits that one analyst's
+paragraph of context from the prompt and reports that one analyst's field
+as `null` (Phase 52). None of them can block the trade, produce an error
+response, or supply a price, side, or quantity. A `SentimentAnalyst` is
+deliberately **not** implemented — see D059.
 
 ## `GET /brokers/{broker_id}/portfolio`
 

@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from apps.api.app.agents.technical_analyst import Stance
 from apps.api.app.db.models import OrderStatus
 from apps.api.app.portfolio_manager.models import PortfolioAction, PortfolioConstraint
 from apps.api.app.risk.models import BlockReason, Side
@@ -91,6 +92,58 @@ class AgentTradeRequest(BaseModel):
     marks: dict[str, Decimal] = Field(default_factory=dict)
 
 
+class AnalystReadOut(BaseModel):
+    """The stance/summary/confidence contract every analyst read shares
+    (Phase 52). Mirrors TechnicalRead/FundamentalRead/NewsRead field for
+    field - those three models are already deliberately identical
+    (docs/DECISIONS.md D059), so this HTTP projection is one shape rather
+    than three near-copies.
+
+    Read-only by construction, exactly like the domain models it mirrors:
+    no side, quantity, price or stop field exists here either, so nothing
+    in an analyst read can be mistaken for a trade proposal by a consumer
+    of this response any more than it can be inside the server.
+    """
+
+    stance: Stance
+    summary: str
+    confidence: Decimal
+
+
+class TechnicalAnalystReadOut(AnalystReadOut):
+    indicator_context: str | None
+    """The verbatim indicator string the analyst was handed - the real
+    `SMA(20)=...`/`RSI(14)=...` values computed deterministically by
+    apps/api/app/marketdata/indicators.py (never by the LLM, D021).
+
+    Null when no HistoryProvider is configured, when the vendor call
+    failed, or when the series was too short for either window. Null is
+    the honest answer in all three cases: the analyst then commented
+    qualitatively on the single live quote alone, and no indicator value
+    it wasn't given exists to report."""
+
+
+class FundamentalAnalystReadOut(AnalystReadOut):
+    data_source: str
+    """Which FundamentalsProvider produced the figures this read narrates,
+    verbatim off `CompanyFundamentals.source` - the same audit-trail
+    reasoning as `MarketSnapshot.source`."""
+    fundamentals_as_of: datetime | None
+    """Timestamp of the most recent valuation data point the vendor
+    actually returned. Null when the vendor dated nothing - never filled
+    in with "now", which would misrepresent stale figures as fresh
+    (`CompanyFundamentals.as_of`)."""
+
+
+class NewsAnalystReadOut(AnalystReadOut):
+    headline_count: int
+    """How many real headlines this read is based on - counted in code
+    from the exact list shown to the analyst, never a number the model
+    stated. Always >= 1: an empty headline list is DATA_UNAVAILABLE at the
+    provider layer and never reaches an analyst, so there is no read to
+    return in that case at all."""
+
+
 class AgentTradeResponse(TradeSubmissionResponse):
     side: Side
     quantity: Decimal
@@ -100,3 +153,31 @@ class AgentTradeResponse(TradeSubmissionResponse):
     rationale: str
     """The agent's one-sentence explanation - informational only, never
     itself validated or acted on (docs/AGENT_POLICY.md)."""
+
+    technical_analyst: TechnicalAnalystReadOut | None
+    fundamental_analyst: FundamentalAnalystReadOut | None
+    news_analyst: NewsAnalystReadOut | None
+    """Phase 52: what each of D059's three analysts actually returned on
+    THIS request, closing the gap D062 recorded ("nothing about them is
+    returned; the response can't even say whether any ran").
+
+    Nullable PER ANALYST, not as a group, because that is the truth of the
+    server-side design: the three run concurrently and are independently
+    failure-isolated, so any combination of them may have produced a read.
+    A null here means exactly one thing - THIS analyst produced no read on
+    this request - and says nothing whatsoever about the other two.
+
+    Null deliberately does NOT distinguish "not configured" from "ran and
+    failed". Both are already handled identically everywhere else in the
+    trade path (the context is simply omitted, the trade proceeds), and
+    the reason is recorded in the server's structured logs. Encoding a
+    reason string here would invite a consumer to render one, and a
+    synthesised "no signal" read is precisely the fabrication spec Sec57
+    forbids - a missing read is null, never a manufactured neutral stance
+    with a zero confidence.
+
+    These three fields are additive only. Every field above them means
+    exactly what it meant before this phase, and no analyst can influence
+    any of them: the Risk Engine and Portfolio Manager verdicts, the
+    side/quantity/status the trade actually got, and the price are all
+    produced by paths no analyst read touches."""

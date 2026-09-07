@@ -6584,3 +6584,203 @@ added here can place, size, or influence an order.
 
 Status: Implemented and verified as above.
 
+**D069 — Phase 52: the agent-trade response reports what each analyst actually said, nullable per analyst, closing D062's last recorded gap**
+
+Numbering note: this worktree branched from `main` at `81a18fa`, where
+`docs/DECISIONS.md` ended at **D067**, and originally claimed **D068** —
+the next free number at branch time, still free when re-checked just
+before this entry was written. The concurrently-run sibling worktree
+(`worktree-agent-aa6de4e558e172c5b`, the frontend order/fill history panel
+that Phase 48/D065 deferred) branched from the same `81a18fa`, claimed
+D068 for its own entry, and **merged to `main` first** as
+`87d6882 feat: frontend order/fill history panel (Phase 51, D068)`. This
+entry is therefore renumbered to **D069**, exactly as D063, D065 and D067
+were renumbered for the same reason. The phase number is **52**, and that
+is now settled rather than predicted: the sibling took 51.
+
+The two branches overlap only in `docs/API.md`, `docs/DECISIONS.md` and
+`docs/IMPLEMENTATION_STATUS.md` — no source file is touched by both. In
+particular the Phase 51 panel is `apps/web/components/TradeHistory.tsx`
+plus `apps/web/app/dashboard/page.tsx`, neither of which this phase edits,
+and this phase's `apps/web/components/AgentTradeForm.tsx` is not one that
+phase edits.
+
+Reason: D062 (Phase 47) built the agent-trade frontend and recorded what
+it could not honestly show — "`AgentTradeResponse` carries no analyst field
+at all… nothing about them is returned; the response can't even say
+whether any ran (each is failure-isolated and may return `None`)". It also
+prescribed the fix: "a future backend phase widening the shape should make
+each analyst field nullable **per analyst**, not imply all three always
+ran." This phase is that shape change, taken exactly as prescribed. The
+last of the two gaps D062 recorded is now closed (the first closed at
+D065).
+
+**What was added.** Four schemas in `apps/api/app/api/schemas.py` and
+three fields on `AgentTradeResponse`:
+
+- `AnalystReadOut` — `stance`/`summary`/`confidence`, mirroring
+  `TechnicalRead`/`FundamentalRead`/`NewsRead` field for field. Those three
+  domain models were already deliberately identical (D059), so the HTTP
+  projection is **one** shape rather than three near-copies.
+- `TechnicalAnalystReadOut` adds `indicator_context`,
+  `FundamentalAnalystReadOut` adds `data_source` + `fundamentals_as_of`,
+  `NewsAnalystReadOut` adds `headline_count`.
+
+**Nothing here is derived for the response.** Every added field is a value
+the route already had in hand and already gave the analyst:
+`indicator_context` is the verbatim string built from
+`indicators.sma`/`indicators.rsi` (D021) — reported, not recomputed;
+`data_source`/`fundamentals_as_of` come straight off the vendor's own
+`CompanyFundamentals`; `headline_count` is `len(headlines)` on the exact
+list shown to the analyst, which is the same number the prompt tells the
+model to cite. `AnalystReadOut` deliberately carries **no** side, quantity,
+price or stop field, so the read is as unmistakable-for-a-proposal on the
+wire as it already is in memory (spec §62).
+
+**Why nullable per analyst, and why null carries no reason.** The three
+analysts run concurrently and each is independently failure-isolated
+(D059), so any subset of them may have produced a read. A single
+"analysts" object, or three fields that move together, would misrepresent
+that. So each field is independently `X | None`, and a null means exactly
+one thing: *this* analyst produced no read on this request.
+
+Null deliberately does **not** distinguish "not configured" from "ran and
+failed". Six different real conditions collapse to it — no analyst, no
+vendor, a symbol the vendor doesn't cover, a vendor failure, an LLM call
+failure, an unparseable response — and every one of them is already
+handled identically inside the trade path (omit the context, proceed).
+The specific reason is where it has always been: the structured log
+(`technical_analyst_unavailable`, `fundamentals_provider_unavailable`,
+`news_analyst_unavailable`, …). Putting a reason string in the response
+would invite a consumer to render it as a finding, and the failure mode
+one step past that is a synthesised "no signal" read — a neutral stance
+with a zero confidence — which is precisely the fabrication spec §57
+forbids. **A missing read is `null`, never a manufactured one.**
+
+**All three keys are always present**, never omitted. "The field is absent"
+and "the analyst produced nothing" are different claims, and only the
+second is ever true of a Phase 52 response. The frontend uses that
+distinction: an absent key means an older-shaped body it cannot speak for,
+and it renders nothing at all — the same rule `PortfolioVerdict` already
+applies to a response with no `portfolio_*` fields.
+
+**Strictly additive, and provably so.** The three `_*_context()` helpers in
+`routes/trades.py` were renamed to `_*_read()` and now return the
+structured read instead of pre-rendered prompt text; `_render_read()`
+became `_prompt_context()`, which renders that same text from the read.
+The reads are now used twice — appended to the prompt, then returned —
+rather than rendered once and discarded. Nothing else moved: the analysts
+run at the same point, on the same conditions, with the same failure
+isolation, and the trade decision above them is the same
+`TradeSubmissionResponse` `_execute_trade()` has always produced. The
+prompt text is byte-identical, checked directly rather than assumed: 24
+stance × `Decimal` combinations (including trailing-zero cases like
+`0.70`, where a re-validation could plausibly have normalised the string)
+render identically through the old and new code paths.
+
+**The flaky duplicate-detection test is fixed here, not merely documented.**
+`tests/api/test_agent_trades.py` overrode `get_trader_agent` but never the
+three analysts, so every test in the module could make a real call to
+whatever `LLM_PROVIDER_BASE_URL` was set in `.env`. A `_no_real_analysts`
+autouse fixture now pins all three analysts *and* their three market-data
+providers to "not configured" for the whole module, and an `analysts()`
+context manager opts specific ones back in with fakes. The scope is the
+module rather than the one named test on purpose: the other five tests had
+the identical exposure and only differed in not being timing-sensitive
+enough to have failed yet. The Known Issues entry is deleted rather than
+rewritten — a fixed issue is gone, not renamed.
+
+Alternatives rejected:
+
+- **A single `analysts` object with three sub-keys.** Reads as a unit that
+  either ran or didn't. The whole point of D062's note is that they don't.
+- **`analyst_status: "not_configured" | "failed" | "ok"` per analyst.**
+  Rejected above: the server does not currently distinguish those two
+  failure classes at the point of return, and inventing a distinction the
+  code doesn't make is a fabrication of a different kind.
+- **Structured `sma`/`rsi` numeric fields instead of `indicator_context`.**
+  The string is what the analyst was actually handed; splitting it would
+  mean the response reports something subtly different from what the read
+  was based on. If a consumer ever needs the numbers separately, the honest
+  change is to make the *route* compute them structurally and hand the
+  analyst the same structure — not to re-parse them for display.
+- **Returning the raw `TechnicalRead`/`FundamentalRead`/`NewsRead` domain
+  models directly.** `apps/api/app/api/schemas.py` exists precisely so the
+  HTTP contract can move independently of the domain layer (its own module
+  docstring says so). The projection reuses `Stance` — the real shared
+  enum — but not the models.
+- **Omitting the key when an analyst produced nothing.** Cheaper on the
+  wire and strictly worse: it makes "absent" ambiguous between "no read"
+  and "old server", which is the one distinction the frontend needs.
+
+Verification (2026-09-07, branch `phase-52-agent-trade-analyst-reads`, cut
+from `main` at `81a18fa`), on an isolated Postgres/Redis on remapped ports
+55432/56379 — never the 5432/6379/8000/3005 stack, following the
+D028/D033/D036/D043/D046/D063/D065/D067 convention:
+
+- Backend: **705 passing, up from a 698-test baseline measured on this
+  branch before any edit.** That baseline was **697 passed and 1 failed** —
+  and the one failure was the documented flake itself, which reproduced on
+  the very first run because this machine's `.env` really does carry
+  `LLM_PROVIDER_BASE_URL=http://127.0.0.1:20128`. The post-change run is
+  **705 passed, 0 failed**: +7 new tests in
+  `tests/api/test_agent_trades.py` (6 → 13) and the pre-existing failure
+  gone. No test was deleted, skipped or weakened, and no existing
+  assertion about an existing response field was changed.
+- The previously-flaky
+  `test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicate`
+  was then run **standalone six times, passing all six**, in 2.1–10.4s
+  each — against the same `.env` that produced the ~36s hangs the Known
+  Issues entry recorded. It is hermetic now, not lucky.
+- Prompt-identity check: 24 stance × `Decimal` combinations rendered
+  through both the pre-Phase-52 `_render_read()` and the new
+  `_prompt_context()`; **zero mismatches**, including `0.70` and `.5`,
+  where a pydantic re-validation could plausibly have normalised the
+  string. This is what makes "no trader-agent prompt changed" a measured
+  claim rather than an argument.
+- Frontend: **152 → 154** tests passing, 17/17 files. The two obsolete
+  Phase 47 tests (which asserted the absence of any analyst field) were
+  replaced by four: all three reads present, a null read rendering an
+  honest no-read note while a sibling read still renders in full, an
+  older-shaped response rendering no analyst section at all, and nothing
+  rendered before a trade is proposed. `npm run build` clean.
+- `ruff check .` clean; `mypy apps` clean (99 source files);
+  `bash scripts/secret_scan.sh` clean. (Note for Windows checkouts: the
+  scan script is checked out CRLF here and needs LF to run under bash —
+  a pre-existing checkout artifact, not a change from this phase; CI runs
+  it on Linux unaffected.)
+- **Live-verified over real HTTP**, not only through the test client: a
+  real `uvicorn` on 127.0.0.1:8152 against a second isolated Postgres on
+  55433 / Redis on 56380, migrated and seeded with `scripts/seed_e2e.py`'s
+  real users, brokers and grants. Two runs against the same real trade
+  path, differing only in dependency overrides for the optional agents
+  (the technique D067's live verification used):
+  - **All three analysts configured** — 200, `status: filled`, and all
+    three fields populated with the analysts' own stances, summaries and
+    confidences, plus `indicator_context` carrying genuinely-computed
+    `SMA(20)=105.5, RSI(14)=66.66666666666666666666666667` from
+    `indicators.py`, `data_source`/`fundamentals_as_of` off the vendor
+    record, and `headline_count: 4` matching the exact list shown. No
+    analyst read carried a `side`/`quantity`/`price`/`stop_price`/`order_id`
+    field.
+  - **No analyst configured** — 200, `status: filled`, `fill_price: "100"`,
+    and all three fields **present and `null`**. The trade succeeded with
+    no analyst context at all, proving an absent analyst is not a
+    degraded trade path.
+  - `GET /health` reported `live_trading_enabled: false` on both runs. No
+    external vendor or LLM endpoint was contacted (every provider was a
+    stub), no `.env` was created, and both throwaway stacks were removed
+    afterwards.
+
+Scope discipline: the diff is six files — `apps/api/app/api/schemas.py`,
+`apps/api/app/api/routes/trades.py`, `tests/api/test_agent_trades.py`,
+`apps/web/components/AgentTradeForm.tsx`,
+`apps/web/test/AgentTradeForm.test.tsx`, and docs. Nothing under
+`apps/api/app/execution/`, `apps/api/app/oms/`, `apps/api/app/risk/`,
+`apps/api/app/portfolio_manager/` or `apps/api/app/safety/` is touched;
+there is no migration; `LIVE_TRADING_ENABLED` is untouched and the route
+remains paper-only. `apps/web/app/dashboard/page.tsx` was deliberately not
+touched — the concurrent sibling worktree is editing it.
+
+Status: Implemented and verified as above.
+

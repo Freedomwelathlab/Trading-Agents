@@ -34,6 +34,15 @@ symbol, or a failed call simply omits that one paragraph of context. None
 of them can block a trade, and none of them can supply a price, quantity,
 or side. SentimentAnalyst is explicitly out of scope - see D059 for why.
 
+Phase 52 returns those three reads to the caller instead of discarding
+them, as `technical_analyst`/`fundamental_analyst`/`news_analyst` on
+AgentTradeResponse. Strictly additive and strictly a read: the analysts
+run exactly when and how they ran before, the prompt text they produce is
+byte-identical, and the trade decision above them is untouched. Each field
+is nullable ON ITS OWN because each analyst is optional and
+failure-isolated on its own - a null is the real absence of that one
+read, never a manufactured neutral one (spec Sec57).
+
 D024 adds deterministic duplicate-order detection: `_execute_trade()`
 (shared by both routes below, so a human-submitted and an LLM-originated
 trade get identical protection) queries this broker+symbol's recent
@@ -111,6 +120,10 @@ from apps.api.app.api.dependencies import (
 from apps.api.app.api.schemas import (
     AgentTradeRequest,
     AgentTradeResponse,
+    AnalystReadOut,
+    FundamentalAnalystReadOut,
+    NewsAnalystReadOut,
+    TechnicalAnalystReadOut,
     TradeSubmissionRequest,
     TradeSubmissionResponse,
 )
@@ -164,25 +177,37 @@ the analyst cites a deterministically-counted set, and an unbounded list
 would grow the prompt without improving a three-sentence read."""
 
 
-def _render_read(stance: str, confidence: Decimal, summary: str) -> str:
+def _prompt_context(read: AnalystReadOut | None) -> str | None:
     """The one rendering of an analyst read into trader-agent prompt text,
-    shared by all three analysts (D019's original format, unchanged) so no
-    analyst's context can drift into a different shape."""
-    return f"stance={stance}, confidence={confidence}: {summary}"
+    shared by all three analysts (D019's original format, byte for byte)
+    so no analyst's context can drift into a different shape.
+
+    Phase 52 changed only what this is called with: the three helpers now
+    return the structured read itself rather than pre-rendered text, so the
+    same read can be BOTH appended to the prompt and returned to the
+    caller. The string produced here is unchanged, which is why widening
+    the response cannot have changed a single trader-agent prompt."""
+    if read is None:
+        return None
+    return f"stance={read.stance.value}, confidence={read.confidence}: {read.summary}"
 
 
-async def _technical_context(
+async def _technical_read(
     *,
     symbol: str,
     price: Decimal,
     as_of: datetime,
     technical_analyst: TechnicalAnalyst | None,
     history_provider: HistoryProvider | None,
-) -> str | None:
-    """D019/D021, unchanged in behavior by D059 - only extracted into a
-    helper so the three analysts can run concurrently. Optional additional
+) -> TechnicalAnalystReadOut | None:
+    """D019/D021, unchanged in behavior by D059 or Phase 52 - the latter
+    only changed the return type from pre-rendered prompt text to the
+    structured read that text is rendered from. Optional additional
     context only: a failed or unavailable read must never block the trade,
-    and is never replaced with a fabricated one."""
+    and is never replaced with a fabricated one.
+
+    Every `return None` below is a real absence the caller surfaces as a
+    null `technical_analyst` field, never as an invented neutral read."""
     if technical_analyst is None:
         return None
 
@@ -219,15 +244,24 @@ async def _technical_context(
     except AnalystOutputError as exc:
         logger.warning("technical_analyst_unavailable", symbol=symbol, error=str(exc))
         return None
-    return _render_read(read.stance.value, read.confidence, read.summary)
+    return TechnicalAnalystReadOut(
+        stance=read.stance,
+        summary=read.summary,
+        confidence=read.confidence,
+        # The real, deterministically-computed values the analyst was
+        # handed (or None - it was handed none, and narrated the quote
+        # alone). Reported verbatim rather than re-derived here, so what
+        # the caller reads is exactly what the analyst read.
+        indicator_context=indicator_context,
+    )
 
 
-async def _fundamental_context(
+async def _fundamental_read(
     *,
     symbol: str,
     analyst: FundamentalAnalyst | None,
     provider: FundamentalsProvider | None,
-) -> str | None:
+) -> FundamentalAnalystReadOut | None:
     """D059: real vendor fundamentals -> a narrated read, or nothing.
 
     Requires BOTH a configured analyst and a configured provider: unlike
@@ -253,18 +287,26 @@ async def _fundamental_context(
     except AnalystOutputError as exc:
         logger.warning("fundamental_analyst_unavailable", symbol=symbol, error=str(exc))
         return None
-    return _render_read(read.stance.value, read.confidence, read.summary)
+    return FundamentalAnalystReadOut(
+        stance=read.stance,
+        summary=read.summary,
+        confidence=read.confidence,
+        # Provenance of the figures this read narrates, straight off the
+        # vendor's own record - not restated, defaulted, or freshened.
+        data_source=fundamentals.source,
+        fundamentals_as_of=fundamentals.as_of,
+    )
 
 
-async def _news_context(
+async def _news_read(
     *,
     symbol: str,
     analyst: NewsAnalyst | None,
     provider: NewsProvider | None,
-) -> str | None:
+) -> NewsAnalystReadOut | None:
     """D059: real recent headlines -> a narrated read, or nothing. Same
     both-required, never-blocking, never-fabricated posture as
-    _fundamental_context above."""
+    _fundamental_read above."""
     if analyst is None or provider is None:
         return None
 
@@ -285,7 +327,14 @@ async def _news_context(
     except AnalystOutputError as exc:
         logger.warning("news_analyst_unavailable", symbol=symbol, error=str(exc))
         return None
-    return _render_read(read.stance.value, read.confidence, read.summary)
+    return NewsAnalystReadOut(
+        stance=read.stance,
+        summary=read.summary,
+        confidence=read.confidence,
+        # The exact count the analyst was shown and told to cite, counted
+        # here in code from the same list - never the model's own number.
+        headline_count=len(headlines),
+    )
 
 
 def _require_paper_broker(authorized: AuthorizedBroker) -> None:
@@ -610,20 +659,27 @@ async def submit_agent_trade_endpoint(
     # cross-dependency"). Each helper is independently failure-isolated
     # and returns None rather than raising, so one analyst's vendor or
     # LLM failure can never affect the other two - or the trade.
-    technical_context, fundamental_context, news_context = await asyncio.gather(
-        _technical_context(
+    #
+    # Phase 52: each returns its structured read instead of pre-rendered
+    # prompt text. Same three values, same failure isolation, same
+    # never-blocking posture - the reads are now used TWICE (rendered into
+    # the prompt below, and returned to the caller at the end) rather than
+    # rendered once and discarded. Nothing about whether an analyst runs,
+    # or what the trade does, changed.
+    technical_read, fundamental_read, news_read = await asyncio.gather(
+        _technical_read(
             symbol=request.symbol,
             price=estimated_price,
             as_of=market_data_as_of,
             technical_analyst=technical_analyst,
             history_provider=history_provider,
         ),
-        _fundamental_context(
+        _fundamental_read(
             symbol=request.symbol,
             analyst=fundamental_analyst,
             provider=fundamentals_provider,
         ),
-        _news_context(
+        _news_read(
             symbol=request.symbol,
             analyst=news_analyst,
             provider=news_provider,
@@ -634,9 +690,9 @@ async def submit_agent_trade_endpoint(
         idea = await trader_agent.propose(
             symbol=request.symbol,
             directive=request.directive,
-            technical_context=technical_context,
-            fundamental_context=fundamental_context,
-            news_context=news_context,
+            technical_context=_prompt_context(technical_read),
+            fundamental_context=_prompt_context(fundamental_read),
+            news_context=_prompt_context(news_read),
         )
     except AgentOutputError as exc:
         raise HTTPException(status_code=502, detail=f"AGENT_OUTPUT_INVALID: {exc}") from None
@@ -663,6 +719,20 @@ async def submit_agent_trade_endpoint(
         submitted_by_user_id=authorized.user.id,
     )
 
+    # Phase 52: the trade decision above is returned exactly as it was
+    # before this phase - `**result.model_dump()` is the same
+    # TradeSubmissionResponse _execute_trade() has always produced, and
+    # side/quantity/rationale are the same three agent fields. The three
+    # analyst fields are purely additive, and each carries the real read
+    # that analyst produced or an explicit null. None of them is ever
+    # synthesised from another, and a null is never upgraded into a
+    # neutral read (spec Sec57).
     return AgentTradeResponse(
-        **result.model_dump(), side=idea.side, quantity=idea.quantity, rationale=idea.rationale
+        **result.model_dump(),
+        side=idea.side,
+        quantity=idea.quantity,
+        rationale=idea.rationale,
+        technical_analyst=technical_read,
+        fundamental_analyst=fundamental_read,
+        news_analyst=news_read,
     )

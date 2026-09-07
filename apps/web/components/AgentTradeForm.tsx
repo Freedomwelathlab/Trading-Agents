@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
 import { subscribeToBrokerSelection } from "@/lib/brokerSelection";
 import PortfolioVerdict, {
@@ -18,6 +18,33 @@ import {
   inputClass,
 } from "@/components/ui/primitives";
 
+/**
+ * The stance/summary/confidence contract every analyst read shares
+ * (`AnalystReadOut` on the backend). `confidence` is a string because the
+ * API serialises every Decimal as one, exactly like `fill_price`.
+ */
+type AnalystRead = {
+  stance?: string;
+  summary?: string;
+  confidence?: string;
+};
+
+/** Phase 52: `TechnicalAnalystReadOut`. `indicator_context` is the verbatim
+ * deterministically-computed SMA/RSI string the analyst was handed — null
+ * when no history provider was configured or the series was too short. */
+type TechnicalAnalystRead = AnalystRead & { indicator_context?: string | null };
+
+/** Phase 52: `FundamentalAnalystReadOut` — provenance of the figures the
+ * read narrates, straight off the vendor's own `CompanyFundamentals`. */
+type FundamentalAnalystRead = AnalystRead & {
+  data_source?: string;
+  fundamentals_as_of?: string | null;
+};
+
+/** Phase 52: `NewsAnalystReadOut`. `headline_count` is the exact number of
+ * real headlines the read is based on, counted in code, never by the model. */
+type NewsAnalystRead = AnalystRead & { headline_count?: number };
+
 type AgentTradeResponse = PortfolioVerdictFields & {
   order_id?: string;
   status?: "filled" | "rejected";
@@ -29,7 +56,91 @@ type AgentTradeResponse = PortfolioVerdictFields & {
   side?: string;
   quantity?: string;
   rationale?: string;
+
+  // Phase 52. Each is independently nullable because each analyst is
+  // independently optional and independently failure-isolated on the
+  // server: null means THIS analyst produced no read, and says nothing
+  // about the other two.
+  technical_analyst?: TechnicalAnalystRead | null;
+  fundamental_analyst?: FundamentalAnalystRead | null;
+  news_analyst?: NewsAnalystRead | null;
 };
+
+/**
+ * One analyst's real read, or an honest statement that there wasn't one.
+ *
+ * Three states, deliberately distinct (Phase 52):
+ *
+ * - `undefined` — the key is absent entirely, i.e. an older-shaped response
+ *   from before this field existed. Nothing truthful can be said about that
+ *   analyst, so nothing is rendered at all. Same rule `PortfolioVerdict`
+ *   already applies to an older-shaped response with no `portfolio_*` fields.
+ * - `null` — the server answered and this analyst produced no read. Rendered
+ *   as an explicit "no read", never as a neutral stance, a zero confidence,
+ *   or a synthesised "no signal" summary.
+ * - an object — the analyst's real, validated output. Only the values the
+ *   backend actually sent are shown; a missing sub-field is an em dash.
+ */
+function AnalystReadPanel({
+  name,
+  testId,
+  read,
+  extra = [],
+}: {
+  name: string;
+  testId: string;
+  read: AnalystRead | null | undefined;
+  /** Analyst-specific real fields, as [label, value] pairs. */
+  extra?: [string, string | null | undefined][];
+}) {
+  if (read === undefined) return null;
+
+  if (read === null) {
+    return (
+      <div
+        data-testid={testId}
+        data-analyst-state="no-read"
+        className="rounded-md border border-line bg-well px-3 py-2.5 text-sm text-ink-muted"
+      >
+        <p className="text-[11px] font-semibold uppercase tracking-[0.09em] opacity-70">
+          {name}
+        </p>
+        <p className="mt-1.5 leading-relaxed">
+          No read on this request. This analyst either isn&rsquo;t configured
+          or its read was unavailable; the response doesn&rsquo;t say which,
+          and nothing is assumed here. It contributed nothing to the proposal
+          above.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-testid={testId}
+      data-analyst-state="read"
+      data-stance={read.stance}
+      className="rounded-md border border-line bg-well px-3 py-2.5 text-sm text-ink"
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-[0.09em] opacity-70">
+        {name}
+      </p>
+      <dl className="mt-1.5 grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1.5 sm:grid-cols-[auto_1fr_auto_1fr]">
+        <VerdictTerm>stance</VerdictTerm>
+        <VerdictValue>{read.stance ?? "—"}</VerdictValue>
+        <VerdictTerm>confidence</VerdictTerm>
+        <VerdictValue>{read.confidence ?? "—"}</VerdictValue>
+        {extra.map(([label, value]) => (
+          <Fragment key={label}>
+            <VerdictTerm>{label}</VerdictTerm>
+            <VerdictValue>{value ?? "—"}</VerdictValue>
+          </Fragment>
+        ))}
+      </dl>
+      {read.summary && <p className="mt-2 leading-relaxed">{read.summary}</p>}
+    </div>
+  );
+}
 
 /** Parses "SYM=price, SYM2=price2" into the marks object the API expects. */
 function parseMarks(input: string): Record<string, string> {
@@ -185,19 +296,53 @@ export default function AgentTradeForm() {
             {result.detail && <p className="mt-2 leading-relaxed">{result.detail}</p>}
           </div>
           <PortfolioVerdict {...result} />
-          <Alert tone="info" role="status" testId="analyst-breakdown-unavailable">
-            <span className="font-semibold">No per-analyst breakdown.</span>{" "}
-            Everything above is a field this response actually contains. The
-            agent-trade response carries the TraderAgent&rsquo;s final decision
-            (<code className="font-mono">side</code>,{" "}
-            <code className="font-mono">quantity</code>,{" "}
-            <code className="font-mono">rationale</code>) and the two
-            deterministic verdicts — and no analyst field of any kind. It
-            therefore cannot be said here which of the Technical, Fundamental or
-            News analysts contributed to this proposal, or what any of them
-            concluded. Showing that needs a backend response-shape change, not a
-            frontend one.
-          </Alert>
+
+          {/* Phase 52: the per-analyst reads the response now actually
+              carries. Rendered only when the response has the fields at all —
+              an older-shaped body says nothing about the analysts, and this
+              panel never speaks for it. */}
+          {(result.technical_analyst !== undefined ||
+            result.fundamental_analyst !== undefined ||
+            result.news_analyst !== undefined) && (
+            <section data-testid="analyst-reads" className="flex flex-col gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.09em] text-ink-faint">
+                Analyst reads
+              </p>
+              <p className="max-w-prose text-xs leading-relaxed text-ink-faint">
+                Informational context that was appended to the agent&rsquo;s
+                prompt — never authoritative, and never a price, side or
+                quantity. Each analyst is independently optional, so one having
+                no read says nothing about the others. What actually gated this
+                trade is the deterministic Risk Engine and Portfolio Manager
+                above.
+              </p>
+              <AnalystReadPanel
+                name="Technical Analyst"
+                testId="technical-analyst"
+                read={result.technical_analyst}
+                extra={[
+                  ["indicators", result.technical_analyst?.indicator_context],
+                ]}
+              />
+              <AnalystReadPanel
+                name="Fundamental Analyst"
+                testId="fundamental-analyst"
+                read={result.fundamental_analyst}
+                extra={[
+                  ["source", result.fundamental_analyst?.data_source],
+                  ["figures as of", result.fundamental_analyst?.fundamentals_as_of],
+                ]}
+              />
+              <AnalystReadPanel
+                name="News Analyst"
+                testId="news-analyst"
+                read={result.news_analyst}
+                extra={[
+                  ["headlines read", result.news_analyst?.headline_count?.toString()],
+                ]}
+              />
+            </section>
+          )}
         </>
       )}
     </Panel>
