@@ -1175,18 +1175,38 @@ Things this shape does and does not claim:
   fact and is deliberately not done (D065).
 - **`estimated_price` is the requested price; the executed price is on the
   fill.** They are equal under the paper broker by construction.
-- **Rejected orders are included.** `status` is `filled` or `rejected` and
-  never pending — a row is written once, after the decision, and never
-  updated (§17). A rejection carries `risk_block_reason`/`risk_detail`
+- **Rejected orders are included**, and `status` has **four** members, not
+  two (corrected in Phase 51/D068 — this paragraph predated Phase 49/D066
+  and wrongly said `filled` or `rejected` with no pending state):
+  - `filled` — executed; the executed price is on the fill.
+  - `rejected` — **this system** blocked it (Risk Engine, emergency stop,
+    duplicate check, or Portfolio Manager) and it never reached a broker.
+  - `submitted_unconfirmed` — **the only non-terminal status** (D066). A
+    real order exists at a real broker and the broker has not yet reported
+    whether it executed; `broker_order_id` is never null on such a row.
+    `LiveOrderReconciler` later resolves it into a terminal status.
+  - `broker_closed_unfilled` — terminal (D066). The **broker** ended the
+    order having executed nothing (cancelled, expired, or rejected by the
+    venue); the venue's own word for it is kept verbatim in
+    `orders.broker_status`, which this response shape does not expose.
+
+  `rejected` and `broker_closed_unfilled` are deliberately distinct and
+  must not be collapsed by a client: the first never reached a venue, the
+  second did. A `rejected` row carries `risk_block_reason`/`risk_detail`
   when the Risk Engine stopped it and `portfolio_action: "reject"` when the
   Portfolio Manager did; a null `portfolio_action` means the Portfolio
   Manager never ran, never that it approved (D029).
 - **`quantity` vs `portfolio_requested_quantity`** differ exactly when
   `portfolio_action` is `modify` — that is what makes a D029 resize
   visible instead of silently rewritten.
-- `fills` is `[]` for a rejected order and has one entry for a filled one.
-  It is a list rather than a single object because `fills` is a separate
-  table precisely so partial fills are a later, schema-compatible addition.
+- `fills` has one entry for a `filled` order and is `[]` for every other
+  status — a `rejected` one, a `submitted_unconfirmed` one (no fill has
+  been reported yet) and a `broker_closed_unfilled` one (the venue
+  executed nothing). An empty `fills` is never a null or zero price, and a
+  client must not substitute `estimated_price` for a fill that did not
+  happen. It is a list rather than a single object because `fills` is a
+  separate table precisely so partial fills are a later,
+  schema-compatible addition.
 
 Error responses: 401 (no/invalid token), 403 (missing `portfolio:view`, or
 no `BrokerGrant` for this broker), 404 (unknown `broker_id`). An empty

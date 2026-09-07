@@ -7,6 +7,7 @@ import TradeForm from "@/components/TradeForm";
 import AgentTradeForm from "@/components/AgentTradeForm";
 import PortfolioView from "@/components/PortfolioView";
 import PortfolioHistoryChart from "@/components/PortfolioHistoryChart";
+import TradeHistory from "@/components/TradeHistory";
 import BacktestPanel from "@/components/BacktestPanel";
 import Watchlist from "@/components/Watchlist";
 
@@ -30,6 +31,15 @@ import Watchlist from "@/components/Watchlist";
  * - `BacktestPanel` is last and separate because, unlike everything above
  *   it, it is not broker-scoped at all — a run builds its own throwaway
  *   paper broker and writes nothing (D025).
+ *
+ * Phase 51 adds `TradeHistory` at the end of the same "Position &
+ * performance" band, full width and directly under the two portfolio
+ * panels. It belongs there rather than beside them: it is broker-scoped on
+ * the same `broker_id` (D034), it answers the "how did the account get
+ * here" question those two raise, and it is a nine-column table that would
+ * be unreadable in a half-width column. It stays above "Order entry" so
+ * the page reads state → history → action, and it is a read of the
+ * append-only trail only — it submits, cancels and amends nothing.
  *
  * Phase 50 adds `Watchlist` under its own "Research" heading, next to
  * `QuoteLookup`. Both are user-scoped, not broker-scoped — neither takes
@@ -56,6 +66,7 @@ export default function DashboardPage() {
           <PortfolioView className="xl:col-span-7" />
           <PortfolioHistoryChart className="xl:col-span-5" />
         </div>
+        <TradeHistory />
 
         <SectionHeading note="Not broker-scoped — no grant required">
           Research
