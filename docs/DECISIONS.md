@@ -6900,6 +6900,28 @@ D028/D033/D036/D043/D046/D063/D065/D067 convention:
     stub), no `.env` was created, and both throwaway stacks were removed
     afterwards.
 
+Re-verified **after merging `main` at `87d6882`** (Phase 51/D068) into this
+branch, since the numbers above were measured against the pre-Phase-51
+base `81a18fa`:
+
+- Backend **705 passed, 0 failed** — unchanged, as expected: Phase 51 added
+  no backend test (its only backend edit is a docstring in
+  `schemas_orders.py`).
+- Frontend **170 passed, 18/18 files** — this phase's 154 plus Phase 51's
+  16 in `apps/web/test/TradeHistory.test.tsx`. `npm run build` clean.
+- `ruff check .`, `mypy apps` (99 source files) and
+  `bash scripts/secret_scan.sh` all still clean on the merged tree.
+
+The merge conflicted only in `docs/DECISIONS.md` and
+`docs/IMPLEMENTATION_STATUS.md`, and only because both phases appended a
+new entry at the same anchor; `docs/API.md` auto-merged. Every conflict was
+resolved additively — Phase 51's text kept alongside Phase 52's — with one
+substantive choice: in the D062 gap list, gap 1 takes Phase 51's richer
+"FULLY CLOSED" wording (including the narrower `OrderResponse` gap it
+leaves behind), and gap 2 takes this phase's "CLOSED". The Known Issues
+flake entry stays deleted; `main` still carried it because Phase 51 did
+not touch it.
+
 Scope discipline: the diff is six files — `apps/api/app/api/schemas.py`,
 `apps/api/app/api/routes/trades.py`, `tests/api/test_agent_trades.py`,
 `apps/web/components/AgentTradeForm.tsx`,

@@ -2444,6 +2444,14 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
   `null`. `live_trading_enabled: false` on both runs; no external vendor
   or LLM endpoint was contacted; both throwaway stacks were removed.
   Test/live stacks used remapped ports throughout, never 5432/6379/8000/3005.
+  **Re-verified after merging `main` at `87d6882`** (Phase 51/D068), since
+  the counts above were measured against the pre-Phase-51 base `81a18fa`:
+  backend still **705 passed, 0 failed** (Phase 51 added no backend test),
+  frontend **170 passed / 18 files** (this phase's 154 plus Phase 51's 16),
+  with `ruff`, `mypy`, `npm run build` and `secret_scan.sh` all still clean.
+  The merge conflicted only in `docs/DECISIONS.md` and this file, only
+  because both phases appended an entry at the same anchor, and every
+  conflict was resolved additively.
   **Deliberately NOT built**: any reason code or status enum on a null
   analyst field (see D069), structured numeric `sma`/`rsi` fields in place
   of the verbatim `indicator_context` string, a `SentimentAnalyst` (still
