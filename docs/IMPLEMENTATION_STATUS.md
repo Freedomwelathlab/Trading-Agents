@@ -2281,6 +2281,94 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
   separate migration — see D065), and the frontend trade-history panel,
   which is a follow-up phase against this now-documented contract.
 
+- Phase 51: frontend order/fill history panel (2026-09-07, D068). Closes
+  the follow-up Phase 48/D065 named for itself — the audit trail was
+  readable with `curl` and a bearer token, which is not the same as
+  readable through the product. **Frontend only.**
+  `apps/api/app/api/routes/trades.py` and
+  `apps/api/app/api/routes/orders.py` were NOT modified, nothing under
+  `apps/api/app/execution/`, `risk/`, `oms/` or `portfolio_manager/` was
+  touched, no migration was added, and `LIVE_TRADING_ENABLED` was never
+  set. The single backend file in the diff is
+  `apps/api/app/api/schemas_orders.py`, and the only change to it is a
+  corrected docstring (prose, not logic).
+  **(1) Three route handlers** —
+  `apps/web/app/api/brokers/[brokerId]/orders/route.ts`,
+  `.../orders/[orderId]/route.ts` and `.../fills/route.ts` — proxying
+  D065's endpoints on the exact convention of
+  `app/api/portfolio/[brokerId]/history/route.ts`: awaited `params`, a 401
+  before any network call when the httpOnly auth cookie is absent (D020),
+  `limit`/`offset` allowlisted rather than forwarded blindly, a real
+  `503 DATA_UNAVAILABLE:` when the API is unreachable, and the backend's
+  own status and body passed through unchanged. The detail route forwards
+  no query params and passes D065's deliberate 404-for-both-cases through
+  untouched. `.../fills` is proxied although the panel reads the orders
+  listing: it is a different grain, not the orders list with rejections
+  filtered out.
+  **(2) `apps/web/components/TradeHistory.tsx`** — broker-scoped (D034,
+  via `subscribeToBrokerSelection`), on the Phase 45/D060 primitives, with
+  a nine-column table: `submitted_at`, symbol, side, quantity,
+  `estimated_price`, fill price, status, `broker_kind`,
+  `risk_block_reason`. Wired into `app/dashboard/page.tsx` full-width at
+  the end of the "Position & performance" band, above "Order entry", so
+  the page reads state → history → action.
+  **(3) All FOUR `OrderStatus` values are rendered as four things.** Phase
+  49/D066 added `submitted_unconfirmed` (the only non-terminal status) and
+  `broker_closed_unfilled`, but `docs/API.md` and `schemas_orders.py`'s
+  docstring both still claimed `status` "is `filled` or `rejected`" with
+  "no pending state". **Both stale claims were corrected in this phase** —
+  a panel built from that prose would have shipped a binary that
+  mislabels the two most consequential rows. `rejected` (THIS system
+  blocked it; it never reached a venue) and `broker_closed_unfilled` (it
+  reached a real broker, which ended it unexecuted) are given distinct
+  tones and distinct explanatory text and are never collapsed. An
+  unrecognised status renders verbatim with no tone and no invented
+  meaning.
+  **(4) Nothing invented where the response has no answer.** An order with
+  `fills: []` shows an em-dash for fill price — never `0.00`, never a
+  fallback to `estimated_price` (the evaluated, not executed, price). No
+  order-type column (there is none — D065) and no `broker_status` (D065's
+  shape does not project it), both recorded as absences rather than
+  guessed.
+  **(5) Real pagination.** Prev/Next re-request the backend with a new
+  `offset` rather than slicing a cached array. No total count is returned,
+  so Next is offered only while the current page came back full. The pager
+  renders outside the table block: paging past the last order returns a
+  real empty page, and controls living with the rows would vanish exactly
+  then and strand the reader — a bug found by clicking the real panel in a
+  browser, fixed, and covered by a test.
+  **168 web tests passing, up from a 152-test baseline measured on this
+  branch before any edit** (17 → 18 files; 16 new in
+  `apps/web/test/TradeHistory.test.tsx`, none deleted, skipped or
+  weakened). `npm run build` clean with all three handlers in the route
+  table. ESLint reports 5 problems, every one in a file this phase did not
+  touch (`BrokerDiscovery.tsx`, `SessionStatus.tsx`, `Watchlist.tsx`,
+  `lib/session.ts`); all files added or modified here lint clean.
+  **Live-verified in a real browser** against an isolated throwaway stack
+  (Postgres 55453, Redis 63453, API 8153, `next dev` 3153 — never the dev
+  stack's 5432/6379/8000/3005), with `/health` reporting
+  `live_trading_enabled: false` throughout. The two paper statuses came
+  from the REAL trade path: a real filled order (AAPL.US 10 @ 100) and a
+  real risk rejection (`exceeds_max_position_size`, "Proposed notional
+  90000 exceeds the max single-position notional 10000") from the real
+  deterministic engine. The two live-path statuses cannot be produced
+  without enabling live trading, so those rows were inserted directly
+  against a `kind=live` broker row — the same device Phase 48 used for its
+  live-kind labelling test. All four then rendered under their own names
+  with the real joined `broker_kind`; unfilled rows showed no fill price;
+  a real 403 ("No access grant for broker …") and 404 ("No broker with id
+  …") rendered with no rows drawn; the empty page read as a real empty
+  result; and Prev/Next walked offsets 0 → 1 → 2 → 1 over real HTTP with
+  Prev still reachable one page past the end. Stack torn down afterwards;
+  no `.env` created, no live credential in this branch, no external vendor
+  contacted.
+  **Deliberately NOT built**: any write/cancel/amend control (the panel is
+  read-only and `orders` is append-only by design), a fills-grain blotter
+  view (the proxy exists; the UI is a follow-up), symbol/date/status
+  filtering, a cross-broker "all my orders" view, and any projection of
+  `broker_order_id`/`broker_status`/`reconciled_at`, which would be a
+  backend response-shape change.
+
 ## Known Issues
 
 `tests/api/test_agent_trades.py::test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicate`
@@ -2312,13 +2400,17 @@ frontend for them, **the first is now CLOSED by Phase 48 (D065)** — the
 order/fill listing endpoints exist, are documented in `docs/API.md`, and
 are covered by 21 integration tests. One remains:
 
-1. ~~**No order/fill list endpoint.**~~ **CLOSED (Phase 48, D065.)**
+1. ~~**No order/fill list endpoint.**~~ **FULLY CLOSED (backend Phase 48,
+   D065; frontend Phase 51, D068.)**
    `GET /brokers/{broker_id}/orders`, `.../orders/{order_id}` and
-   `.../fills` now expose the append-only trail, on the D027/D031
-   `{items, limit, offset}` convention as that gap note asked for. What is
-   still outstanding is the *frontend* — a trade-history panel built
-   against this contract is a follow-up phase, deliberately out of D065's
-   backend-only scope.
+   `.../fills` expose the append-only trail on the D027/D031
+   `{items, limit, offset}` convention as that gap note asked for, and
+   `apps/web/components/TradeHistory.tsx` now reads it through the
+   product. The follow-up D065 named for itself has landed.
+   One narrower gap is left behind by it: `OrderResponse` does not project
+   `broker_order_id`, `broker_status` or `reconciled_at`, so a client
+   cannot show the venue's own wording for a `broker_closed_unfilled`
+   order. That is a response-shape change, hence a backend phase.
 2. **`AgentTradeResponse` returns no per-analyst output.** D059's
    Technical, Fundamental and News analysts run server-side and feed the
    TraderAgent's prompt, but the response carries only the final decision

@@ -39,9 +39,12 @@ from apps.api.app.risk.models import Side
 
 
 class FillEntry(BaseModel):
-    """One recorded execution (`fills`). An order has 0 fills when it was
-    rejected (by the Risk Engine or the Portfolio Manager) and 1 when it
-    filled; `fills.order_id` is UNIQUE today, so more than one is not
+    """One recorded execution (`fills`). An order has 1 fill when it
+    FILLED and 0 in every other status - REJECTED (blocked by this system),
+    SUBMITTED_UNCONFIRMED (at a broker, no fill reported yet) and
+    BROKER_CLOSED_UNFILLED (the venue executed nothing). Corrected in Phase
+    51/D068; this previously named only the rejected case, predating D066.
+    `fills.order_id` is UNIQUE today, so more than one is not
     currently reachable. The field is a list anyway because that is the
     shape the schema was deliberately built for (see `Fill`'s docstring:
     partial fills are meant to be a schema-compatible addition), and a
@@ -69,13 +72,32 @@ class OrderResponse(BaseModel):
     resize that is invisible in the history is exactly what D029 refused
     to create.
 
-    `status` is `filled` or `rejected` - there is no pending state,
-    because an order row is written once, after the decision, and is
-    never updated (spec Sec17). A `rejected` row carries
-    `risk_block_reason`/`risk_detail` when the Risk Engine stopped it and
-    `portfolio_action: "reject"` when the Portfolio Manager did; null
-    `portfolio_action` means the Portfolio Manager never ran, never that
-    it approved.
+    `status` has FOUR members, not two - see `OrderStatus` in db/models.py
+    for each one's authoritative meaning. (This paragraph said "`filled`
+    or `rejected` - there is no pending state" until Phase 51/D068; it was
+    written before Phase 49/D066 added the other two and was simply left
+    behind. `SUBMITTED_UNCONFIRMED` **is** a pending state, and it is
+    resolved by an UPDATE from `LiveOrderReconciler`, so the old claim
+    that a row is written once and never updated is no longer true
+    either.)
+
+    The distinction a client must not collapse is `REJECTED` vs
+    `BROKER_CLOSED_UNFILLED`: both have zero fills, but the first means
+    THIS SYSTEM stopped the trade and it never reached a venue, while the
+    second means it did reach a real broker which then ended it
+    unexecuted. `SUBMITTED_UNCONFIRMED` is the only non-terminal status.
+
+    A `REJECTED` row carries `risk_block_reason`/`risk_detail` when the
+    Risk Engine stopped it and `portfolio_action: "reject"` when the
+    Portfolio Manager did; null `portfolio_action` means the Portfolio
+    Manager never ran, never that it approved.
+
+    Note that `broker_order_id`, `broker_status` and `reconciled_at` (the
+    columns D066 added) are NOT projected here. `broker_status` in
+    particular holds the venue's own wording for a
+    `BROKER_CLOSED_UNFILLED` order, so a client cannot currently show it -
+    exposing it would be a real response-shape change, not a doc fix, and
+    is deliberately left to a future phase.
     """
 
     id: uuid.UUID
