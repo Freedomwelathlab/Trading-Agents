@@ -4,6 +4,40 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 56: backtest analytics dashboard (2026-09-08, D073) — the first
+  frontend surface for anything Phase 54/55 built, and the first real
+  charting library in this codebase (Recharts `^3.10.1`, scoped only to
+  the 5 new Strategy Lab chart components; every existing chart stays
+  hand-rolled SVG, untouched). Built by two subagents in parallel, fully
+  decoupled by design.
+  **(1) `/strategies/[id]/backtests`** — version selector (all versions
+  listed, non-validated ones disabled with a hint), a `RunBacktestForm`,
+  a `BacktestRunList` with multi-select, and a `BacktestRunComparison`
+  (equity overlay + metrics table) for 2+ selected runs.
+  **(2) `/strategies/[id]/backtests/[runId]`** — equity curve, drawdown
+  curve, monthly-returns heatmap, and a trade ledger, all computed
+  client-side from the run's already-returned `equity_curve`
+  (`lib/backtestMetrics.ts`, pure and unit-tested) rather than persisted
+  server-side.
+  **(3) A `status: "failed"` run is rendered honestly everywhere**: the
+  detail page shows the real error and skips charts/metrics entirely, the
+  list shows `—` not `0%`, the comparison view excludes it from the
+  overlay chart but keeps it (with its error) in the metrics table.
+  **(4) A real Recharts+jsdom pitfall was found and documented** (D073):
+  a `<LineChart>` with both a `<Legend>` and 2+ series silently drops
+  `<Line>`/`<YAxis>`/`<CartesianGrid>` under this app's test environment;
+  worked around independently (a scoped `getBoundingClientRect` mock in
+  one test file, a hand-rolled legend in production code in the other) —
+  worth checking first if a future multi-series chart's tests mysteriously
+  fail.
+  **232 frontend tests across 28 files** (183/20→232/28, +49 this phase);
+  none deleted, skipped, or weakened. `npm run build` clean, every new
+  route and both new proxy routes present in the manifest. Exactly one new
+  dependency added (confirmed via `git diff package.json`).
+  Not built (deliberately): reusing `EquityCurveChart` inside
+  `BacktestRunComparison` (a small, deliberate duplication traded for full
+  agent-parallelism safety — see D073), any backend change (this phase
+  consumes Phase 55's API as-is).
 - Phase 55: a pluggable, persisted backtesting engine (2026-09-08, D072) —
   the first thing that actually RUNS a `StrategyDefinition`. Built by two
   subagents in parallel against one frozen interface

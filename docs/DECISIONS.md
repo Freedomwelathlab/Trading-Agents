@@ -7395,3 +7395,126 @@ stack):
 
 Status: Implemented and verified as above.
 
+**D073 — Phase 56: Recharts introduced (scoped to Strategy Lab only), a backtest analytics dashboard, and a jsdom+Recharts rendering pitfall worth remembering**
+
+Reason: Phase 55 produced real, persisted backtest results with nothing to
+look at. This phase is the first frontend surface for any of it, and the
+first use of a real charting library in this codebase — a decision made
+explicitly with the user during Phase 53's planning, not decided
+unilaterally here: every existing chart (`PortfolioHistoryChart.tsx`,
+`BacktestPanel.tsx`'s equity curve) is hand-rolled SVG via
+`components/ui/ChartFrame.tsx`, deliberately scoped for a single-series
+line, and a monthly-returns heatmap plus a multi-run overlay comparison
+are a different visualization class than that was ever meant to carry.
+Built by two agents in parallel, fully decoupled by design (no shared new
+file, no frozen interface between them beyond the already-shipped D072
+API) — the orchestrator installed Recharts and built the two shared proxy
+routes (`GET /api/strategies/{id}/versions/{id}/backtests`, `GET
+/api/backtest-runs/{id}`) first, as the one piece both halves needed.
+
+**(1) Recharts `^3.10.1`** (`apps/web/package.json`) — the only new
+dependency this phase, and it stays scoped to the five new Strategy-Lab
+chart components below. `ChartFrame.tsx`/`PortfolioHistoryChart.tsx`/
+`BacktestPanel.tsx` are untouched and stay hand-rolled SVG; nothing forces
+a migration.
+
+**(2) `apps/web/lib/backtestMetrics.ts`** — pure, unit-tested functions
+(`computeDrawdownSeries`, `computeMonthlyReturns`) that derive a
+drawdown series and a monthly-returns grid from a run's `equity_curve` on
+the client, rather than the backend computing and persisting either. Kept
+client-side deliberately: both are pure functions of data the backend
+already returns in full, so computing them again on every later phase's
+UI change would be free, whereas persisting a second derived
+representation server-side would be one more thing that could disagree
+with the equity curve it was computed from.
+
+**(3) Five new chart/table components** —
+`EquityCurveChart`/`DrawdownChart`/`MonthlyReturnsHeatmap`/
+`BacktestTradeLedger` (single-run detail page) and
+`BacktestRunComparison` (multi-run overlay + comparison table, built with
+its own self-contained Recharts usage rather than reusing
+`EquityCurveChart`, a deliberate small duplication traded for full
+agent-parallelism safety — see Alternatives below). Every chart color
+comes from this app's existing CSS custom properties (`--pos`/`--neg`/
+`--accent`/`--grid`/`--ink-muted`/etc. in `app/globals.css`), never a
+hard-coded hex value, so Strategy Lab charts respect light/dark mode the
+same way every hand-rolled SVG chart already does. A monthly-returns
+heatmap is plain CSS grid, not Recharts — a heatmap is not really a
+"chart" in the axes-and-data-points sense, and a library brings nothing
+to it.
+
+**(4) A real Recharts+jsdom rendering pitfall, found and worked around
+independently by both agents, worth recording so a future phase doesn't
+rediscover it the hard way**: in this app's Vitest/jsdom test
+environment, a Recharts `<LineChart>` with **both** a `<Legend>` and 2+
+`<Line>` series present silently fails to render `<Line>`/`<YAxis>`/
+`<CartesianGrid>` at all — bisected by one agent directly against the
+installed package (`<Tooltip>` alone is fine, `<CartesianGrid>` alone is
+fine, `<Legend>` combined with ≥2 lines is the trigger). Two independent,
+compatible fixes landed: `EquityCurveChart`'s own tests scope a
+`getBoundingClientRect` mock to only the `.recharts-responsive-container`
+element rather than every `HTMLElement` (a global mock also inflates the
+Legend's own wrapper, which Recharts then subtracts from the available
+plot height); `BacktestRunComparison` sidesteps the whole class of bug in
+production code, not just tests, by rendering its own small colored-dot
+legend instead of Recharts' `<Legend>` component, keyed to the same
+per-series color function each `<Line>` uses. Neither agent found this
+reproduces in a real browser (not chased further) — noted here so the
+next phase that adds a multi-series Recharts view knows to check this
+first rather than assume its own test failure is a new bug.
+
+**(5) Failed runs render honestly, with nothing invented.** Every metric
+field is `null` on a `status: "failed"` `BacktestRunSummary`/
+`BacktestRunDetailResponse` (D072) — the detail page stops at the real
+`error_detail` and skips charts/ledger entirely rather than rendering a
+zero-flat curve; the run list renders `—` for a failed row's metrics, never
+`0%`; the comparison view excludes a failed run from the equity overlay
+(nothing to plot) but still lists it in the metrics table with its error,
+rather than silently dropping it from the comparison altogether.
+
+**(6) Version selector: all versions listed, non-validated ones disabled
+with an inline hint**, not merely the validated subset — a user can see
+their strategy's whole version history from this page and understands
+*why* an option is unavailable ("(not backtestable)" plus a hint to
+validate first) rather than wondering why an older draft simply isn't
+there.
+
+Alternatives rejected:
+
+- **`BacktestRunComparison` importing and reusing `EquityCurveChart`.**
+  Considered, and explicitly designed for (the component's `series` prop
+  accepts 2+ named series precisely so it *could* be reused this way) —
+  but doing so would have made the comparison agent depend on a component
+  the detail-page agent might not have finished yet, reintroducing the
+  cross-agent coordination this phase's split was designed to avoid. The
+  small duplication (two independent Recharts `<LineChart>` usages) was
+  judged cheaper than the coordination risk; `EquityCurveChart` remains
+  available for a future phase to consolidate onto if that trade-off ever
+  looks wrong in hindsight.
+- **Persisting drawdown/monthly-returns server-side.** Rejected in (2) —
+  both are pure derivations of data already fully returned; nothing is
+  gained by computing them twice in two different places that could
+  disagree.
+- **Recharts' own `<Legend>` in the comparison view.** Rejected once (4)
+  was found — a hand-rolled legend sidesteps the bug class entirely
+  rather than working around one specific trigger of it.
+
+Scope discipline: no backend file is touched this phase (D072's routes are
+consumed as-is); `components/ui/ChartFrame.tsx`,
+`components/PortfolioHistoryChart.tsx`, and `components/BacktestPanel.tsx`
+(D025's v1 UI) are all untouched.
+
+Verification (2026-09-08, two parallel subagents building fully disjoint
+files, reconciled centrally):
+
+- Frontend: **232 passed across 28 files** (183/20 → 232/28; +49: 24 in
+  the detail-page agent's 5 test files, 25 in the list/comparison agent's
+  3 test files), confirmed by re-running the merged suite centrally, not
+  just trusting each agent's own report. `npm run build` clean — every new
+  route (`/strategies/[id]/backtests`, `/strategies/[id]/backtests/
+  [runId]`) and both new proxy routes present in the manifest.
+- Exactly one new dependency (`recharts@^3.10.1`); confirmed via `git diff
+  package.json` — nothing else added by either agent.
+
+Status: Implemented and verified as above.
+
