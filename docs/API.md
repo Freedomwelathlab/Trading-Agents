@@ -1496,5 +1496,51 @@ literal `"close"`, a declared indicator's `id`, or a fixed number.
 the overwhelmingly likely cause is a typo. Nothing in this shape is
 executed by anything in this codebase yet — Phase 55 is what will run one.
 
+## `POST /strategies/{strategy_id}/versions/{version_id}/backtests` — run a persisted backtest
+
+Requires `strategy:backtest` (D072) — separate from `strategy:manage`.
+409 (`VERSION_NOT_VALIDATED: …`) unless the target version's status is
+`"validated"` (`POST .../validate` first). Runs the strategy over a real
+historical window from the persisted bar store (D070) via
+`apps/api/app/backtesting/engine_v2.py` — a sibling of D025's `POST
+/backtests`, not a replacement; that endpoint is unchanged and keeps
+running its own hard-coded SMA(20) strategy.
+
+Request: `{"symbol": "AAPL.US", "bar_interval": "1d", "start_date": "2026-01-01", "end_date": "2026-06-30", "starting_cash": "100000"}`
+(`bar_interval` only accepts `"1d"`; `end_date` must be after `start_date`).
+
+Response (201, `BacktestRunDetailResponse` — always returned, whether the
+run succeeded or failed, exactly like the market-data backfill job):
+```json
+{
+  "id": "…", "strategy_version_id": "…", "symbol": "AAPL.US",
+  "bar_interval": "1d", "start_date": "2026-01-01", "end_date": "2026-06-30",
+  "starting_cash": "100000", "status": "succeeded",
+  "final_equity": "112450.00", "total_return_pct": "12.45",
+  "max_drawdown_pct": "6.10", "win_rate_pct": "60.00", "num_trades": 5,
+  "error_detail": null, "created_at": "…", "completed_at": "…",
+  "equity_curve": [{"date": "2026-01-02", "equity": "100000"}, "..."],
+  "trades": [{"side": "buy", "entry_date": "…", "entry_price": "…",
+    "exit_date": "…", "exit_price": "…", "quantity": "…", "return_pct": "…"}]
+}
+```
+A **failed** run is still a 201 with `status: "failed"` and a real
+`error_detail` (e.g. not enough persisted bars for the requested warmup or
+window — backfill more history via `POST /admin/market-data/backfill`
+first) — every metric field is `null` on a failed run, never a fabricated
+zero. `side` is always `"buy"` this phase — the engine only ever opens
+long positions.
+
+## `GET /strategies/{strategy_id}/versions/{version_id}/backtests` — list runs
+
+Same `limit`/`offset` envelope as every other listing. Response (200,
+`ListBacktestRunsResponse`): `{"items": [ /* BacktestRunSummary rows, no
+equity curve or trades */ ], "limit": 50, "offset": 0}`, newest first.
+
+## `GET /backtest-runs/{run_id}`
+
+404 if missing, 403 if the run's strategy isn't the caller's. Response
+(200, `BacktestRunDetailResponse`) — same full shape as the POST above.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

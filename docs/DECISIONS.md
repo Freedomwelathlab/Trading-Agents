@@ -7241,3 +7241,157 @@ never the shared dev stack):
 
 Status: Implemented and verified as above.
 
+**D072 — Phase 55: a pluggable, persisted backtesting engine (v2) that generalizes D025's hard-coded strategy without touching it**
+
+Reason: Phase 54 gave the platform a `StrategyDefinition` nothing could run
+yet. This phase is what runs one — for real historical windows, with real
+position sizing, with the result actually saved. Built by two agents in
+parallel against one frozen interface
+(`executor.generate_signals(bars, definition) -> list[Signal]`); by the
+time the persistence-side agent's route-level tests ran, the evaluator
+already existed and every test exercised the real thing end to end, not a
+stub — no reconciliation pass was needed between the halves, only the
+central full-suite/migration verification every phase gets.
+
+**(1) `apps/api/app/strategies/expressions.py`** — reusable evaluation
+primitives over a `StrategyDefinition` and a `list[Bar]`, deliberately
+*not* backtest-specific (Phase 60's live signal engine will reuse this
+same module against fresh bars). `compute_indicator_series` computes a
+full per-bar series for one declared indicator by calling
+`marketdata.indicators.sma`/`rsi` at every index — no new indicator math,
+the existing pure functions are reused unchanged, exactly as D025's own
+strategy did. `evaluate_rule` resolves the six operators from D071's
+closed vocabulary: `gt`/`gte`/`lt`/`lte` are instantaneous per-bar
+comparisons; `crosses_above`/`crosses_below` additionally need the
+*previous* bar and are proven, by test, **not** to be sugar for the
+instantaneous pair (a bar can satisfy `gt` while not `crosses_above`, if
+the previous bar was already above). `None` — never a guessed value —
+propagates through every layer whenever an operand's indicator has
+insufficient history at that index, exactly matching
+`InsufficientDataError`'s existing "never pad, never approximate" rule.
+**No code execution anywhere in this module** — same hard boundary
+`validation.py` (D071) already states; this is the second and last module
+in the whole Strategy Lab arc that interprets a definition, and neither
+one ever calls `eval`/`exec`/`compile`.
+
+**(2) `apps/api/app/backtesting/executor.py`** — `generate_signals(bars,
+definition) -> list[Signal]`, reusing `Signal` from D025's `strategy.py`
+rather than defining a second enum. Precedence when both `exit_rule` and
+`entry_rule` fire on the same bar: exit wins (the function has no notion
+of current position, so a bar where a currently-held exit condition
+happens to coincide with a fresh entry condition should still read as
+"get out"; a caller that is flat simply ignores a SELL signal, same as
+v1 already does). **Proven, not asserted, to reproduce D025's own engine
+exactly**: a `StrategyDefinition` logically equivalent to the hard-coded
+SMA(20) crossover (`entry_rule: close crosses_above sma_20`, `exit_rule:
+close crosses_below sma_20`, `position_sizing: all_in`) produces an
+**elementwise-identical** signal list to `backtesting.strategy.
+generate_signals` on the same 56-point synthetic series across 7 warmup-
+period values (2, 3, 5, 19, 20, 21, 55) — including the exact warmup-
+boundary bar. Same output, two structurally different mechanisms (v1
+counts a fixed loop bound; v2 arrives at the identical HOLD prefix because
+a crossing needs `sma[index-1]`, which is `None` at the same boundary) —
+now pinned by a real regression test, not merely argued to be equivalent.
+
+**(3) `BacktestRun` / `BacktestEquityPoint` / `BacktestTrade`** (migration
+`0018`). `strategy_version_id` is `ON DELETE RESTRICT` — deliberately, per
+`StrategyVersion`'s own D071 docstring, which already anticipated this: a
+run's exact, immutable input must never be able to disappear out from
+under a persisted result, and nothing in this phase or the next several
+deletes a version. A row is written `RUNNING`, then updated exactly once
+to a terminal status inside the same request that created it — the
+Phase-53/D070 `MarketDataBackfillJob` posture, not D025's v1 (which raises
+an exception and persists nothing on failure). **This is the one
+deliberate behavioral difference from v1 worth naming explicitly: v2
+*returns* a failed run, it never raises one** — v1 has nothing to persist
+either way, so an exception costs nothing; v2 always has a row it created
+before doing any work, and a failed attempt (a real data gap, a vendor
+error) is exactly as auditable a fact as a successful one. An **empty
+requested window** (real bars exist for warmup but none at all fall
+within `[start_date, end_date]`) is likewise a `FAILED` run with a real
+`InsufficientHistoryError` message, not a `SUCCEEDED` one reporting a
+fabricated 0% return — the same no-fabrication reasoning that already
+governs every other data-gap case in this codebase.
+
+**(4) Real position sizing** — the one piece of D025's engine this phase
+could not simply reuse, because v1 has no such concept. `all_in` (`cash /
+price`) reproduces v1's hard-coded behavior exactly, so an `all_in`
+definition's backtest is byte-for-byte what v1 would have done for the
+same window. `fixed_fraction` sizes against **equity**, not cash,
+deliberately: "risk 10% of the portfolio" describes portfolio size, and
+sizing off cash alone would silently shrink every subsequent entry as
+positions accumulate. `fixed_notional` is capped at available cash so an
+oversized `amount` proposes what can actually be afforded rather than a
+quantity certain to be refused downstream. All three floor to a whole
+share via `Decimal.to_integral_value(rounding="ROUND_FLOOR")`, matching
+v1's own rounding — this system models no fractional shares anywhere.
+
+**(5) The RISK → PORTFOLIO → BROKER sequence is imported from `engine.py`,
+not re-derived.** `engine_v2.py` imports `_attempt_trade` directly across
+the module boundary despite its leading underscore — a deliberate,
+commented exception to the usual privacy convention, because reusing the
+exact sequence D025/D035 already pinned with tests is strictly safer than
+a second copy that could quietly drift out of agreement with the first
+while both kept passing their own tests. `engine.py` itself — and
+`strategy.py`/`metrics.py`/`errors.py`/`models.py` alongside it — is
+**untouched**, and stays that way indefinitely: it is what `POST
+/backtests` still runs, and what every number engine_v2 produces is
+measured against.
+
+**(6) New permission `STRATEGY_BACKTEST = "strategy:backtest"`**,
+deliberately separate from `STRATEGY_MANAGE` (D071) — a role could run
+backtests without authoring strategies, or the reverse. Gates a new
+router pair (`/strategies/{id}/versions/{id}/backtests`,
+`/backtest-runs/{id}`) at the FastAPI-dependency level; per-row ownership
+(via the run's `strategy_version → strategy → owner_user_id` chain) is
+still checked on top, the same two-part shape D071 established. `POST
+.../backtests` 409s (`VERSION_NOT_VALIDATED: …`) unless the target
+version's status is `validated` — a strategy is backtested only once it
+has passed the deterministic structural check, never a draft.
+
+Alternatives rejected:
+
+- **Reimplementing the RISK → PORTFOLIO → BROKER sequence for v2.**
+  Rejected in (5) — importing the tested private function is safer than a
+  parallel copy.
+- **Raising on a failed run, matching v1.** Rejected in (3) — v2 always
+  has a row to finish, so returning it is more honest than discarding the
+  attempt.
+- **A single indicator-agnostic warmup rule keyed off indicator type.**
+  Rejected: `_warmup_bar_count` uses `max(period) + 1` for every indicator
+  uniformly rather than branching on `sma` needing `period` and `rsi`
+  needing `period + 1` — a wrong type-specific rule would silently shorten
+  a warmup and produce a `None` indistinguishable from a real data gap;
+  one bar of slack for every indicator costs nothing and cannot be gotten
+  wrong the same way.
+- **Sizing `fixed_fraction` off cash instead of equity.** Rejected in (4)
+  — would silently shrink over a run with open positions.
+
+Scope discipline: `apps/api/app/backtesting/engine.py`,
+`strategy.py`, `metrics.py`, `errors.py`, `models.py`,
+`apps/api/app/strategies/validation.py`/`models.py`/`service.py`, and
+`apps/api/app/api/routes/strategies.py` are all untouched. No frontend
+file is touched — the analytics dashboard for these results is Phase 56,
+which is also where a real charting library gets introduced per the
+earlier user decision.
+
+Verification (2026-09-08, two parallel subagents against one frozen
+interface, re-verified centrally on a freshly-migrated, isolated
+Postgres/Redis on remapped ports 55432/56379 — never the shared dev
+stack):
+
+- `alembic upgrade head` from empty through `0018` clean; `downgrade -1` →
+  `upgrade head` round-trips clean.
+- **840 passed, 0 failed** (778 → 840; +44 in `tests/strategies/
+  test_expressions.py` + `tests/backtesting/test_executor.py`, +18 in
+  `tests/backtesting/test_engine_v2.py` + `tests/api/
+  test_strategy_backtests.py`), confirmed on the clean isolated stack —
+  the one failure seen during development against the long-lived shared
+  dev DB was, again, the same pre-existing `AAPL.US`-position
+  contamination D070/D071 already documented, and does not reproduce
+  here.
+- `ruff check` clean; `mypy apps` clean, **114 source files** (up from
+  109); `bash scripts/secret_scan.sh` clean.
+
+Status: Implemented and verified as above.
+

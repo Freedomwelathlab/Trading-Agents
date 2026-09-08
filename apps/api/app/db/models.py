@@ -867,3 +867,195 @@ class StrategyVersion(Base):
     NULL on every draft and never back-filled - "not yet validated" and
     "validated at some unknown time" must stay distinguishable, the same
     reasoning `orders.reconciled_at` documents."""
+
+
+class BacktestRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy Enum interop)
+    """The lifecycle of one persisted backtest (Phase 55, migration 0018).
+
+    Deliberately the same four names `BackfillJobStatus` uses for the same
+    reasons, minus its `PARTIAL`: a backtest of one symbol over one window
+    either produced a full equity curve or it did not, so there is no
+    honest middle state for it to report. PENDING exists for a future
+    queued/background run; Phase 55's synchronous engine writes RUNNING and
+    then exactly one terminal status inside the request that created it.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class BacktestRun(Base):
+    """One persisted execution of one StrategyVersion over one symbol and
+    date window (Phase 55, migration 0018) - the durable counterpart to
+    D025's in-memory-only `BacktestResult`, which this codebase computed and
+    then threw away.
+
+    **`strategy_version_id` is ON DELETE RESTRICT** - not CASCADE, not SET
+    NULL, and the distinction is the whole reason `strategy_versions` exists
+    as a separate table at all (see `StrategyVersion` and migration 0017,
+    which already anticipate this FK). A run's exact, immutable input is the
+    version it ran; a result whose input silently vanished is not a weaker
+    audit record, it is a misleading one, and a result whose input was
+    edited underneath it is worse still. CASCADE would delete real computed
+    results as a side effect of tidying up a strategy, and SET NULL would
+    leave rows claiming numbers nothing can explain. RESTRICT makes both
+    impossible at the schema level.
+
+    Nothing in this phase - or in the several planned after it - deletes a
+    `StrategyVersion`; there is no route that can. So this is a structural
+    guarantee that stays true rather than a behavior anyone routinely relies
+    on, exactly like `Strategy.owner_user_id`'s SET NULL in a codebase that
+    does not delete users (D013).
+
+    **Append-only, in `Order`'s sense.** A run row is written once as
+    RUNNING and updated exactly once, in place, to a terminal status
+    together with its metrics and `completed_at` - the same single permitted
+    transition `MarketDataBackfillJob` makes (Phase 53/D070), and for the
+    same reason: the engine runs to completion inside the HTTP request that
+    created the row, so no background worker can race that update. After a
+    terminal status is reached the row is never edited again, and neither
+    are its `BacktestEquityPoint` / `BacktestTrade` children.
+
+    A FAILED row is a real, kept result, not an error that vanished:
+    `error_detail` carries the actual failure (most often
+    `InsufficientHistoryError` - the requested window plus indicator warmup
+    is not covered by ingested bars) and the run stays queryable alongside
+    the successful ones. That is `run_backfill_job`'s posture, deliberately
+    NOT D025's engine, which raises because it has nothing to persist either
+    way. See `apps/api/app/backtesting/engine_v2.py`.
+
+    `requested_by_user_id` is ON DELETE SET NULL, matching
+    `orders.submitted_by_user_id` and
+    `market_data_backfill_jobs.requested_by_user_id`: what was run, over
+    what window, with what outcome outlives the deletion of whoever asked
+    for it.
+
+    Every metric column is nullable because a FAILED run computed none of
+    them - a zero would be a fabricated figure, and this schema never writes
+    one (docs/TRADING_SAFETY.md's no-fabrication rule).
+    """
+
+    __tablename__ = "backtest_runs"
+    __table_args__ = (
+        Index("ix_backtest_runs_version_created", "strategy_version_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1d")
+    """Plain string, not a Postgres ENUM - the same reasoning
+    `market_data_bars.bar_interval` documents, and it names the same
+    vocabulary, since this is the interval the bars were read at."""
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    """The REQUESTED window. The equity curve may legitimately contain fewer
+    days than this range spans - weekends and market holidays are real gaps
+    in real bar data and are never filled in with an invented bar."""
+    starting_cash: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    status: Mapped[BacktestRunStatus] = mapped_column(
+        _pg_enum(BacktestRunStatus, "backtestrunstatus"), nullable=False
+    )
+    final_equity: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    total_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    win_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    num_trades: Mapped[int | None] = mapped_column(Integer)
+    """Completed round trips, not raw fills - the same definition
+    `BacktestResult.num_trades` documents, so that this number and
+    `win_rate_pct` stay consistent with each other."""
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When the run reached a terminal status. NULL means it never did -
+    deliberately not defaulted to `created_at`, the same reasoning
+    `orders.reconciled_at` documents."""
+
+
+class BacktestEquityPoint(Base):
+    """One day's mark-to-market equity within one `BacktestRun` (Phase 55,
+    migration 0018). A child table rather than a JSON column on the run, for
+    the reason `PortfolioSnapshotPositionRow` already documents: a per-day
+    time series belongs in rows, where "this run's curve between these two
+    dates" is an indexed query rather than a JSON-path scan.
+
+    `(backtest_run_id, date)` is UNIQUE - one point per day per run. Written
+    once, in a single bulk insert, when the run reaches SUCCEEDED, and never
+    updated afterwards.
+
+    There is one row per BAR in the requested window, not per calendar day:
+    a weekend or a market holiday simply has no row, because no bar exists
+    for it and interpolating one would fabricate a portfolio value that
+    never happened.
+
+    `backtest_run_id` is ON DELETE CASCADE (unlike the run's own RESTRICT
+    reference upward to its version): these points have no meaning apart
+    from the run that computed them, exactly like `watchlist_items`.
+    """
+
+    __tablename__ = "backtest_equity_points"
+    __table_args__ = (
+        UniqueConstraint("backtest_run_id", "date", name="uq_backtest_equity_point_run_date"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    backtest_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    equity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+
+
+class BacktestTrade(Base):
+    """One completed round trip within one `BacktestRun` (Phase 55,
+    migration 0018) - a buy that opened a flat position followed by the sell
+    that closed it back to zero, which is the same unit `RoundTrip` and
+    `BacktestResult.num_trades` already count.
+
+    Written once, in a single bulk insert, when the run reaches SUCCEEDED;
+    never updated, exactly like `BacktestEquityPoint`. `backtest_run_id` is
+    ON DELETE CASCADE for the same reason.
+
+    `side` is a plain `String(8)` holding a `risk.models.Side` VALUE
+    ("buy"/"sell"), deliberately NOT the `side` Postgres enum type
+    `orders.side` uses. This column is only ever displayed; it is not
+    branched on, aggregated by, or constrained against, so the enum type
+    would buy nothing here while coupling this table to a type the order
+    path owns. See `apps/api/app/backtesting/engine_v2.py` for the current,
+    documented scope limit: this phase's engine only ever opens long, so
+    every row written today carries "buy".
+
+    `exit_date` / `exit_price` / `return_pct` are nullable to leave room for
+    a position still open at the end of the window. Phase 55's engine only
+    ever writes CLOSED round trips, so they are in practice always set -
+    nullable rather than NOT NULL so that recording an open position later
+    is an addition, not a migration that reshapes a table results already
+    depend on.
+    """
+
+    __tablename__ = "backtest_trades"
+    __table_args__ = (Index("ix_backtest_trades_run", "backtest_run_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    backtest_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    exit_date: Mapped[date | None] = mapped_column(Date)
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    """(exit_price - entry_price) / entry_price * 100, computed once at
+    write time from this row's own two prices. Stored rather than derived on
+    read so a result is reproducible from the row alone."""

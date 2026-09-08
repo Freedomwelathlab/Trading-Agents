@@ -56,3 +56,29 @@ class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     own permission with its own enforcing check, not a side effect of this
     one.
     """
+    STRATEGY_BACKTEST = "strategy:backtest"
+    """Phase 55. Gates the whole
+    `/strategies/{id}/versions/{id}/backtests` + `/backtest-runs` surface at
+    the router level, exactly the way STRATEGY_MANAGE gates `/strategies`.
+
+    Deliberately SEPARATE from STRATEGY_MANAGE rather than folded into it,
+    because the two capabilities genuinely come apart in both directions. A
+    role could hold this without being able to author or edit strategies -
+    an evaluation or research account that may run and read results over
+    definitions someone else wrote. And a role could hold STRATEGY_MANAGE
+    without this one: running a backtest reads the whole persisted bar
+    store and writes rows of its own, where editing a definition is a
+    self-contained JSON edit. Merging them would make granting either one
+    grant both, with no way back.
+
+    Ownership is still checked per request ON TOP of this permission - a
+    caller may only backtest, and only see runs on, their OWN strategies
+    (`_load_owned_strategy` / `_load_version`, imported from
+    apps/api/app/api/routes/strategies.py rather than re-implemented). That
+    is the same two-part authorization shape STRATEGY_MANAGE already
+    established (D071), not a new pattern: the permission says this account
+    may run backtests at all, the `owner_user_id` check says over which
+    strategies. Neither alone is sufficient.
+
+    Like STRATEGY_MANAGE, this deliberately carries no ADMIN override.
+    """

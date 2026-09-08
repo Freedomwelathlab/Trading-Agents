@@ -4,6 +4,62 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 55: a pluggable, persisted backtesting engine (2026-09-08, D072) —
+  the first thing that actually RUNS a `StrategyDefinition`. Built by two
+  subagents in parallel against one frozen interface
+  (`executor.generate_signals(bars, definition) -> list[Signal]`); the
+  persistence-side agent's route-level tests ran against the real
+  evaluator, not a stub, with no reconciliation needed.
+  **(1) `apps/api/app/strategies/expressions.py`** — reusable rule-
+  evaluation primitives over a `StrategyDefinition` + `list[Bar]`,
+  deliberately not backtest-specific (Phase 60's live signal engine will
+  reuse it). All six D071 operators implemented; `crosses_above`/
+  `crosses_below` proven by test to NOT be sugar for the instantaneous
+  comparisons. No code execution anywhere — same hard rule as
+  `validation.py`.
+  **(2) `apps/api/app/backtesting/executor.py`** — `generate_signals()`,
+  **proven elementwise-identical** to D025's hard-coded `strategy.py` on
+  the logically-equivalent SMA(20)-crossover definition, across 7 warmup-
+  period values. Exit-fires-before-entry precedence when both conditions
+  hold on the same bar.
+  **(3) `BacktestRun`/`BacktestEquityPoint`/`BacktestTrade`** (migration
+  `0018`) — `strategy_version_id` is `ON DELETE RESTRICT`. A run is
+  created `RUNNING` and always resolves to a terminal status; unlike D025's
+  v1, **a failure is returned as a `FAILED` row, never raised as an
+  exception that persists nothing** — v2 always has a row to finish.
+  **(4) Real position sizing** (`all_in`/`fixed_fraction`/
+  `fixed_notional`) — the one thing v1 never had (it hard-codes "all
+  available cash"). `fixed_fraction` sizes off equity, not cash,
+  deliberately.
+  **(5) The RISK→PORTFOLIO→BROKER sequence is imported from `engine.py`**
+  (`_attempt_trade`, across the module boundary, commented) rather than
+  duplicated — `engine.py`/`strategy.py`/`metrics.py`/`errors.py`/
+  `models.py` are all untouched and stay that way; `POST /backtests`
+  (D025) still runs unchanged, side by side with the new
+  `/strategies/{id}/versions/{id}/backtests` + `/backtest-runs/{id}`
+  routes.
+  **(6) New permission `strategy:backtest`**, separate from
+  `strategy:manage`, gating the new routers; per-row ownership checked on
+  top via the run's `strategy_version → strategy → owner_user_id` chain.
+  409 (`VERSION_NOT_VALIDATED`) backtesting anything but a validated
+  version.
+  **840 backend tests** (778→840, +62: 44 pure-unit in
+  `tests/strategies/test_expressions.py` + `tests/backtesting/
+  test_executor.py`, 18 DB-backed in `tests/backtesting/test_engine_v2.py`
+  + `tests/api/test_strategy_backtests.py`); none deleted, skipped, or
+  weakened. `ruff check` and `mypy apps` (114 source files, up from 109)
+  clean; `bash scripts/secret_scan.sh` clean. Verified on a freshly-
+  migrated, isolated Postgres/Redis via a full `alembic upgrade` →
+  `downgrade -1` → `upgrade head` round-trip and the complete suite,
+  confirming the one failure seen during development (the same stale
+  shared-dev-DB row D070/D071 already documented) does not reproduce on a
+  clean database.
+  Not built (deliberately): any frontend surface (the analytics dashboard
+  is Phase 56, which is also where Recharts is introduced), short/sell-
+  side trades (every completed trade row is `side="buy"` — a documented
+  scope limit, not a bug: the replay only ever opens long, mirroring
+  D025), and intraday bar intervals (still only `"1d"`, per Phase 53's own
+  scope).
 - Phase 54: user-owned strategies with immutable-once-validated versions
   (2026-09-08, D071) — the Strategy Lab's first real domain object. Built
   by two subagents in parallel (backend + frontend) against one frozen
