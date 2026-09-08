@@ -1,11 +1,12 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -606,3 +607,113 @@ class PortfolioSnapshotPositionRow(Base):
     current_value: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     realized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+
+
+class MarketDataBar(Base):
+    """One real OHLCV bar for one (symbol, bar_interval) at one timestamp
+    (Phase 53, migration 0016, docs/DECISIONS.md D070) - closes the gap
+    HistoryProvider (apps/api/app/marketdata/history_provider.py, D021)
+    leaves: that Protocol only ever exposes "the most recent N daily
+    closes as of now," fetched live from the vendor on every call, with no
+    persistence and no arbitrary date-range query. This table is what
+    apps/api/app/marketdata/store.py's MarketDataStore reads and writes;
+    ingestion is described in apps/api/app/marketdata/ingestion/backfill.py.
+
+    Primary key is the natural composite `(symbol, bar_interval, ts)`, not
+    this schema's usual `_uuid_pk()` - the one deliberate departure from
+    that helper in the whole schema. A Timescale hypertable's unique
+    constraints must include the partitioning column (`ts`), and a
+    surrogate UUID PK would add nothing a natural key doesn't already
+    give: idempotent re-ingestion via `ON CONFLICT ... DO UPDATE`, and no
+    possibility of two rows ever describing the same bar.
+
+    `bar_interval` is a plain string, not a Postgres ENUM, so adding an
+    intraday interval later (5m, 1h, ...) is an application change, not a
+    migration that mutates a type every existing row depends on - matching
+    how `portfolio_snapshots.cost_basis_method` is persisted for the same
+    reason. Only '1d' is ever written by Phase 53.
+
+    `open`/`high`/`low`/`volume` are nullable because a vendor may in
+    principle return a close-only record; `close` is NOT NULL because a
+    bar with no close is not a bar. `source` records real provenance
+    (e.g. "longbridge") - never blank, never guessed - so any row can
+    always be traced to where it came from.
+    """
+
+    __tablename__ = "market_data_bars"
+    __table_args__ = (
+        Index("ix_market_data_bars_symbol_interval_ts", "symbol", "bar_interval", "ts"),
+    )
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    bar_interval: Mapped[str] = mapped_column(String(8), primary_key=True, default="1d")
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    open: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    high: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    low: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    close: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    volume: Mapped[int | None] = mapped_column(BigInteger)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class BackfillJobStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    PARTIAL = "partial"
+    """Reserved for a future multi-symbol/batch backfill that can
+    legitimately succeed for some inputs and fail for others within the
+    same job row. Phase 53's single-symbol synchronous job never sets
+    this - every run terminates SUCCEEDED or FAILED."""
+
+
+class MarketDataBackfillJob(Base):
+    """One record of one manual, on-demand historical-bar backfill attempt
+    (Phase 53, migration 0016). Unlike MarketDataBar rows (which an
+    ingestion job upserts, possibly many per run), a job row is written
+    once and then updated exactly once, in place, from PENDING/RUNNING to
+    a terminal status (SUCCEEDED/FAILED) - there is no background worker
+    that could race that update, since
+    apps/api/app/marketdata/ingestion/backfill.py runs a job to completion
+    within the HTTP request that created it.
+
+    `requested_by_user_id` is ON DELETE SET NULL, matching
+    `orders.submitted_by_user_id` and `emergency_stop_events.actor_user_id`
+    - this is an audit-adjacent operational record whose meaning (what was
+    requested, over what range, with what outcome) survives the deletion
+    of whoever requested it, unlike a Watchlist's CASCADE.
+    """
+
+    __tablename__ = "market_data_backfill_jobs"
+    __table_args__ = (
+        Index("ix_backfill_jobs_symbol_interval", "symbol", "bar_interval"),
+        Index("ix_backfill_jobs_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1d")
+    requested_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    requested_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[BackfillJobStatus] = mapped_column(
+        _pg_enum(BackfillJobStatus, "backfilljobstatus"), nullable=False
+    )
+    bars_ingested: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    earliest_bar_date: Mapped[date | None] = mapped_column(Date)
+    latest_bar_date: Mapped[date | None] = mapped_column(Date)
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

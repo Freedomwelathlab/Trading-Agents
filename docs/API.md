@@ -1002,6 +1002,39 @@ anywhere" scope cut was closed by D031 above; D034's `GET /brokers`
 there is still no admin-wide broker listing, and none for orders or
 fills.
 
+## `POST /admin/market-data/backfill`
+
+Requires `admin:manage` (D070, Phase 53) — no dedicated permission; this is
+operational data-management, not a trading capability. Manually triggers
+ingestion of real historical OHLCV bars for one symbol over one date range
+into `market_data_bars`. Runs synchronously to completion within the
+request — there is no background job queue.
+
+Request (`CreateMarketDataBackfillRequest`):
+```json
+{"symbol": "AAPL.US", "bar_interval": "1d", "start_date": "2026-01-01", "end_date": "2026-06-30"}
+```
+`symbol` is normalized (trimmed, upper-cased) the same way watchlist
+symbols are. `bar_interval` only accepts `"1d"` (422 otherwise) — no other
+interval is ingested yet. `end_date` before `start_date` is a 422.
+
+Response (**201 whether the job succeeded or failed** —
+`MarketDataBackfillJobResponse`):
+```json
+{
+  "id": "…", "symbol": "AAPL.US", "bar_interval": "1d",
+  "requested_start_date": "2026-01-01", "requested_end_date": "2026-06-30",
+  "status": "succeeded", "bars_ingested": 124,
+  "earliest_bar_date": "2026-01-02", "latest_bar_date": "2026-06-30",
+  "error_detail": null
+}
+```
+A vendor failure or an unavailable-data response is a completed, auditable
+attempt too — `status: "failed"` with the real `error_detail`, never a 5xx
+that discards the row. 503 `NOT_CONFIGURED` when no Longbridge credential
+trio is configured (same gate every other market-data feature in this app
+uses) — never a fabricated ingestion.
+
 ## `POST /admin/emergency-stop`
 
 Requires `admin:manage` (D039). Halts all trading platform-wide. Request

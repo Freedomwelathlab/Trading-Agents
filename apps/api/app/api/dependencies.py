@@ -22,6 +22,7 @@ from apps.api.app.db.models import Broker, BrokerGrant, User
 from apps.api.app.execution.live_broker import LiveBrokerAdapter
 from apps.api.app.marketdata.fundamentals_provider import FundamentalsProvider
 from apps.api.app.marketdata.history_provider import HistoryProvider
+from apps.api.app.marketdata.ingestion.backfill import BarBackfillProvider
 from apps.api.app.marketdata.news_provider import NewsProvider
 from apps.api.app.marketdata.router import MarketDataRouter
 
@@ -67,6 +68,16 @@ def get_live_broker_adapter(request: Request) -> LiveBrokerAdapter | None:
     data router, so a request never constructs a broker connection itself.
     """
     return request.app.state.live_broker_adapter
+
+
+def get_market_data_bar_backfill_provider(request: Request) -> BarBackfillProvider | None:
+    """Phase 53 (docs/DECISIONS.md D070). None means no historical-bar
+    backfill vendor is configured - the same all-or-nothing Longbridge
+    credential gate every other market-data provider in this app uses.
+    Optional context, exactly like get_history_provider: its absence means
+    POST /admin/market-data/backfill answers NOT_CONFIGURED, never a
+    fabricated or partially-faked ingestion."""
+    return request.app.state.market_data_bar_backfill_provider
 
 
 def get_fundamentals_provider(request: Request) -> FundamentalsProvider | None:

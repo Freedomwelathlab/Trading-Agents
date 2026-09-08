@@ -33,6 +33,7 @@ from apps.api.app.execution.reconciliation import (
     build_reconciler_cycle_lock,
 )
 from apps.api.app.marketdata.providers.longbridge import (
+    build_longbridge_bar_backfill_provider,
     build_longbridge_fundamentals_provider,
     build_longbridge_history_provider,
     build_longbridge_news_provider,
@@ -64,6 +65,13 @@ async def lifespan(app: FastAPI):
     # provider above.
     app.state.fundamentals_provider = build_longbridge_fundamentals_provider(settings)
     app.state.news_provider = build_longbridge_news_provider(settings)
+    # Phase 53 (D070): real OHLCV bars over an arbitrary historical date
+    # range, for POST /admin/market-data/backfill. Same all-or-nothing
+    # Longbridge credential gate as every provider above; None means that
+    # endpoint answers NOT_CONFIGURED rather than faking an ingestion.
+    app.state.market_data_bar_backfill_provider = build_longbridge_bar_backfill_provider(
+        settings
+    )
 
     # Phase 43 (D058): the LIVE broker adapter. Returns None - and
     # therefore constructs no trade context and opens no connection -
@@ -181,6 +189,9 @@ async def lifespan(app: FastAPI):
             "longbridge" if app.state.fundamentals_provider else "NOT_CONFIGURED"
         ),
         news_provider="longbridge" if app.state.news_provider else "NOT_CONFIGURED",
+        market_data_bar_backfill_provider=(
+            "longbridge" if app.state.market_data_bar_backfill_provider else "NOT_CONFIGURED"
+        ),
         # D063: NOT_CONFIGURED here does NOT disable password resets - it
         # means the link is delivered by an admin rather than by email.
         email_provider="configured" if app.state.email_provider else "NOT_CONFIGURED",

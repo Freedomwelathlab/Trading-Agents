@@ -29,10 +29,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.api.dependencies import get_market_data_bar_backfill_provider
 from apps.api.app.api.schemas_admin import (
     BrokerGrantResponse,
     CreateBrokerGrantRequest,
     CreateBrokerRequest,
+    CreateMarketDataBackfillRequest,
     CreateRoleRequest,
     CreateRoleResponse,
     CreateUserRequest,
@@ -40,6 +42,7 @@ from apps.api.app.api.schemas_admin import (
     ListBrokerGrantsResponse,
     ListRolesResponse,
     ListUsersResponse,
+    MarketDataBackfillJobResponse,
     UpdateBrokerModeRequest,
     UpdateRoleRequest,
     UpdateUserRequest,
@@ -64,6 +67,7 @@ from apps.api.app.db.models import (
     Role,
     User,
 )
+from apps.api.app.marketdata.ingestion.backfill import BarBackfillProvider, run_backfill_job
 from apps.api.app.notifications.provider import EmailProvider, EmailProviderError
 
 router = APIRouter(
@@ -575,6 +579,78 @@ async def set_broker_mode(
         kind=broker.kind,
         provider=broker.provider,
         is_active=broker.is_active,
+    )
+
+
+@router.post(
+    "/market-data/backfill",
+    response_model=MarketDataBackfillJobResponse,
+    status_code=201,
+)
+async def trigger_market_data_backfill(
+    request: CreateMarketDataBackfillRequest,
+    current_user: User = Depends(require_permission(Permission.ADMIN)),
+    session: AsyncSession = Depends(get_session),
+    provider: BarBackfillProvider | None = Depends(get_market_data_bar_backfill_provider),
+) -> MarketDataBackfillJobResponse:
+    """Phase 53 (docs/DECISIONS.md D070). Manual, on-demand, and
+    synchronous - runs to completion within this request, since there is
+    no background job queue in this codebase to hand it off to.
+
+    Gated by the existing admin:manage permission rather than a new one:
+    this is an operational data-management action, not a trading
+    capability, matching how every other operational action in this
+    router (user/role/broker-grant management) is gated.
+
+    A row is created and returned whether the job SUCCEEDED or FAILED -
+    like a backtest result, this describes a real, completed attempt, not
+    an HTTP-level error condition, so a vendor DATA_UNAVAILABLE/VendorError
+    outcome still answers 201 with `status: "failed"` and a real
+    `error_detail`, not a 5xx that discards the audit row.
+    """
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "NOT_CONFIGURED: no historical-bar backfill provider is configured "
+                "(the same LONGPORT_APP_KEY / LONGPORT_APP_SECRET / "
+                "LONGPORT_ACCESS_TOKEN trio the rest of the market-data stack "
+                "requires)."
+            ),
+        )
+
+    symbol = request.symbol.strip().upper()
+    job = await run_backfill_job(
+        session,
+        symbol=symbol,
+        bar_interval=request.bar_interval,
+        start_date=request.start_date,
+        end_date=request.end_date,
+        provider=provider,
+        requested_by_user_id=current_user.id,
+    )
+
+    logger.info(
+        "market_data_backfill_completed",
+        job_id=str(job.id),
+        symbol=symbol,
+        bar_interval=job.bar_interval,
+        status=job.status.value,
+        bars_ingested=job.bars_ingested,
+        actor_user_id=str(current_user.id),
+    )
+
+    return MarketDataBackfillJobResponse(
+        id=job.id,
+        symbol=job.symbol,
+        bar_interval=job.bar_interval,
+        requested_start_date=job.requested_start_date,
+        requested_end_date=job.requested_end_date,
+        status=job.status.value,
+        bars_ingested=job.bars_ingested,
+        earliest_bar_date=job.earliest_bar_date,
+        latest_bar_date=job.latest_bar_date,
+        error_detail=job.error_detail,
     )
 
 
