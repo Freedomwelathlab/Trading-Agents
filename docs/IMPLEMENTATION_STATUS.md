@@ -4,6 +4,51 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 54: user-owned strategies with immutable-once-validated versions
+  (2026-09-08, D071) — the Strategy Lab's first real domain object. Built
+  by two subagents in parallel (backend + frontend) against one frozen
+  API contract, reconciled and re-verified centrally.
+  **(1) `Strategy`/`StrategyVersion`** (migration `0017`) — a strategy
+  belongs to exactly one owner; a version is immutable once its status
+  leaves `draft`, enforced as a 409 at the route layer. `definition` is
+  the first JSONB column in this schema (deliberate — see D071).
+  **(2) `apps/api/app/strategies/`** — a closed-vocabulary
+  `StrategyDefinition` (indicators: `sma`/`rsi`; rule operators:
+  `crosses_above`/`crosses_below`/`gt`/`gte`/`lt`/`lte`; position sizing:
+  `all_in`/`fixed_fraction`/`fixed_notional`) and a purely structural
+  `validate_definition()` that never executes anything — no `eval`, no
+  `exec`, no `compile` — and reports every problem it finds, not just the
+  first.
+  **(3) New permission `strategy:manage`**, gating a new 8-route
+  `/strategies` router; ownership (`owner_user_id`) is checked
+  per-request on top of the permission, so holding the permission only
+  ever grants access to one's own strategies.
+  **(4) Frontend**: `/strategies` (list + create) and
+  `/strategies/[id]` (detail, version history, fork, a form-based
+  `StrategyBuilderForm` — indicator rows, rule operator/operand selects,
+  conditional sizing fields; not a raw JSON textarea, not a visual
+  node/flow editor). A non-draft version is read-only client-side too,
+  not just server-side. One new `SideNav` entry ("Strategy Lab"). No new
+  dependency.
+  **778 backend tests / 183 frontend tests across 20 files** (705→778
+  backend since D070, +52 this phase; 170/18→183/20 frontend, +13 this
+  phase); none deleted, skipped, or weakened. `ruff check` and `mypy apps`
+  (109 source files, up from 103) clean; `bash scripts/secret_scan.sh`
+  clean; `npm run build` clean with every new route present in the
+  manifest. Verified on a freshly-migrated, isolated Postgres/Redis
+  (55432/56379) via a full `alembic upgrade` → `downgrade -1` →
+  `upgrade head` round-trip and the complete backend+frontend suites,
+  confirming the one failure seen during development (the same stale
+  shared-dev-DB `AAPL.US` position D070 already documented) does not
+  reproduce on a clean database and is not caused by this phase.
+  Not built (deliberately): anything that reads a `StrategyDefinition` to
+  actually run it (backtesting is Phase 55 — nothing here touches
+  `apps/api/app/backtesting/`, `marketdata/`, `risk/`,
+  `portfolio_manager/`, or `execution/`), an `ADMIN` override for
+  managing another user's strategies, a visual node/flow builder, and a
+  Playwright e2e spec — the last one matches Phase 50's watchlists (the
+  closest precedent: a full user-owned CRUD resource with a real UI),
+  which also shipped without one.
 - Phase 53: persisted historical OHLCV bar store + manual, on-demand
   ingestion (2026-09-08, D070) — the prerequisite the new Strategy Lab
   initiative (a user-supplied 70-section master prompt, phased as this

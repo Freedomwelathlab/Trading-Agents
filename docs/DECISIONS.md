@@ -7096,3 +7096,148 @@ Phase 53 scope boundary).
 
 Status: Implemented and verified as above.
 
+**D071 — Phase 54: user-owned strategies with immutable-once-validated versions, a closed-vocabulary structural validator, and a form-based builder UI**
+
+Reason: continuing the Strategy Lab arc D070 unblocked. This phase gives
+the platform its first notion of a *strategy* at all — until now,
+"strategy" meant exactly one hard-coded SMA(20) crossover (D025). Built by
+two agents working in parallel against one frozen contract (backend:
+FastAPI/SQLAlchemy; frontend: Next.js) — no code was shared between them
+during the build, only the contract, and the result matched on every field
+name and status code without a reconciliation pass being needed.
+
+**(1) `Strategy` / `StrategyVersion`** (migration `0017`) — `strategies`
+owns `owner_user_id` (`ON DELETE SET NULL`, not `Watchlist`'s `CASCADE`:
+a strategy is not ephemeral personal research state, and Phase 55's
+`backtest_runs.strategy_version_id` will be `ON DELETE RESTRICT`, so a
+version must be able to outlive the deletion of whoever created it, the
+same reasoning `orders.submitted_by_user_id` already follows).
+`strategy_versions.definition` is **the first JSONB column in this
+schema** — every other model uses typed columns — justified because the
+rule vocabulary is still evolving across the phases ahead (walk-forward,
+Monte Carlo and universe scanning will each want new indicator/operator
+types), and a migration per new rule type would be worse than one JSONB
+column plus application-level structural validation. A version is
+immutable once `status != 'draft'`, enforced as a 409 at the API layer
+(`routes/strategies.py`), not a DB trigger — deliberately, so the failure
+mode is an ordinary HTTP error rather than a raw SQL exception, matching
+D025's "never silently mutate a validated strategy" language.
+
+**(2) A closed-vocabulary `StrategyDefinition` and a purely structural
+validator** (`apps/api/app/strategies/models.py` + `validation.py`).
+Indicators this phase: `sma`, `rsi` (exactly what
+`marketdata/indicators.py` already implements — no new indicator math was
+written). Rule operators: `crosses_above`, `crosses_below`, `gt`, `gte`,
+`lt`, `lte`, each over two operands that are the literal `"close"`, a
+declared indicator id, or a fixed numeric threshold — deliberately flat,
+no nested expressions, so there is no recursion depth to bound. Position
+sizing: `all_in`, `fixed_fraction` (`0 < fraction ≤ 1`), `fixed_notional`
+(`amount > 0`). **`validate_definition()` never calls `eval`/`exec`/
+`compile` or executes any part of a definition — it is a pure structural
+comparison against this closed vocabulary, and that is a hard security
+boundary on this platform, not a style choice: a definition is untrusted
+input submitted by anyone holding `strategy:manage`, on a system that
+places real orders through a real broker.** It collects *every* problem
+in one pass (never stops at the first), reporting a precise path and the
+offending value per error (e.g. `"indicators[1].period must be a positive
+integer, got -5"`) — a builder UI showing five unrelated typos as five
+sequential round trips would be unusable. Phase 55's backtest executor
+inherits the identical no-execution rule: it walks this same vocabulary
+and dispatches to deterministic functions, and it will never compile
+anything either.
+
+**(3) New permission `STRATEGY_MANAGE = "strategy:manage"`**
+(`auth/permissions.py`) — gates the whole `/strategies` router at the
+FastAPI-dependency level, exactly like `admin:manage` gates `/admin`. It
+answers a different question than the per-row ownership check every route
+also performs (`_load_owned_strategy`): the permission says an account may
+work with strategies *at all*; the `owner_user_id` check says *which*
+strategies. Not-yours is 403, not-there is 404, and a version that exists
+under a *different* strategy than the one named in the URL is a 404 too
+(never a 403) — a 403 there would confirm a version's existence under a
+strategy the caller never asked about. No `ADMIN` override this phase —
+deliberately deferred.
+
+**(4) 8 routes on `apps/api/app/api/routes/strategies.py`** (`POST/GET
+/strategies`, `GET/PATCH /strategies/{id}`, `GET/PATCH
+/strategies/{id}/versions/{id}`, `POST /strategies/{id}/versions`
+[fork — deep-copies the source definition, never a shallow copy, so
+editing a fork can never rewrite the version it came from], `POST
+.../versions/{id}/validate` [the *only* route that ever writes `status`
+or `validated_at`]). Editing a draft (`PATCH .../versions/{id}`)
+deliberately does **not** run the validator — a definition under
+construction passes through many invalid intermediate states (an
+indicator declared before the rule that uses it), and a save that
+refused all of them would make the builder unusable. Validation is its
+own explicit, idempotent-by-refusal act: an already-`validated` version
+is not silently re-validated even though it would pass, because
+re-running it would imply the result could differ, which the whole
+immutability rule says it cannot.
+
+**(5) Frontend**: `app/strategies` (list + create) and
+`app/strategies/[strategyId]` (header edit, version history, fork,
+builder), a new `StrategyBuilderForm` — a form-based rule composer (typed
+indicator rows, operator/operand selects, conditional sizing fields), not
+a raw JSON textarea and not a visual node/flow editor, matching the
+approved plan's "keep v1 scope real" instruction. A non-draft version
+renders every control disabled client-side, in addition to (not instead
+of) the backend's 409 — defense in depth, and better UX than waiting for
+a rejected request. `SideNav` gained one entry ("Strategy Lab") and one
+inline icon, following the existing `IconTerminal`/`IconShield` pattern.
+No chart library, no new dependency — Recharts is still scoped to start
+at Phase 56.
+
+Alternatives rejected:
+
+- **A visual node/flow editor for the builder.** Real, useful, and far
+  more UI investment than one indicator list plus two rules plus a sizing
+  block justifies at this phase's actual vocabulary size. The form-based
+  composer produces the identical JSON; nothing about the definition
+  format assumes one editor over the other, so this can be revisited
+  later without a data migration.
+- **A raw JSON textarea instead of a form.** Faster to build, but pushes
+  every syntax and vocabulary error onto the itemized-validator round
+  trip that this phase's UX is trying to avoid making the primary
+  authoring loop.
+- **Validating on every `PATCH .../versions/{id}` save.** Rejected in (4)
+  above — a draft must be allowed to exist in an incomplete state.
+- **A `PARTIAL`-style "some fields valid" version status.** Rejected: the
+  whole point of the immutability rule is a clean boundary between "not
+  yet checked" and "checked and correct." A version is `draft` until
+  `validate_definition` returns nothing wrong, full stop.
+
+Scope discipline: `apps/api/app/backtesting/`,
+`apps/api/app/marketdata/`, `apps/api/app/risk/`,
+`apps/api/app/portfolio_manager/`, `apps/api/app/execution/`, and every
+Phase-53 file are untouched — nothing yet reads a `StrategyDefinition` to
+run it; that is Phase 55. No e2e Playwright spec was added, matching
+Phase 50's watchlists (the closest precedent: a full user-owned CRUD
+resource with a real UI) — flagged, not silently skipped, in
+`docs/IMPLEMENTATION_STATUS.md`.
+
+Verification (2026-09-08, two parallel subagents against one frozen
+contract, reconciled and independently re-verified centrally on a
+freshly-migrated, isolated Postgres/Redis on remapped ports 55432/56379 —
+never the shared dev stack):
+
+- `alembic upgrade head` from empty through `0017` clean; `downgrade -1`
+  → `upgrade head` round-trips clean.
+- Backend: **778 passed, 0 failed** (705 → 726 at D070 → 778 here; +52:
+  37 pure-unit in `tests/strategies/`, 15 DB-backed integration in
+  `tests/api/test_strategies.py`), confirmed on the clean isolated stack —
+  the one failure the backend agent saw while developing against the
+  long-lived shared dev DB (the same pre-existing `AAPL.US`-position
+  contamination D070 already documented) does **not** reproduce here,
+  which is itself the confirmation that it is shared-DB pollution and not
+  anything this phase touched.
+- `ruff check` clean; `mypy apps` clean, **109 source files** (up from
+  103); `bash scripts/secret_scan.sh` clean.
+- Frontend: **183 passed across 20 files** (170/18 → 183/20; +13: 6 in
+  `StrategyList.test.tsx`, 7 in `StrategyBuilderForm.test.tsx`), `npm run
+  build` clean — every new route (`/strategies`, `/strategies/[id]`, and
+  the 5 new `/api/strategies/**` proxies) present in the build manifest
+  with the expected static/dynamic rendering mode. No new dependency
+  (`package.json`/`pnpm-lock.yaml` diff is empty).
+
+Status: Implemented and verified as above.
+

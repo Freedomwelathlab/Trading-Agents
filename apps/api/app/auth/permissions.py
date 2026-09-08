@@ -30,3 +30,29 @@ class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     and role still have to be created by direct DB insert; there is no
     user holding this permission to call these routes with the first time
     (bootstrap problem, documented, not solved by this permission alone)."""
+    STRATEGY_MANAGE = "strategy:manage"
+    """Phase 54. Gates every route under /strategies - create, read, edit,
+    fork a version, validate a version, archive - but ONLY over the
+    caller's OWN strategies.
+
+    Ownership is the `strategies.owner_user_id` column, checked per route
+    (`_load_owned_strategy` in apps/api/app/api/routes/strategies.py), not a
+    separate grant table like BrokerGrant (D012). There is exactly one
+    owner per strategy, set at creation and never reassigned this phase, so
+    a join table would model a many-to-many relationship that does not
+    exist. Holding this permission therefore authorizes acting on your own
+    strategies and no one else's: every route additionally checks
+    `strategy.owner_user_id == current_user.id` and answers 403 when it
+    does not hold (404 when no strategy has that id at all, so a
+    nonexistent id never 403s merely because nobody can own a row that
+    isn't there - the same order and codes `require_broker_access` and
+    `_owned_watchlist` already use).
+
+    Deliberately NOT built this phase: an ADMIN override. `admin:manage` is
+    an operational permission (users, roles, grants, market-data
+    ingestion), and letting it silently read or edit every user's strategy
+    research would be a new and much broader capability than any route it
+    gates today. If cross-user visibility is ever wanted it should be its
+    own permission with its own enforcing check, not a side effect of this
+    one.
+    """

@@ -1394,5 +1394,107 @@ Symbols are resolved sequentially, not concurrently: the vendors behind
 plus sequential resolution keeps one page refresh from becoming a burst
 of upstream requests.
 
+## `POST /strategies` — create
+
+Requires `strategy:manage` (D071). Creates a `Strategy` owned by the
+caller plus its version 1 (`status: "draft"`) in one transaction.
+
+Request: `{"name": "SMA crossover v1", "description": "...", "definition": {}}`
+— `definition` defaults to `{}` (a legal, deliberately incomplete draft;
+see the StrategyDefinition shape below).
+
+Response (201, `StrategyResponse`):
+```json
+{
+  "id": "…", "owner_user_id": "…", "name": "SMA crossover v1",
+  "description": "...", "status": "active",
+  "created_at": "…", "updated_at": "…",
+  "latest_version": { "id": "…", "strategy_id": "…", "version_number": 1,
+    "definition": {}, "definition_hash": "…", "status": "draft",
+    "created_by_user_id": "…", "created_at": "…", "validated_at": null }
+}
+```
+
+## `GET /strategies` — list your own
+
+Requires `strategy:manage`, owner-only (`WHERE owner_user_id = caller`).
+Same `limit`/`offset` envelope every other listing uses. Response (200,
+`ListStrategiesResponse`): `{"items": [ /* StrategySummary rows, no
+definition */ ], "limit": 50, "offset": 0}`.
+
+## `GET /strategies/{strategy_id}`
+
+404 if no such strategy exists, 403 if it exists but isn't the caller's.
+Response (200, `StrategyDetailResponse`): the strategy, its latest version
+in full, and every version as a summary (no `definition`), newest
+`version_number` first.
+
+## `PATCH /strategies/{strategy_id}`
+
+Partial update (`model_fields_set` convention — only keys present in the
+body are applied). Body: `{"name"?, "description"?, "status"? ("active"|"archived")}`.
+`name`/`status` explicit `null` is 422 (NOT NULL columns). No delete
+endpoint — a version of this strategy may already be a backtest run's
+recorded input (Phase 55); `status: "archived"` is how a strategy is
+retired instead.
+
+## `GET /strategies/{strategy_id}/versions/{version_id}`
+
+404 if the version doesn't exist or belongs to a different strategy than
+the one named in the URL (never a 403 for the latter — that would confirm
+the version exists under someone else's strategy). Response (200,
+`StrategyVersionResponse`): the full version, `definition` included.
+
+## `PATCH /strategies/{strategy_id}/versions/{version_id}`
+
+Body: `{"definition": {...}}` (required — a full replace, never a partial
+merge). **409** (`VERSION_NOT_DRAFT: …`) if the version's status isn't
+`"draft"` — this is where "a version is immutable once validated" is
+actually enforced; the message names the fork endpoint. Deliberately does
+**not** run validation — a draft may pass through many invalid
+intermediate states while it's being written.
+
+## `POST /strategies/{strategy_id}/versions` — fork a new draft
+
+Body: `{"from_version_id"?}` (omitted = fork the strategy's current
+highest-numbered version; given, must belong to this strategy or 404).
+Deep-copies the source's `definition` into a brand-new `draft`. Response
+(201, `StrategyVersionResponse`).
+
+## `POST /strategies/{strategy_id}/versions/{version_id}/validate`
+
+409 (`VERSION_NOT_DRAFT: …`) if not a draft — an already-`validated`
+version is never re-validated, even though it would pass, because the
+whole point of immutability is that the result cannot change. Otherwise
+runs the purely structural `validate_definition()` (no code execution,
+ever — see `apps/api/app/strategies/validation.py`):
+
+- **Success (200, `StrategyVersionResponse`)**: `status` becomes
+  `"validated"`, `validated_at` is set. Nothing else can ever write these
+  two fields.
+- **Failure (422)**: `{"detail": {"errors": ["indicators[1].period must be a
+  positive integer, got -5", "entry_rule.left references undeclared indicator
+  id 'sma_99'", ...]}}` — **every** problem found, never just the first, and
+  the row is left completely unchanged (still the same draft, still editable).
+
+### `StrategyDefinition` shape (the `definition` field everywhere above)
+
+```json
+{
+  "indicators": [{"id": "sma_20", "type": "sma", "period": 20}],
+  "entry_rule": {"op": "crosses_above", "left": "sma_20", "right": "close"},
+  "exit_rule": {"op": "crosses_below", "left": "sma_20", "right": "close"},
+  "position_sizing": {"type": "all_in"}
+}
+```
+`indicators[].type` ∈ `sma`, `rsi`. Rule `op` ∈ `crosses_above`,
+`crosses_below`, `gt`, `gte`, `lt`, `lte`; `left`/`right` are each the
+literal `"close"`, a declared indicator's `id`, or a fixed number.
+`position_sizing.type` ∈ `all_in` (no other fields), `fixed_fraction`
+(requires `fraction`, `0 < fraction ≤ 1`), `fixed_notional` (requires
+`amount > 0`). Unknown keys anywhere are validation errors, not ignored —
+the overwhelmingly likely cause is a typo. Nothing in this shape is
+executed by anything in this codebase yet — Phase 55 is what will run one.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.
