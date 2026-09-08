@@ -18,6 +18,10 @@ from apps.api.app.api.routes.orders import fills_router as order_fills_router
 from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
 from apps.api.app.api.routes.strategies import router as strategies_router
+from apps.api.app.api.routes.strategy_backtests import router as strategy_backtests_router
+from apps.api.app.api.routes.strategy_backtests import (
+    runs_router as backtest_runs_router,
+)
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
 from apps.api.app.api.routes.watchlists import router as watchlists_router
@@ -304,6 +308,16 @@ app.include_router(watchlists_router)
 # watchlists is that it additionally requires the strategy:manage
 # permission at the router level.
 app.include_router(strategies_router)
+# Phase 55: the persisted-backtest surface. Two routers from one module -
+# the nested one shares the /strategies prefix above (a backtest is always
+# OF a specific version, and the path says so), the other owns
+# /backtest-runs (a run is addressable by its own id). Registered AFTER the
+# strategies router purely to keep the Strategy Lab's surfaces in phase
+# order; the paths do not overlap, so the order is not load-bearing. Both
+# are gated on strategy:backtest, deliberately NOT strategy:manage - a role
+# may hold either without the other.
+app.include_router(strategy_backtests_router)
+app.include_router(backtest_runs_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are
