@@ -23,11 +23,12 @@ vendor boundary so tests need no credentials" structure.
 """
 
 from collections.abc import Awaitable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 from apps.api.app.core.config import Settings
+from apps.api.app.marketdata.bar_provider import Bar
 from apps.api.app.marketdata.fundamental_metrics import latest_point
 from apps.api.app.marketdata.fundamentals_provider import CompanyFundamentals
 from apps.api.app.marketdata.models import MarketSnapshot
@@ -126,6 +127,120 @@ class LongbridgeHistoryProvider:
         rows: list[Any] = list(candles)
         rows.sort(key=lambda c: c.timestamp)
         return [Decimal(str(c.close)) for c in rows]
+
+
+class LongbridgeHistoryCandlestickClient(Protocol):
+    # Not `async def`, same reasoning as LongbridgeCandlestickClient.candlesticks
+    # above - the real SDK's methods are plain methods returning Awaitables.
+    def history_candlesticks_by_date(
+        self,
+        symbol: str,
+        period: "type[Period]",
+        adjust_type: "type[AdjustType]",
+        start: date | None,
+        end: date | None,
+    ) -> Awaitable[Sequence[object]]: ...
+
+
+class LongbridgeBarBackfillProvider:
+    """Phase 53 (docs/DECISIONS.md D070): real OHLCV bars over an arbitrary
+    historical date range, for ingestion into market_data_bars - closes the
+    gap LongbridgeHistoryProvider leaves (closes-only, most-recent-N-as-of-
+    now only, no date-range parameter). A distinct capability from
+    LongbridgeHistoryProvider on purpose, matching this file's existing
+    one-class-per-capability convention, even though both wrap the same
+    AsyncQuoteContext.
+
+    Verified against the installed longport package (v4.3.7) by direct
+    introspection of openapi.pyi:
+    `AsyncQuoteContext.history_candlesticks_by_date(symbol, period,
+    adjust_type, start, end)` (awaitable, returns a list of the same
+    `Candlestick` objects `candlesticks()` returns - real `.open`/`.high`/
+    `.low`/`.close`/`.volume`/`.timestamp`, not just `.close`).
+    """
+
+    name = "longbridge"
+
+    def __init__(self, client: LongbridgeHistoryCandlestickClient) -> None:
+        self._client = client
+
+    async def get_bars(
+        self, symbol: str, *, bar_interval: str, start_date: date, end_date: date
+    ) -> list[Bar]:
+        if bar_interval != "1d":
+            raise ValueError(
+                f"LongbridgeBarBackfillProvider only supports bar_interval='1d' in "
+                f"Phase 53, got {bar_interval!r}."
+            )
+
+        from longport.openapi import AdjustType, Period
+
+        try:
+            candles = await self._client.history_candlesticks_by_date(
+                symbol, Period.Day, AdjustType.NoAdjust, start_date, end_date
+            )
+        except Exception as exc:
+            raise VendorError(
+                f"Longbridge history-candlestick request failed for {symbol!r}: {exc}"
+            ) from exc
+
+        if not candles:
+            raise DataUnavailableError(
+                f"Longbridge returned no candlesticks for {symbol!r} between "
+                f"{start_date.isoformat()} and {end_date.isoformat()}."
+            )
+
+        # Never assume the SDK's ordering - same discipline as
+        # LongbridgeHistoryProvider.get_daily_closes above.
+        rows: list[Any] = list(candles)
+        rows.sort(key=lambda c: c.timestamp)
+
+        bars: list[Bar] = []
+        for row in rows:
+            ts = _as_utc(row.timestamp)
+            if ts is None:
+                # A candle with no usable timestamp cannot be placed on the
+                # bar timeline honestly - skipped, never defaulted to
+                # start_date/end_date/now (same discipline as
+                # LongbridgeNewsProvider.get_recent_headlines above).
+                continue
+            bars.append(
+                Bar(
+                    symbol=symbol,
+                    bar_interval=bar_interval,
+                    ts=ts,
+                    open=_optional_decimal(row.open),
+                    high=_optional_decimal(row.high),
+                    low=_optional_decimal(row.low),
+                    close=Decimal(str(row.close)),
+                    volume=int(row.volume) if row.volume is not None else None,
+                    source=self.name,
+                )
+            )
+
+        if not bars:
+            raise DataUnavailableError(
+                f"Longbridge returned candlesticks for {symbol!r} but none carried a "
+                "usable timestamp."
+            )
+        return bars
+
+
+def build_longbridge_bar_backfill_provider(
+    settings: Settings,
+) -> LongbridgeBarBackfillProvider | None:
+    """Same all-or-nothing credential gate as every other Longbridge
+    builder in this file. Creates its own AsyncQuoteContext, like
+    build_longbridge_history_provider does - sharing one context across
+    quote/history/backfill is a reasonable future optimization, not built
+    this phase."""
+    config = _longbridge_config(settings)
+    if config is None:
+        return None
+
+    from longport.openapi import AsyncQuoteContext
+
+    return LongbridgeBarBackfillProvider(AsyncQuoteContext.create(config))
 
 
 def _optional_decimal(raw: object) -> Decimal | None:

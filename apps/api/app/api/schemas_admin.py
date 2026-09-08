@@ -2,9 +2,10 @@
 in any response - CreateUserResponse deliberately has no such field."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from apps.api.app.db.models import BrokerKind
 
@@ -150,6 +151,42 @@ class EmergencyStopRequest(BaseModel):
         if not stripped:
             raise ValueError("reason must not be blank")
         return stripped
+
+
+class CreateMarketDataBackfillRequest(BaseModel):
+    """Phase 53 (docs/DECISIONS.md D070): manually trigger ingestion of
+    real historical OHLCV bars for one symbol over one date range. No
+    scheduled/automatic backfill exists yet - see
+    apps/api/app/marketdata/ingestion/backfill.py's module docstring."""
+
+    symbol: str = Field(min_length=1, max_length=32)
+    bar_interval: Literal["1d"] = "1d"
+    """Only daily bars are ingested in Phase 53 - the market_data_bars
+    column exists for future intraday intervals, but nothing populates
+    them yet, so any other value is a 422, not a silently-ignored request."""
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> "CreateMarketDataBackfillRequest":
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must not be before start_date")
+        return self
+
+
+class MarketDataBackfillJobResponse(BaseModel):
+    id: uuid.UUID
+    symbol: str
+    bar_interval: str
+    requested_start_date: date
+    requested_end_date: date
+    status: str
+    bars_ingested: int
+    earliest_bar_date: date | None
+    latest_bar_date: date | None
+    error_detail: str | None
+    """Set only when status is "failed" - the real VendorError/
+    DataUnavailableError message, never a generic placeholder."""
 
 
 class EmergencyStopStatusResponse(BaseModel):

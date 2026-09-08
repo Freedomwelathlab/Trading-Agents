@@ -6934,3 +6934,165 @@ touched — the concurrent sibling worktree is editing it.
 
 Status: Implemented and verified as above.
 
+**D070 — Phase 53: persisted historical OHLCV bar store + manual, on-demand ingestion — the prerequisite the entire Strategy Lab initiative (spec-external, user-supplied master prompt, 2026-09-08) sits on**
+
+Reason: a new 70-section master prompt asked for a full Strategy Lab —
+pluggable strategies, a real backtesting engine, walk-forward validation,
+Monte Carlo, robustness testing, strategy ranking, universe scanning, a
+signal engine, and more, phased as this project's Phase 53 onward. Three
+parallel codebase explorations (backend architecture, frontend
+architecture, existing strategy/backtest/signal infra) converged on one
+finding: **no persistent historical OHLCV bar storage exists anywhere in
+this codebase**, even though the Postgres image has been
+`timescale/timescaledb` since Phase 1. `HistoryProvider` (D021) only ever
+exposes "the most recent N daily closes as of now" — closes only, no OHLV,
+no arbitrary date range, fetched live from the vendor on every call, never
+cached or persisted. `backtesting/engine.py` (D025) is hard-limited to
+`end_date == today` for exactly this reason. Almost nothing else in the
+master prompt (real backtesting over arbitrary windows, walk-forward,
+Monte Carlo, universe scanning at scale, correlation-aware position
+sizing) can be built honestly under this project's "never fabricate data"
+rule (`docs/TRADING_SAFETY.md`) without this gap closed first. This phase
+closes it, and only it — no strategy/backtest code is touched.
+
+What was built:
+
+**(1) `market_data_bars`** (migration `0016`) — one real OHLCV bar per
+`(symbol, bar_interval, ts)`. Primary key is that natural composite triple,
+not this schema's usual `_uuid_pk()` — the one deliberate departure from
+that helper in the whole schema. A Timescale hypertable's constraints must
+include the partitioning column (`ts`), and a surrogate UUID PK would add
+nothing a natural key doesn't already give: idempotent re-ingestion via
+`ON CONFLICT (symbol, bar_interval, ts) DO UPDATE`
+(`apps/api/app/marketdata/store.py`), and no possibility of two rows ever
+describing the same bar. This is the **first hypertable in this codebase**
+(`CREATE EXTENSION IF NOT EXISTS timescaledb;` runs in this migration,
+verified for real — `SELECT * FROM timescaledb_information.hypertables;`
+shows `market_data_bars` after `alembic upgrade head`). `bar_interval` is a
+plain `VARCHAR(8)`, not a Postgres ENUM, so an intraday interval later is
+an application change, not a migration that mutates a type every existing
+row depends on — only `'1d'` is written this phase.
+
+**(2) `market_data_backfill_jobs`** (same migration) — an audit row per
+manual backfill attempt. Written once, updated exactly once in place
+(PENDING/RUNNING → SUCCEEDED/FAILED) inside the same request that created
+it — there is no background worker in this codebase (outside the snapshot
+scheduler's own documented single-worker limitation) that could race that
+update. `PARTIAL` exists in the enum as reserved future-work for a
+multi-symbol/batch job; this phase's single-symbol synchronous job never
+sets it.
+
+**(3) `HistoricalBarProvider`**
+(`apps/api/app/marketdata/bar_provider.py`) — a new Protocol, deliberately
+separate from `HistoryProvider`, not a replacement for it: the live
+analyst layer still reads through `HistoryProvider` for its one
+most-recent-N-closes use case, unaffected. `MarketDataStore`
+(`apps/api/app/marketdata/store.py`) implements the read side against
+`market_data_bars`, and — unlike every vendor `Provider` class in this
+package, which is built once at startup around a long-lived client — is
+constructed fresh per call around whichever `AsyncSession` the caller
+already holds, since a Postgres session is request-scoped, not
+process-scoped (same reasoning `execution/persistence.py`'s plain
+session-taking functions already follow; `MarketDataStore` is a thin class
+instead only because `HistoricalBarProvider`'s Protocol shape calls for
+one).
+
+**(4) `LongbridgeBarBackfillProvider`**
+(`apps/api/app/marketdata/providers/longbridge.py`) — wraps the vendor
+SDK's `history_candlesticks_by_date(symbol, period, adjust_type, start,
+end)`, verified against the installed `longport` package (v4.3.7) by
+direct introspection of `openapi.pyi`: it returns the same `Candlestick`
+objects `candlesticks()` does, but over an arbitrary date range instead of
+"most recent N" — real `.open`/`.high`/`.low`/`.close`/`.volume`, not just
+`.close`. Added to the existing per-vendor-file convention (one file per
+vendor, one class per capability) rather than the separate
+`ingestion/providers/` subpackage an earlier sketch of this plan
+considered — kept for consistency with how `LongbridgeHistoryProvider`/
+`LongbridgeFundamentalsProvider`/`LongbridgeNewsProvider` already live
+alongside each other in this one file. Same all-or-nothing
+`LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN` credential
+gate as every other Longbridge builder; `None` when unconfigured, never a
+degraded provider.
+
+**(5) `apps/api/app/marketdata/ingestion/backfill.py`** — orchestrates one
+job: create the row → call the vendor-boundary `BarBackfillProvider`
+Protocol → upsert via `MarketDataStore` → record the outcome, all inside
+one transaction. A vendor `VendorError`/`DataUnavailableError` is recorded
+as `FAILED` with the real error message — never silently treated as "zero
+bars, success." No automatic/scheduled backfill exists — this is manual,
+on-demand, exactly once per call, the same posture D025's backtest engine
+takes toward its own execution.
+
+**(6) `POST /admin/market-data/backfill`** — gated by the existing
+`Permission.ADMIN` rather than a new permission (this is operational
+data-management, not a trading capability, matching every other action in
+`routes/admin.py`). Runs synchronously to completion within the request —
+no job queue exists to hand it off to. Returns **201 whether the job
+succeeded or failed** — like a backtest result, a completed attempt is a
+real resource, not an HTTP-level error condition, so a
+`DATA_UNAVAILABLE`/vendor-failure outcome still returns the audit row with
+`status: "failed"` rather than discarding it behind a 5xx. `bar_interval`
+is `Literal["1d"]` at the schema layer, so anything else is a 422, not a
+silently-ignored request.
+
+Alternatives rejected:
+
+- **A background job queue for backfill.** No such infrastructure exists
+  in this codebase (the snapshot scheduler is the only precedent, and it's
+  explicitly documented as having a single-worker limitation). Building
+  one to backfill a handful of symbols once is exactly the kind of
+  half-built indirection D025 warned against for a pluggable strategy
+  interface — deferred to whichever later phase's scale actually needs it
+  (universe scanning, Phase 59+).
+- **A surrogate UUID primary key on `market_data_bars`.** Rejected in (1)
+  above — the natural composite key is strictly better here and a
+  hypertable's constraints need to include `ts` anyway.
+- **Reusing/extending `HistoryProvider` instead of a new
+  `HistoricalBarProvider`.** `HistoryProvider`'s contract ("most recent N
+  as of now," closes-only) is fundamentally different from "bars in
+  [start, end]" — bolting a date-range parameter onto it would leave
+  every existing caller (the analyst layer) needing to reason about a
+  parameter it never uses, for no benefit; a second, narrower Protocol is
+  the smaller, more honest change.
+
+Verification (2026-09-08, `main` @ pre-Phase-53 tip, isolated Postgres
+55432/Redis 56379 — never the shared dev stack's 5432/6379, which turned
+out to hold an unrelated stale broker row from earlier ad hoc debugging
+that made the *pre-existing* `test_snapshot_scheduler_market_hours.py`
+weekday-control test flake on an unrelated symbol list assertion; the same
+suite is **726 passed, 0 failed** on the freshly-migrated isolated stack,
+confirming that failure was shared-DB pollution, not anything this phase
+touched):
+
+- `alembic upgrade head` on an empty database: clean run through `0016`;
+  `SELECT * FROM timescaledb_information.hypertables` confirms
+  `market_data_bars` is a real hypertable. `alembic downgrade -1` then
+  `upgrade head` round-trips cleanly.
+- **726 passed, up from the 705-test baseline** (+21: 6 in
+  `tests/marketdata/providers/test_longbridge_bar_backfill.py`, 4 in
+  `tests/marketdata/test_store.py`, 4 in `tests/marketdata/test_backfill.py`,
+  7 in `tests/api/test_admin_market_data.py`) — none deleted, skipped, or
+  weakened.
+- `ruff check` and `mypy apps` (103 source files, up from 99) both clean;
+  `bash scripts/secret_scan.sh` clean.
+- A real, credential-gated vendor smoke test was attempted and honestly
+  reported rather than faked: this checkout's `.env` documents the
+  `LONGPORT_APP_KEY`/`LONGPORT_APP_SECRET`/`LONGPORT_ACCESS_TOKEN` trio in
+  comments but does not set real values, so
+  `build_longbridge_bar_backfill_provider()` correctly returned `None` and
+  the live-network half of verification could not run in this environment.
+  This is the same NOT_CONFIGURED path every other market-data provider in
+  this app already takes when unconfigured, and it is itself the behavior
+  under test in `test_no_provider_configured_is_not_configured_not_a_fabricated_success`.
+
+Scope discipline: no strategy/backtest/signal code exists yet and none is
+touched by this phase. `apps/api/app/backtesting/`,
+`apps/api/app/marketdata/history_provider.py`,
+`apps/api/app/marketdata/indicators.py`, `apps/api/app/risk/`,
+`apps/api/app/portfolio_manager/`, and `apps/api/app/execution/` are all
+untouched. `LIVE_TRADING_ENABLED` is untouched. No frontend file is
+touched — this phase has no UI surface by design (see the approved plan's
+Phase 53 scope boundary).
+
+Status: Implemented and verified as above.
+

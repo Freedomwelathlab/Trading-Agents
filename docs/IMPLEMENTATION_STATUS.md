@@ -4,6 +4,79 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 53: persisted historical OHLCV bar store + manual, on-demand
+  ingestion (2026-09-08, D070) — the prerequisite the new Strategy Lab
+  initiative (a user-supplied 70-section master prompt, phased as this
+  project's Phase 53 onward per the approved plan) sits on. **No
+  strategy/backtest code exists yet and none is touched.** Backend only;
+  `apps/web` untouched by design (this phase has no UI surface).
+  **The gap**: no persistent historical OHLCV bar storage existed anywhere
+  in this codebase, even though the Postgres image has been
+  `timescale/timescaledb` since Phase 1 — `HistoryProvider` (D021) only
+  ever exposes "the most recent N daily closes as of now," fetched live on
+  every call, closes-only, no date-range parameter, which is exactly why
+  `backtesting/engine.py` (D025) is hard-limited to `end_date == today`.
+  Three parallel codebase explorations confirmed this is the single
+  biggest blocker to everything else the master prompt asks for.
+  **(1) `market_data_bars` + `market_data_backfill_jobs`** (migration
+  `0016`) — the first hypertable in this codebase
+  (`CREATE EXTENSION IF NOT EXISTS timescaledb;` runs for the first time
+  here, verified for real against `timescaledb_information.hypertables`).
+  Natural composite `(symbol, bar_interval, ts)` primary key, not this
+  schema's usual random-UUID `_uuid_pk()` — a hypertable's constraints
+  must include the partitioning column, and the natural key makes
+  idempotent re-ingestion trivial. Only `bar_interval='1d'` is populated;
+  the column exists for future intraday intervals.
+  **(2) `HistoricalBarProvider`** (`apps/api/app/marketdata/bar_provider.py`)
+  + **`MarketDataStore`** (`apps/api/app/marketdata/store.py`) — a new,
+  separate read/write port for the persisted bar store, deliberately not a
+  replacement for `HistoryProvider` (the live analyst layer keeps using
+  that for its own, different, most-recent-N-closes need).
+  **(3) `LongbridgeBarBackfillProvider`**
+  (`apps/api/app/marketdata/providers/longbridge.py`) — wraps the vendor
+  SDK's `history_candlesticks_by_date()` (verified by direct introspection
+  of the installed `longport` v4.3.7 package), real OHLCV over an
+  arbitrary date range, same all-or-nothing credential gate as every other
+  Longbridge provider.
+  **(4) `apps/api/app/marketdata/ingestion/backfill.py`** — orchestrates
+  one on-demand job (create → fetch → upsert → record outcome, one
+  transaction); a vendor failure is recorded `FAILED` with the real error,
+  never silently "zero bars, success." No scheduled/automatic backfill —
+  manual only, same posture the backtest engine takes toward its own
+  execution.
+  **(5) `POST /admin/market-data/backfill`** — gated by the existing
+  `Permission.ADMIN` (no new permission this phase). Runs synchronously
+  to completion in the request (no job queue exists). Returns 201 whether
+  the job succeeded or failed — a completed attempt is a real, auditable
+  resource either way, not an HTTP-level error.
+  **726 tests passing** (705 pre-existing baseline + 21 new: 6 vendor-unit
+  in `tests/marketdata/providers/test_longbridge_bar_backfill.py`, 4 in
+  `tests/marketdata/test_store.py` covering upsert idempotency, 4 in
+  `tests/marketdata/test_backfill.py` covering job success/failure/
+  overlapping re-ingestion, 7 route-level in
+  `tests/api/test_admin_market_data.py`); **none deleted, skipped, or
+  weakened**. `ruff check` and `mypy apps` (103 source files, up from 99)
+  both clean; `bash scripts/secret_scan.sh` clean. Verified against a
+  freshly-migrated, isolated Postgres/Redis on remapped ports (55432/56379
+  — never the shared dev stack's 5432/6379), including a real
+  `alembic upgrade head` → `downgrade -1` → `upgrade head` round-trip and a
+  live `SELECT * FROM timescaledb_information.hypertables` confirming
+  `market_data_bars` is a genuine hypertable. A real vendor smoke test was
+  attempted and honestly reported: this checkout's `.env` only documents
+  the Longbridge credential trio in comments without setting real values,
+  so `build_longbridge_bar_backfill_provider()` correctly returned `None`
+  and the live-network half of verification could not run here — the
+  NOT_CONFIGURED path itself is exactly what one of the new tests asserts.
+  Also discovered in passing (not fixed, not in scope): the shared dev
+  Postgres (port 5432, the `trading_os_pgdata` Docker volume) holds a
+  stale broker row with a leftover "AAPL.US" position from unrelated
+  earlier debugging, which makes the *pre-existing*
+  `test_snapshot_scheduler_market_hours.py` weekday-control test flake
+  there; re-running the full suite on a clean isolated stack confirmed
+  this phase's changes are not the cause.
+  Not built (deliberately): any strategy/backtest code reading from this
+  store (Phase 54+), any automatic/scheduled recurring backfill, intraday
+  intervals, or any frontend surface.
 - Phase 49: reconciliation of accepted-but-unexecuted LIVE orders — the
   gap Phase 43/D058 recorded as not built (2026-09-03, D066). **No real
   order was ever placed, no real broker was ever contacted, and
