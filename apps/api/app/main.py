@@ -17,6 +17,7 @@ from apps.api.app.api.routes.marketdata import router as marketdata_router
 from apps.api.app.api.routes.orders import fills_router as order_fills_router
 from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
+from apps.api.app.api.routes.strategies import router as strategies_router
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
 from apps.api.app.api.routes.watchlists import router as watchlists_router
@@ -297,6 +298,12 @@ app.include_router(brokers_router)
 # market-data router it shares a resolution path with rather than with the
 # /brokers routes it shares no scoping rule with.
 app.include_router(watchlists_router)
+# Phase 54: user-scoped like the watchlists router above (owned by one
+# user, never gated on a BrokerGrant), so it is registered next to it
+# rather than with the broker-scoped routers - the difference from
+# watchlists is that it additionally requires the strategy:manage
+# permission at the router level.
+app.include_router(strategies_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are

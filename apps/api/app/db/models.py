@@ -18,7 +18,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from apps.api.app.db.base import Base
@@ -717,3 +717,153 @@ class MarketDataBackfillJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class StrategyStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class StrategyVersionStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy Enum interop)
+    DRAFT = "draft"
+    VALIDATED = "validated"
+    ARCHIVED = "archived"
+
+
+class Strategy(Base):
+    """One named trading strategy a user is developing (Phase 54, migration
+    0017). The strategy row itself carries only identity and lifecycle -
+    name, description, active/archived; every actual rule set lives on a
+    `StrategyVersion` child, because the thing a backtest is run against
+    has to be a specific, frozen definition rather than "whatever this
+    strategy says today."
+
+    `owner_user_id` is ON DELETE SET NULL, deliberately NOT the CASCADE
+    `Watchlist.user_id` uses. A watchlist is ephemeral personal research
+    state with no meaning after its owner is gone; a strategy is not. Phase
+    55 adds `backtest_runs.strategy_version_id` as ON DELETE RESTRICT - a
+    run's exact input must never disappear out from under the result it
+    produced - so a strategy and its versions have to be able to outlive
+    the deletion of whoever created them. That is
+    `orders.submitted_by_user_id`'s reasoning (an audit trail survives its
+    submitter), not `Watchlist.user_id`'s. Note this codebase does not
+    delete users at all (D013 documents deactivation as the path), so this
+    is a structural guarantee rather than a routine code path.
+
+    There is exactly one owner, set at creation and never reassigned this
+    phase - no sharing model, no co-owner join table, and no ADMIN
+    override (see Permission.STRATEGY_MANAGE). Every route checks
+    `owner_user_id == current_user.id`.
+
+    `status` is the strategy-level lifecycle (`active` / `archived`) and is
+    independent of any version's own status: archiving a strategy is how a
+    user retires it from their working list without deleting research that
+    a backtest run may still reference.
+    """
+
+    __tablename__ = "strategies"
+    __table_args__ = (Index("ix_strategies_owner_created", "owner_user_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(2000))
+    status: Mapped[StrategyStatus] = mapped_column(
+        _pg_enum(StrategyStatus, "strategystatus"),
+        nullable=False,
+        default=StrategyStatus.ACTIVE,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    """Carries `onupdate` (unlike `Watchlist.created_at`, which has no
+    updated_at at all) because `PATCH /strategies/{id}` really does mutate
+    this row - name, description and status are all editable - and "when
+    was this last touched" is otherwise unanswerable."""
+
+    versions: Mapped[list["StrategyVersion"]] = relationship(
+        order_by="StrategyVersion.version_number", cascade="all, delete-orphan"
+    )
+
+
+class StrategyVersion(Base):
+    """One frozen-or-being-drafted rule set belonging to one Strategy
+    (Phase 54, migration 0017). `(strategy_id, version_number)` is UNIQUE:
+    version numbers are dense, start at 1, and are assigned by the
+    application as `max(existing) + 1`, so "version 3 of this strategy"
+    names exactly one row forever.
+
+    `definition` IS THE FIRST JSONB COLUMN IN THIS SCHEMA. Every other
+    model here uses typed columns, and that remains the default - this one
+    is the deliberate exception. The rule vocabulary a strategy definition
+    expresses is still moving: walk-forward (Phase 57), Monte Carlo, and
+    universe scanning (Phase 59) will each want new indicator and operator
+    types, and a migration per new rule type - each one reshaping a table
+    every existing strategy depends on - would be strictly worse than one
+    JSONB column plus application-level structural validation
+    (apps/api/app/strategies/validation.py). That validation is what keeps
+    the column from being a junk drawer: nothing is ever marked
+    `validated` without passing it, and it rejects unknown keys rather
+    than ignoring them, so a typo is an error rather than a silently
+    dropped rule.
+
+    **A version is immutable once `status != 'draft'`.** That is enforced
+    at the API layer as a 409
+    (apps/api/app/api/routes/strategies.py - `PATCH .../versions/{id}` and
+    the validate route both refuse a non-draft), not by a database
+    trigger, so the failure mode a caller sees is an ordinary HTTP error
+    naming the fork endpoint to use instead, rather than a raw
+    `psycopg`/asyncpg exception surfacing from a trigger nobody can
+    catch usefully. This is the concrete mechanism behind "never silently
+    mutate a validated strategy": editing a validated version is not
+    prevented in the sense of being awkward, it is impossible - the only
+    way forward is a new draft forked from it, which leaves the validated
+    version exactly as whatever backtest ran against it saw it.
+
+    `definition_hash` is the sha256 of the canonical (sorted-key,
+    whitespace-free) JSON of `definition`
+    (apps/api/app/strategies/service.py::compute_definition_hash). It is
+    stored rather than computed on read so two versions can be compared for
+    logical identity - "did this fork actually change anything?" - without
+    reparsing two JSON blobs, and so a later phase can key a cached
+    backtest result on it.
+
+    `created_by_user_id` is ON DELETE SET NULL for the same reason
+    `Strategy.owner_user_id` is: a version is an input to a run whose
+    record must outlive its author.
+    """
+
+    __tablename__ = "strategy_versions"
+    __table_args__ = (
+        UniqueConstraint("strategy_id", "version_number", name="uq_strategy_version_number"),
+        Index("ix_strategy_versions_strategy_created", "strategy_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[StrategyVersionStatus] = mapped_column(
+        _pg_enum(StrategyVersionStatus, "strategyversionstatus"),
+        nullable=False,
+        default=StrategyVersionStatus.DRAFT,
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When this version passed structural validation and became immutable.
+    NULL on every draft and never back-filled - "not yet validated" and
+    "validated at some unknown time" must stay distinguishable, the same
+    reasoning `orders.reconciled_at` documents."""

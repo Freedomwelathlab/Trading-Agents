@@ -14,7 +14,11 @@ import { usePathname } from "next/navigation";
  * `app/admin/page.tsx`).
  */
 
-type Item = { href: "/dashboard" | "/admin"; label: string; icon: React.ReactNode };
+type Item = {
+  href: "/dashboard" | "/strategies" | "/admin";
+  label: string;
+  icon: React.ReactNode;
+};
 
 function IconTerminal() {
   return (
@@ -31,6 +35,25 @@ function IconTerminal() {
       <path d="M3 5.5h18v13H3z" />
       <path d="m7 10 2.5 2L7 14" />
       <path d="M12.5 14.5H17" />
+    </svg>
+  );
+}
+
+function IconFlask() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4 shrink-0"
+      aria-hidden="true"
+    >
+      <path d="M10 3h4" />
+      <path d="M10 3v5.5L4.8 18a1.5 1.5 0 0 0 1.3 2.3h11.8a1.5 1.5 0 0 0 1.3-2.3L14 8.5V3" />
+      <path d="M7.5 15h9" />
     </svg>
   );
 }
@@ -55,6 +78,7 @@ function IconShield() {
 
 const ITEMS: Item[] = [
   { href: "/dashboard", label: "Trading desk", icon: <IconTerminal /> },
+  { href: "/strategies", label: "Strategy Lab", icon: <IconFlask /> },
   { href: "/admin", label: "Administration", icon: <IconShield /> },
 ];
 
