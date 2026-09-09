@@ -4,6 +4,61 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 58: parameter-sensitivity (robustness) testing (2026-09-09, D075)
+  — closes the scope split out of the original "walk-forward, robustness,
+  Monte Carlo" roadmap line (D074). The platform's first concrete answer
+  to the anti-overfitting requirement: replay a validated
+  `StrategyVersion` once as authored, then once per numeric parameter
+  nudged ±`magnitude_pct` (one factor at a time, every other parameter
+  held fixed), and report how far the result moved.
+  **Built by two subagents in parallel; one was interrupted mid-task by a
+  session rate limit** while writing its own integration tests. Its work
+  through that point (migration `0021`, both ORM models, the orchestrator,
+  schemas, routes, `main.py` registration, complete test files) was
+  inspected rather than redone, and needed exactly one fix: one
+  integration test's fixture used an invalid `"open"` rule operand (this
+  platform's closed vocabulary only recognizes `"close"`, per D071) —
+  fixed in the test, zero production code touched.
+  **(1) `apps/api/app/strategies/perturbation.py`** — pure, no I/O,
+  generates two variants per perturbable parameter (indicator periods,
+  and `position_sizing.fraction`/`amount` when applicable), one at a time,
+  clamped into each parameter's own valid range; a direction whose clamp
+  produces no real change is skipped. A definition with nothing numeric
+  to perturb (`all_in`, no indicators) returns an empty list — a real,
+  valid outcome, not an error.
+  **(2) `apps/api/app/backtesting/robustness.py`** — replays the baseline
+  and every perturbation through `engine_v2.py`'s own already-tested,
+  no-persistence helpers (`_load_warmup_and_window`/`_replay_window`,
+  reused across the module boundary, the same precedent D072 set for
+  `_attempt_trade`); the warmup is recomputed PER perturbed definition,
+  never shared from the baseline, since a nudged period needs a different
+  warmup count. **A perturbation is never persisted as a `BacktestRun`**
+  — it replays a definition no `StrategyVersion` actually contains, so it
+  gets its own `robustness_perturbations` row (migration `0021`) instead.
+  **(3) `max_return_deviation_pct` is one plain, honest number, not a
+  composite "robustness score"** — no weighted figure across return/
+  drawdown/etc. is defined, since any weighting would encode an unstated
+  risk preference (echoing D071's identical refusal to invent a strategy-
+  quality score).
+  **(4) Reuses the existing `strategy:backtest` permission** — another
+  analysis of a backtest, not a new capability class, same reasoning
+  walk-forward and Monte Carlo already established.
+  **916 backend tests** (878→916, +38: 22 in `tests/strategies/
+  test_perturbation.py`, 16 in `tests/backtesting/test_robustness.py` +
+  `tests/api/test_robustness.py`); none deleted, skipped, or weakened
+  (one test's own fixture was corrected, not weakened). `ruff check` and
+  `mypy apps` (124 source files, up from 120) clean; `bash
+  scripts/secret_scan.sh` clean. Verified on a freshly-migrated, isolated
+  Postgres/Redis via a full `alembic upgrade` → `downgrade -1` →
+  `upgrade head` round-trip and the complete suite; the shared dev
+  stack's familiar stale-broker-row flake resurfaced during verification
+  and, again, does not reproduce on a clean database.
+  Not built (deliberately): regime-slice reporting (bull/bear/sideways
+  performance breakdown — explicit further scope within this phase per
+  the roadmap, not attempted here), any frontend surface (backend only,
+  same posture as Phases 53/55/57), a composite robustness score (see (3)
+  above), combined/simultaneous multi-parameter perturbation (see D075's
+  Alternatives Rejected).
 - Phase 57: walk-forward validation + Monte Carlo simulation (2026-09-09,
   D074) — both build directly on Phase 55's persisted `BacktestRun`.
   **Mid-phase scope note**: the original roadmap bundled "walk-forward,

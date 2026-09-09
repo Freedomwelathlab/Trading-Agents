@@ -7642,3 +7642,146 @@ on a freshly-migrated, isolated Postgres/Redis on remapped ports
 
 Status: Implemented and verified as above.
 
+**D075 — Phase 58: parameter-sensitivity (robustness) testing, and an interrupted agent's work resumed and verified rather than redone**
+
+Reason: closes the scope this initiative's own roadmap split out of the
+original "walk-forward, robustness, Monte Carlo" line at D074. Given a
+validated `StrategyVersion`, replay it once exactly as authored (the
+baseline), then once more per numeric parameter nudged ±`magnitude_pct`
+(one factor at a time — every other parameter held at its original value),
+and report how far the result moved. This is the platform's first answer
+to the master spec's explicit anti-overfitting demand: a strategy whose
+result swings wildly from a small, honest nudge to its own numbers is
+exhibiting a textbook overfitting symptom, and this phase is what makes
+that visible rather than assumed.
+
+Built by two agents in parallel against a frozen interface, mirroring
+Phase 55's executor/engine split: `apps/api/app/strategies/perturbation.py`
+(pure, no I/O, no DB) generates the perturbed variants; `apps/api/app/backtesting/robustness.py`
+replays each one and persists the result. Unlike Phase 57, only one of the
+two needed a migration this time — no coordination was required to avoid a
+collision, and none happened.
+
+**Mid-task interruption, resumed rather than restarted.** The
+orchestrator/persistence agent hit a session rate limit mid-way through
+writing its own DB-backed integration tests. Its work through that point —
+the migration, both ORM models, `robustness.py`, the schemas, the routes,
+`main.py`'s registration, and complete (not stub) test files — was already
+on disk and was substantively finished; only one thing was actually wrong:
+one integration test used `"right": "open"` as a rule operand, but this
+platform's closed vocabulary (D071's `PRICE_OPERAND_CLOSE`) only recognizes
+the literal `"close"` for a bar price, never `"open"`/`"high"`/`"low"` — so
+that one test's own fixture definition failed structural validation before
+robustness testing ever ran. Fixed by changing the test's fixture to a
+`"close"` vs. fixed-number rule (which is what the test actually needed:
+any structurally valid definition with nothing numeric to perturb), not by
+touching `perturbation.py`, `robustness.py`, or the closed vocabulary
+itself — the bug was in one test's own input, not in anything that
+shipped. Every other file the interrupted agent produced needed no
+changes at all, confirmed by running the exact verification steps its own
+instructions specified.
+
+**(1) One-factor-at-a-time, not a combined search.** Each perturbation
+changes exactly one parameter and holds every other one fixed, so a
+result's movement can be attributed to the one thing that changed. A
+combined perturbation (nudging every parameter simultaneously) would
+conflate several effects into one number and answer a fuzzier, less
+actionable question. `apps/api/app/strategies/perturbation.py` generates
+two variants per perturbable parameter (nudged down, nudged up) —
+`indicators[i].period` (rounded, floored at 1) and, when the sizing type
+carries one, `position_sizing.fraction`/`position_sizing.amount` (clamped
+into their own valid ranges). A direction whose clamp produces no actual
+change from the original is skipped entirely — a "perturbation" that
+changed nothing would misleadingly read as evidence of robustness. A
+definition with `all_in` sizing and no indicators has nothing perturbable
+at all and correctly returns an empty list — a real, valid, structurally-
+legal case this phase must not treat as an error.
+
+**(2) The warmup is recomputed per perturbed definition, not shared from
+the baseline.** A +10% nudge on SMA(20) needs a different number of
+warmup bars than the original — reusing the baseline's shorter warmup
+would hand the evaluator too few leading bars and risk a quietly wrong
+signal rather than a loud, honest `InsufficientHistoryError`. The extra
+cost is one more query against the persisted bar store (D070) per
+perturbation — never a vendor call — which is cheap and is exactly what
+buys every row meaning what it says.
+
+**(3) A perturbation is never persisted as a `BacktestRun`.** This is the
+one structural difference from Phase 57's walk-forward, which DOES record
+each window as a real `BacktestRun` because a window replays the version's
+own definition. A perturbation replays a definition no `StrategyVersion`
+actually contains, and a `backtest_runs` row is specifically a record OF a
+version's definition — writing one anyway would file a backtest of rules
+nobody authored under a version whose stored definition says something
+else. `robustness.py` instead reaches directly for `engine_v2.py`'s two
+already-tested, no-persistence helpers (`_load_warmup_and_window`,
+`_replay_window`) — the same cross-module underscore-import precedent
+D072 established for `_attempt_trade` — and its own `robustness_perturbations`
+rows (migration `0021`) are where a variant's result lives instead.
+
+**(4) The baseline is re-run here, never read off a prior `BacktestRun`.**
+Every number this phase reports comes from the same two engine helpers,
+over the same window, cash, and limits, so "perturbed vs. baseline" is
+guaranteed to differ in exactly the one parameter that was nudged — never
+confounded by a stale prior run's possibly-different window or an engine
+that has since changed.
+
+**(5) `max_return_deviation_pct` is one plain, honest number — deliberately
+not a composite "robustness score."** This phase does not attempt to
+define a weighted figure across return, drawdown, and whatever else might
+matter, because any such weighting would encode a risk preference nobody
+has stated (echoing D071's identical refusal to invent a scoring model
+where none was asked for). A future phase can build a score on top of
+these raw columns; it could not recover the raw columns from a score. Zero
+succeeded perturbations out of several attempted, with a successful
+baseline, is left as a `SUCCEEDED` run with null aggregates and real
+counts — "the strategy works exactly as authored and every nudge of it
+fell over" is itself the strongest finding this module can produce, not an
+error to hide.
+
+Alternatives rejected:
+
+- **Perturbing every parameter simultaneously.** Rejected in (1) — would
+  conflate multiple effects and not tell a reader which parameter actually
+  drove any change observed.
+- **Persisting each perturbation as a `BacktestRun`.** Rejected in (3) — a
+  `backtest_runs` row's meaning is specifically "this version's own
+  definition, replayed"; a perturbed definition is not that.
+- **Sharing the baseline's warmup fetch across all perturbations.**
+  Rejected in (2) — a materially different fetch requirement per
+  perturbed period makes sharing actively wrong, not just imprecise.
+- **A composite robustness score.** Rejected in (5) for the same reason
+  D071 gave for not inventing a strategy-quality score: any weighting
+  would be an opinion this phase does not have the standing to assert.
+- **Restarting the interrupted agent's work from scratch** after the rate
+  limit. Rejected once inspection showed the work was substantively
+  complete and correct — redoing ~2,100 lines of already-correct,
+  already-tested code to fix one test fixture's invalid operand would have
+  cost far more than verifying and fixing the one real defect.
+
+Scope discipline: `apps/api/app/backtesting/engine.py`/`engine_v2.py`/
+`executor.py`/`strategy.py`/`metrics.py`/`errors.py`,
+`apps/api/app/strategies/validation.py`/`models.py`/`service.py`/`expressions.py`,
+and every existing route file are untouched — this phase imports from
+`engine_v2.py`/`metrics.py` and adds new sibling files only. No frontend
+file is touched.
+
+Verification (2026-09-09, two parallel subagents against one frozen
+interface — one interrupted mid-task by a session limit and resumed by
+inspection rather than restarted — re-verified centrally on a
+freshly-migrated, isolated Postgres/Redis on remapped ports 55432/56379):
+
+- `alembic upgrade head` from empty through `0021` clean; `downgrade -1` →
+  `upgrade head` round-trips clean.
+- One test fixture fixed (an invalid `"open"` operand → a valid `"close"`-
+  vs-fixed-number rule); zero production code changed.
+- **916 passed, 0 failed** (878 → 916; +38: 22 in `tests/strategies/
+  test_perturbation.py`, 16 in `tests/backtesting/test_robustness.py` +
+  `tests/api/test_robustness.py`), confirmed on the clean isolated stack —
+  the shared dev stack's familiar stale-broker-row flake (D070–D074)
+  surfaced again during verification and, again, does not reproduce here.
+- `ruff check` clean; `mypy apps` clean, **124 source files** (up from
+  120); `bash scripts/secret_scan.sh` clean.
+
+Status: Implemented and verified as above.
+

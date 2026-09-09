@@ -1629,5 +1629,56 @@ than once, e.g. at different `num_simulations`. Response (200,
 404/403 by ownership (via the backtest run's own strategy). Response
 (200, `MonteCarloRunResponse`) — same full shape as the POST above.
 
+## `POST /strategies/{strategy_id}/versions/{version_id}/robustness` — parameter-sensitivity test
+
+Requires `strategy:backtest` (D075, reused — not a new permission). 409
+(`VERSION_NOT_VALIDATED: …`) unless the version is validated. Replays the
+definition as authored (the baseline), then once per numeric parameter
+nudged ±`magnitude_pct`, one parameter at a time.
+
+Request: `{"symbol": "AAPL.US", "bar_interval": "1d", "start_date": "2026-01-01", "end_date": "2026-06-30", "starting_cash": "100000", "magnitude_pct": "10"}`
+(`magnitude_pct` defaults to `10`, bounded `(0, 50]` — a "nudge" bigger
+than that is a different strategy, not a sensitivity test).
+
+Response (201, `RobustnessRunDetailResponse` — 201 whether succeeded or
+failed):
+```json
+{
+  "id": "…", "strategy_version_id": "…", "symbol": "AAPL.US",
+  "bar_interval": "1d", "start_date": "2026-01-01", "end_date": "2026-06-30",
+  "starting_cash": "100000", "magnitude_pct": "10", "status": "succeeded",
+  "baseline_return_pct": "12.45", "baseline_max_drawdown_pct": "6.10",
+  "num_perturbations": 4, "num_succeeded_perturbations": 4,
+  "mean_perturbed_return_pct": "11.80", "stddev_perturbed_return_pct": "1.90",
+  "max_return_deviation_pct": "3.20", "error_detail": null,
+  "created_at": "…", "completed_at": "…",
+  "perturbations": [{"id": "…", "parameter_path": "indicators[0].period",
+    "direction": "-", "original_value": "20", "perturbed_value": "18",
+    "clamped": false, "status": "succeeded", "total_return_pct": "9.25",
+    "max_drawdown_pct": "7.40", "error_detail": null}, "..."]
+}
+```
+Every aggregate is `null` on a `"failed"` run — never a fabricated `0` —
+including when a definition has nothing numeric to perturb
+(`NO_PERTURBABLE_PARAMETERS`) or the baseline itself can't be replayed
+(`BASELINE_FAILED`). A **`"succeeded"` run with `num_succeeded_perturbations: 0`**
+is a real, valid outcome — the baseline ran and every nudge of it failed —
+with null aggregates but real counts, not an error. Aggregates are
+computed only over perturbations that themselves succeeded.
+`max_return_deviation_pct` is one plain number (the largest absolute gap
+from the baseline return), deliberately not a composite "robustness
+score."
+
+## `GET /strategies/{strategy_id}/versions/{version_id}/robustness` — list runs
+
+Same `limit`/`offset` envelope. Response (200,
+`ListRobustnessRunsResponse`): `{"items": [ /* RobustnessRunSummary, no
+perturbations */ ], "limit": 50, "offset": 0}`, newest first.
+
+## `GET /robustness-runs/{run_id}`
+
+404/403 by ownership. Response (200, `RobustnessRunDetailResponse`) — same
+full shape as the POST above.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

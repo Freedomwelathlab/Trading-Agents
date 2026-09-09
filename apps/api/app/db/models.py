@@ -1240,3 +1240,156 @@ class MonteCarloRun(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RobustnessRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class RobustnessRun(Base):
+    """Parameter-sensitivity testing of one `StrategyVersion` (Phase 58,
+    migration 0021): the SAME window replayed once with the definition
+    exactly as authored (the baseline) and once more per parameter nudged
+    +/- `magnitude_pct`, so that "this strategy returned X%" can be checked
+    against "and it still roughly does when its numbers are slightly
+    different" rather than against one exact parameter set that may simply
+    have suited this history.
+
+    Deliberately NOT an optimizer, and NOT a search. Nothing here looks for
+    a BETTER parameter set, ranks perturbed variants against the baseline as
+    candidates, or writes any variant back to a `StrategyVersion` - a
+    definition's rules are fixed by whoever authored them (D071), and every
+    perturbed definition built during a run lives only in memory for the
+    length of the replay that measures it. What this table records is
+    sensitivity, which is a question about the ORIGINAL definition.
+
+    `strategy_version_id` is `ON DELETE RESTRICT`, matching
+    `WalkForwardRun.strategy_version_id` and `BacktestRun`'s before it (D072)
+    for the identical reason: a persisted result's exact input must never be
+    able to disappear. Which parameters a run perturbed, and by how much,
+    only means anything next to the definition it perturbed them FROM.
+
+    Every perturbation starts fresh at the same `starting_cash` over the same
+    `[start_date, end_date]` window as the baseline - the whole point is that
+    the only difference between two of these replays is the one parameter, so
+    a differing window or capital base would confound exactly the comparison
+    being made.
+
+    Every metric column is nullable for the same no-fabrication reason every
+    `BacktestRun` and `WalkForwardRun` metric column is: a `FAILED` run (a
+    definition with no numeric parameters to perturb, or a baseline that
+    could not itself be replayed) computed none of them, and `NULL` - never
+    `0` - is what "not computed" means. `num_perturbations` counts every
+    perturbation ATTEMPTED, including any whose own replay failed;
+    `num_succeeded_perturbations` is always `<= num_perturbations`, and the
+    aggregate statistics are computed only over the succeeded subset.
+
+    `max_return_deviation_pct` is the largest absolute gap between a
+    succeeded perturbation's return and the baseline's, and it is
+    deliberately ONE SIMPLE HONEST NUMBER rather than a composite "robustness
+    score". This phase does not attempt to define one weighted figure across
+    return, drawdown and whatever else - any such weighting encodes a risk
+    preference nobody here has stated, and a single 0-100 "score" invites
+    being read as an authoritative verdict on a strategy. A future phase can
+    build a scoring model ON TOP of these raw numbers if one is ever wanted;
+    it cannot recover the raw numbers from a score.
+    """
+
+    __tablename__ = "robustness_runs"
+    __table_args__ = (
+        Index("ix_robustness_runs_version_created", "strategy_version_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1d")
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    starting_cash: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    magnitude_pct: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    """How far each parameter was nudged, as a percentage of its own original
+    value - `10.0000` means every perturbed variant moved one parameter by
+    +10% or -10%. Stored rather than assumed so a run's numbers stay
+    interpretable if the request default ever changes."""
+    status: Mapped[RobustnessRunStatus] = mapped_column(
+        _pg_enum(RobustnessRunStatus, "robustnessrunstatus"), nullable=False
+    )
+    baseline_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    baseline_max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    num_perturbations: Mapped[int | None] = mapped_column(Integer)
+    num_succeeded_perturbations: Mapped[int | None] = mapped_column(Integer)
+    mean_perturbed_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    stddev_perturbed_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    max_return_deviation_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RobustnessPerturbationResult(Base):
+    """One perturbed variant of a `RobustnessRun`'s definition and what
+    replaying it produced (Phase 58, migration 0021). Exactly one parameter
+    differs from the baseline definition - `parameter_path` names which,
+    `original_value` and `perturbed_value` say what it went from and to.
+
+    `robustness_run_id` is `ON DELETE CASCADE`: a perturbation result has no
+    meaning apart from the run that requested it, the same relationship
+    `WalkForwardWindow` has to `WalkForwardRun` and `BacktestEquityPoint` has
+    to `BacktestRun`. There is deliberately no FK to a `BacktestRun` here,
+    which is where this table differs from `WalkForwardWindow`: a
+    perturbation is replayed through `engine_v2`'s pure, no-persistence
+    helpers rather than through `run_strategy_backtest`, because it runs a
+    definition that no `StrategyVersion` contains - and a `backtest_runs` row
+    is a record OF a version's definition. Writing one anyway would mean
+    persisting a backtest of rules nobody authored, filed under a version
+    whose definition says something else.
+
+    `clamped` records that the generator could not apply the full nudge and
+    had to stop at a parameter's own legal bound (an indicator period cannot
+    go below 1, a fraction cannot exceed 1). A clamped variant is still a
+    real measurement of a real definition, so it is replayed and reported
+    like any other - but the flag is what tells a reader that this row's
+    effective magnitude was smaller than the run's `magnitude_pct`.
+
+    `status` is a plain `String(16)`, not a Postgres enum type. Same
+    precedent `BacktestTrade.side` set: this value is display-only and is
+    never branched on outside this row, so a dedicated type (and the
+    migration needed to ever extend it) buys nothing here. The run-level
+    `status` IS an enum because the orchestrator and the routes both branch
+    on it.
+
+    `total_return_pct` / `max_drawdown_pct` are nullable for the reason every
+    metric column in this schema is: a `failed` perturbation (most often a
+    much larger perturbed indicator period needing more warmup history than
+    the bar store holds) computed neither of them, `error_detail` says why,
+    and `NULL` - never `0` - is what "not computed" means. A failed
+    perturbation contributes nothing to the parent run's aggregates rather
+    than contributing a zero to them.
+    """
+
+    __tablename__ = "robustness_perturbations"
+    __table_args__ = (Index("ix_robustness_perturbations_run", "robustness_run_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    robustness_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("robustness_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    parameter_path: Mapped[str] = mapped_column(String(128), nullable=False)
+    direction: Mapped[str] = mapped_column(String(4), nullable=False)
+    original_value: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    perturbed_value: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    clamped: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    total_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    error_detail: Mapped[str | None] = mapped_column(String(500))
