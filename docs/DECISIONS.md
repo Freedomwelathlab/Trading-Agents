@@ -7518,3 +7518,127 @@ files, reconciled centrally):
 
 Status: Implemented and verified as above.
 
+**D074 — Phase 57: walk-forward validation + Monte Carlo simulation, and a mid-phase scope split worth recording**
+
+Reason: the original roadmap bundled "walk-forward, robustness, Monte
+Carlo" into one phase. Walk-forward and Monte Carlo both build directly
+on Phase 55's persisted `BacktestRun` and share nothing conceptually with
+parameter-perturbation robustness testing (which requires generating
+variant `StrategyDefinition`s, a genuinely different piece of work) — so
+this phase covers only the first two, and robustness testing becomes its
+own **Phase 58**, shifting every phase after it in the saved plan
+(`~/.claude/plans/iterative-orbiting-shamir.md`, updated to match) by one
+from the original numbering. Built by two agents in parallel; the
+orchestrator built the shared DB schema first (both features needed a new
+migration in the same phase, which is exactly the kind of concurrent-
+migration collision this project's own history warns about — D028/D030/
+D032/D063/D065/D067/D069's renumbering sagas were all a version of this
+same problem one layer up, at the decision-number level rather than the
+migration-number level).
+
+**(1) Walk-forward is deliberately NOT "walk-forward optimization."** The
+classic technique re-fits a strategy's parameters on each in-sample window
+before testing the next one out-of-sample; this platform has no
+parameter-fitting step anywhere (a `StrategyDefinition`'s rules are fixed
+by whoever authored it, D071), so there is nothing to re-fit. What
+`walk_forward_runs`/`walk_forward_windows` (migration `0019`) actually
+record is narrower and just as useful: the same fixed, validated
+definition replayed across sequential, non-overlapping historical windows,
+to see whether its performance holds up across periods or is an artifact
+of the one window an ordinary backtest happened to cover. Calling it
+"optimization" would claim a capability that doesn't exist —
+`apps/api/app/backtesting/walk_forward.py`'s own docstring makes the same
+distinction at the point it matters most.
+
+**(2) Each window is a real, ordinary `BacktestRun` — not a second
+execution path.** `run_walk_forward()` calls `engine_v2.run_strategy_backtest()`
+unchanged, once per window; `walk_forward_windows.backtest_run_id` points
+at a genuine row in the table migration 0018 created. This is the same
+"reuse the tested implementation rather than risk two that drift apart"
+reasoning D072 used for `_attempt_trade` — applied here one layer up, to
+the whole backtest engine rather than one function inside it. Every window
+starts fresh at the same `starting_cash` rather than compounding a running
+balance across windows: a consistency test asks "does this perform
+similarly across periods," not "what would compounding through all of
+them produce" — a single ordinary backtest over the full range already
+answers the second question, and conflating the two would make "windows
+behaved inconsistently" indistinguishable from "an early loss shrank later
+windows' capital."
+
+**(3) Aggregates are computed only over windows whose own backtest
+succeeded**, never averaging in a fabricated number for one that failed
+(e.g. a bar-store gap specific to one sub-period) — `num_windows` counts
+every window attempted, `num_succeeded_windows` says how many numbers the
+statistics are actually built from. `stddev_return_pct` is `NULL`, not
+`0`, when exactly one window succeeded — one observation has no spread,
+and reporting `0.0000` would claim a measurement that was never made. A
+request spanning fewer than 2 complete windows, or where every window's
+own backtest failed, is a `FAILED` walk-forward run naming the real reason
+— "consistency" is not a claim that can be made about zero or one data
+point.
+
+**(4) Monte Carlo answers a different question than a backtest or a
+walk-forward run does**: not "what happened," but "how much would the
+result have varied by chance alone if this same set of trade outcomes had
+occurred in a different order?" — a statement about the sequence risk
+already latent in an existing `BacktestRun`'s trades, resampled with
+replacement, never a claim about a different or better trading history.
+`monte_carlo_runs` (migration `0020`) persists only aggregate percentile
+statistics, never every simulated path — with 1,000+ simulations each
+implying a full equity curve, storing all of them would dwarf every other
+table in this schema for comparatively little benefit, and a persisted
+`random_seed` is sufficient to regenerate the exact distribution later,
+since resampling is deterministic given a seed and the same input trade
+list. **This reproducibility claim is proven, not assumed**: a test calls
+`run_monte_carlo` twice with an identical explicit seed over the same
+trade list and asserts the two runs' eight aggregate columns are
+bit-for-bit identical, and that a different seed produces a different
+result.
+
+**(5) Both features reuse `Permission.STRATEGY_BACKTEST` (Phase 55)
+rather than adding a new permission each.** Walk-forward and Monte Carlo
+are both further analyses OF a backtest, not a new capability class —
+`permissions.py`'s own rule (never add a permission without a real,
+distinct enforcing need) argues against two more members that would gate
+the identical thing `strategy:backtest` already gates.
+
+Alternatives rejected:
+
+- **Compounding capital across walk-forward windows.** Rejected in (2) —
+  would conflate strategy-consistency with early-window capital effects.
+- **Persisting every Monte Carlo simulated path.** Rejected in (4) — the
+  seed already makes the full distribution reproducible on demand; storing
+  it too is pure cost with no offsetting benefit at this phase's scale.
+- **A new permission per new analysis type.** Rejected in (5) — would
+  multiply role-management surface for gates that would always be granted
+  together in practice.
+- **Building parameter-perturbation robustness testing in this same
+  phase**, as the original roadmap line implied. Rejected — moved to its
+  own Phase 58 (see Reason above); the saved plan file is updated to match
+  so it stays an accurate reference for what's actually been decided.
+
+Scope discipline: `apps/api/app/backtesting/engine.py`/`engine_v2.py`/
+`executor.py`/`strategy.py`/`metrics.py`/`errors.py`, `apps/api/app/strategies/*`,
+and `apps/api/app/api/routes/strategies.py`/`strategy_backtests.py` are all
+untouched — both new features are pure additions that call the existing
+engine and reuse its metrics functions unchanged. No frontend file is
+touched this phase.
+
+Verification (2026-09-09, two parallel subagents building fully disjoint
+files against a DB foundation built centrally first, re-verified centrally
+on a freshly-migrated, isolated Postgres/Redis on remapped ports
+55432/56379 — never the shared dev stack):
+
+- `alembic upgrade head` from empty through `0020` clean; `downgrade -2` →
+  `upgrade head` round-trips clean.
+- **878 passed, 0 failed** (840 → 878; +19 in `tests/backtesting/
+  test_walk_forward.py` + `tests/api/test_walk_forward.py`, +19 in
+  `tests/backtesting/test_monte_carlo.py` + `tests/api/test_monte_carlo.py`),
+  confirmed on the clean isolated stack — the shared dev stack's now-
+  familiar `AAPL.US`-position contamination (D070/D071/D072) surfaced
+  again during development and, again, does not reproduce here.
+- `ruff check` clean; `mypy apps` clean, **120 source files** (up from
+  114); `bash scripts/secret_scan.sh` clean.
+
+Status: Implemented and verified as above.
+

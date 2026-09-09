@@ -4,6 +4,52 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 57: walk-forward validation + Monte Carlo simulation (2026-09-09,
+  D074) — both build directly on Phase 55's persisted `BacktestRun`.
+  **Mid-phase scope note**: the original roadmap bundled "walk-forward,
+  robustness, Monte Carlo" together; robustness (parameter-perturbation)
+  testing is genuinely distinct work and was split out to its own **Phase
+  58**, shifting everything after it by one — the saved plan file was
+  updated to match. Built by two subagents in parallel; the orchestrator
+  built the shared DB migrations/models centrally first, since both
+  features needed one in the same phase.
+  **(1) Walk-forward** (`walk_forward_runs`/`walk_forward_windows`,
+  migration `0019`) — sequential, non-overlapping windows over a
+  requested range, each a REAL `BacktestRun` (`engine_v2.run_strategy_backtest()`
+  reused unchanged, once per window, never a second execution path).
+  Deliberately framed as consistency testing, not "walk-forward
+  optimization" — this platform has no parameter-fitting step to walk
+  forward. Aggregates (mean/stddev/best/worst return, profitable-window
+  count) are computed only over windows whose own backtest succeeded; a
+  range with fewer than 2 complete windows, or where every window failed,
+  is a real `FAILED` run naming why.
+  **(2) Monte Carlo** (`monte_carlo_runs`, migration `0020`) — seeded
+  bootstrap resampling (with replacement) of an existing successful
+  `BacktestRun`'s trade returns into percentile bands (5th/50th/95th) on
+  final equity and max drawdown, plus a probability-of-ruin figure. Only
+  aggregate statistics are persisted, never every simulated path — the
+  persisted `random_seed` makes the exact distribution reproducible on
+  demand instead. **Reproducibility is proven by test, not assumed**: two
+  runs with an identical explicit seed produce bit-for-bit identical
+  results across all eight aggregate columns.
+  **(3) Both reuse the existing `strategy:backtest` permission** (Phase
+  55) rather than adding a new one each — both are further analyses of a
+  backtest, not a new capability class.
+  **878 backend tests** (840→878, +38: 19 in `tests/backtesting/
+  test_walk_forward.py` + `tests/api/test_walk_forward.py`, 19 in
+  `tests/backtesting/test_monte_carlo.py` + `tests/api/test_monte_carlo.py`);
+  none deleted, skipped, or weakened. `ruff check` and `mypy apps` (120
+  source files, up from 114) clean; `bash scripts/secret_scan.sh` clean.
+  Verified on a freshly-migrated, isolated Postgres/Redis via a full
+  `alembic upgrade` → `downgrade -2` → `upgrade head` round-trip and the
+  complete suite; the shared dev stack's familiar stale-broker-row flake
+  (D070/D071/D072) resurfaced during development and, again, does not
+  reproduce on a clean database.
+  Not built (deliberately): parameter-perturbation robustness testing and
+  regime-slice reporting (now Phase 58), any frontend surface for either
+  feature (a future phase's concern — this phase is backend-only, same
+  posture as Phase 53/55), a job queue for either (both run synchronously
+  in-request, matching every other analysis job in this codebase).
 - Phase 56: backtest analytics dashboard (2026-09-08, D073) — the first
   frontend surface for anything Phase 54/55 built, and the first real
   charting library in this codebase (Recharts `^3.10.1`, scoped only to
