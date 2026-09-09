@@ -21,6 +21,10 @@ from apps.api.app.api.routes.monte_carlo import (
 from apps.api.app.api.routes.orders import fills_router as order_fills_router
 from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
+from apps.api.app.api.routes.robustness import router as robustness_router
+from apps.api.app.api.routes.robustness import (
+    runs_router as robustness_runs_router,
+)
 from apps.api.app.api.routes.strategies import router as strategies_router
 from apps.api.app.api.routes.strategy_backtests import router as strategy_backtests_router
 from apps.api.app.api.routes.strategy_backtests import (
@@ -337,6 +341,11 @@ app.include_router(monte_carlo_runs_router)
 # permission of its own.
 app.include_router(walk_forward_router)
 app.include_router(walk_forward_runs_router)
+# Phase 58: parameter-sensitivity (robustness) runs - the same two-router
+# split again, gated on the same strategy:backtest permission, because this
+# is another analysis OF a backtest rather than a new capability class.
+app.include_router(robustness_router)
+app.include_router(robustness_runs_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are
