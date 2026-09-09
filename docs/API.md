@@ -1542,5 +1542,92 @@ equity curve or trades */ ], "limit": 50, "offset": 0}`, newest first.
 404 if missing, 403 if the run's strategy isn't the caller's. Response
 (200, `BacktestRunDetailResponse`) — same full shape as the POST above.
 
+## `POST /strategies/{strategy_id}/versions/{version_id}/walk-forward` — sequential consistency test
+
+Requires `strategy:backtest` (D074, reused from D072 — not a new
+permission). 409 (`VERSION_NOT_VALIDATED: …`) unless the version is
+validated. Replays the SAME definition across sequential, non-overlapping
+windows — each a real, ordinary `BacktestRun` you can separately
+`GET /backtest-runs/{id}` for its own equity curve/trades.
+
+Request: `{"symbol": "AAPL.US", "bar_interval": "1d", "overall_start_date": "2024-01-01", "overall_end_date": "2026-06-30", "window_days": 90, "starting_cash": "100000"}`
+(`window_days` is calendar days — how many bars actually fall inside is
+the bar store's answer, not the request's).
+
+Response (201, `WalkForwardRunDetailResponse` — 201 whether the run
+succeeded or failed, same posture as every other analysis job):
+```json
+{
+  "id": "…", "strategy_version_id": "…", "symbol": "AAPL.US",
+  "bar_interval": "1d", "overall_start_date": "2024-01-01",
+  "overall_end_date": "2026-06-30", "window_days": 90,
+  "starting_cash": "100000", "status": "succeeded",
+  "num_windows": 10, "num_succeeded_windows": 10,
+  "num_profitable_windows": 7, "mean_return_pct": "3.20",
+  "stddev_return_pct": "5.10", "best_window_return_pct": "14.00",
+  "worst_window_return_pct": "-6.50", "error_detail": null,
+  "created_at": "…", "completed_at": "…",
+  "windows": [{"id": "…", "window_index": 0, "start_date": "2024-01-01",
+    "end_date": "2024-03-30", "backtest_run_id": "…"}, "..."]
+}
+```
+Every aggregate is `null` on a `"failed"` run — never a fabricated `0` —
+including `stddev_return_pct` on a run where only ONE window succeeded
+(one observation has no spread). Aggregates are computed only over
+windows whose own backtest succeeded; `num_windows` counts every window
+attempted either way.
+
+## `GET /strategies/{strategy_id}/versions/{version_id}/walk-forward` — list runs
+
+Same `limit`/`offset` envelope. Response (200,
+`ListWalkForwardRunsResponse`): `{"items": [ /* WalkForwardRunSummary, no
+windows */ ], "limit": 50, "offset": 0}`, newest first.
+
+## `GET /walk-forward-runs/{run_id}`
+
+404/403 by ownership. Response (200, `WalkForwardRunDetailResponse`) —
+same full shape as the POST above.
+
+## `POST /backtest-runs/{backtest_run_id}/monte-carlo` — resample a backtest's trades
+
+Requires `strategy:backtest`. 409 (`BACKTEST_NOT_SUCCEEDED: …`) unless the
+named backtest run's own status is `"succeeded"` (nothing to resample
+otherwise).
+
+Request: `{"num_simulations": 1000}` (optional, defaults to 1000; bounded
+100–10,000 — a 422 outside that range, before anything is created).
+
+Response (201, `MonteCarloRunResponse`):
+```json
+{
+  "id": "…", "backtest_run_id": "…", "num_simulations": 1000,
+  "random_seed": 4611686018427387903, "status": "succeeded",
+  "num_trades_resampled": 12, "median_final_equity": "108200.00",
+  "p5_final_equity": "94100.00", "p95_final_equity": "121400.00",
+  "median_max_drawdown_pct": "9.80", "p5_max_drawdown_pct": "4.10",
+  "p95_max_drawdown_pct": "19.60", "probability_of_ruin_pct": "0.00",
+  "error_detail": null, "created_at": "…", "completed_at": "…"
+}
+```
+Fewer than 5 trades in the source backtest is a `FAILED` run naming the
+actual count — a bootstrap over too few trades would be dominated by 1–2
+outliers repeating, not a real distribution. `random_seed` is returned
+because it is what makes the exact simulation reproducible later by
+anyone holding this row — it is never accepted from the client, only
+generated and persisted. Every statistic is `null` on a failed run, never
+a fabricated `0`.
+
+## `GET /backtest-runs/{backtest_run_id}/monte-carlo` — list a backtest's Monte Carlo analyses
+
+Same `limit`/`offset` envelope. A single backtest run may be analyzed more
+than once, e.g. at different `num_simulations`. Response (200,
+`ListMonteCarloRunsResponse`): `{"items": [ /* MonteCarloRunResponse */ ],
+"limit": 50, "offset": 0}`, newest first.
+
+## `GET /monte-carlo-runs/{id}`
+
+404/403 by ownership (via the backtest run's own strategy). Response
+(200, `MonteCarloRunResponse`) — same full shape as the POST above.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

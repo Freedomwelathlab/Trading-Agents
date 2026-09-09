@@ -1059,3 +1059,184 @@ class BacktestTrade(Base):
     """(exit_price - entry_price) / entry_price * 100, computed once at
     write time from this row's own two prices. Stored rather than derived on
     read so a result is reproducible from the row alone."""
+
+
+class WalkForwardRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class WalkForwardRun(Base):
+    """Sequential out-of-sample consistency testing over one
+    `StrategyVersion` (Phase 57, migration 0019) - the SAME fixed,
+    validated definition replayed across several non-overlapping historical
+    windows, to see whether its performance holds up across periods rather
+    than being an artifact of the one window an ordinary backtest happened
+    to cover.
+
+    Deliberately NOT "walk-forward optimization": this platform has no
+    parameter-fitting step (a `StrategyDefinition`'s rules are fixed by
+    whoever authored it, D071), so there is nothing to re-fit between
+    windows. See `apps/api/app/backtesting/walk_forward.py`'s module
+    docstring for the same distinction stated at the point it matters most.
+
+    `strategy_version_id` is `ON DELETE RESTRICT`, matching
+    `BacktestRun.strategy_version_id` (D072) for the identical reason: a
+    persisted result's exact input must never be able to disappear.
+
+    Every window starts fresh at the same `starting_cash` rather than
+    compounding through a running balance - this asks "does this strategy
+    perform similarly across different periods," not "what would
+    compounding through all of them produce" (a single ordinary backtest
+    over the full range already answers the second question).
+
+    Every aggregate column is nullable for the same no-fabrication reason
+    every `BacktestRun` metric column is: a `FAILED` run (fewer than two
+    complete windows fit in the requested range) computed none of them, and
+    `NULL` - never `0` - is what "not computed" means. `num_windows` counts
+    every window attempted, including any that individually failed;
+    `num_succeeded_windows`/`num_profitable_windows` are always
+    `<= num_windows`, and the aggregate statistics are computed only over
+    the succeeded subset.
+    """
+
+    __tablename__ = "walk_forward_runs"
+    __table_args__ = (
+        Index("ix_walk_forward_runs_version_created", "strategy_version_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1d")
+    overall_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    overall_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    starting_cash: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    status: Mapped[WalkForwardRunStatus] = mapped_column(
+        _pg_enum(WalkForwardRunStatus, "walkforwardrunstatus"), nullable=False
+    )
+    num_windows: Mapped[int | None] = mapped_column(Integer)
+    num_succeeded_windows: Mapped[int | None] = mapped_column(Integer)
+    num_profitable_windows: Mapped[int | None] = mapped_column(Integer)
+    mean_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    stddev_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    best_window_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    worst_window_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WalkForwardWindow(Base):
+    """One sequential window of a `WalkForwardRun` (Phase 57, migration
+    0019). `backtest_run_id` points at a REAL, ordinary row in
+    `backtest_runs` (migration 0018) - the orchestrator that builds these
+    calls `apps/api/app/backtesting/engine_v2.py::run_strategy_backtest()`
+    unchanged, once per window, rather than a second execution path that
+    could drift from the first.
+
+    `backtest_run_id` is `ON DELETE RESTRICT` for the same reason the
+    parent run's own `strategy_version_id` is: a window's recorded result
+    must not be able to vanish either. `walk_forward_run_id` is
+    `ON DELETE CASCADE` - a window has no meaning apart from the run that
+    requested it, the same relationship `BacktestEquityPoint` has to
+    `BacktestRun`.
+    """
+
+    __tablename__ = "walk_forward_windows"
+    __table_args__ = (
+        UniqueConstraint(
+            "walk_forward_run_id", "window_index", name="uq_walk_forward_window_run_index"
+        ),
+        Index("ix_walk_forward_windows_run", "walk_forward_run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    walk_forward_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("walk_forward_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    window_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    backtest_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+
+
+class MonteCarloRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class MonteCarloRun(Base):
+    """Seeded bootstrap resampling of one completed `BacktestRun`'s trade
+    returns into a distribution of simulated outcomes (Phase 57, migration
+    0020). Answers a different question than the backtest it's built from:
+    not "what happened," but "how much would the result have varied by
+    chance alone if these same trade outcomes had occurred in a different
+    order (with replacement - some repeated, some never occurring)?" - a
+    statement about sequence risk already latent in the trades, not a claim
+    about a different or better trading history.
+
+    `backtest_run_id` is `ON DELETE RESTRICT` and is the ONLY foreign key
+    this table needs - a Monte Carlo run's entire input is one existing
+    `BacktestRun`'s trade list, which already pins its own
+    `strategy_version_id` provenance.
+
+    Only aggregate percentile statistics are persisted, never every
+    simulated path - with 1,000+ simulations each holding a full equity
+    curve, storing every path would dwarf every other table in this schema
+    for comparatively little benefit. `random_seed` alone is sufficient to
+    regenerate the full distribution later, since resampling is
+    deterministic given a seed and the same input trade list - stored as
+    `BigInteger` rather than this schema's usual `Integer`, since a seed is
+    drawn from a wide range specifically so it is not a predictable or
+    guessable value.
+
+    Every statistic column is nullable for the same no-fabrication reason
+    every other persisted-result metric column in this schema is: a
+    `FAILED` run (too few trades in the source backtest to resample
+    meaningfully) computed none of them, and `NULL`, never `0`, is what
+    that means.
+    """
+
+    __tablename__ = "monte_carlo_runs"
+    __table_args__ = (
+        Index("ix_monte_carlo_runs_backtest_created", "backtest_run_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    backtest_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    num_simulations: Mapped[int] = mapped_column(Integer, nullable=False)
+    random_seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[MonteCarloRunStatus] = mapped_column(
+        _pg_enum(MonteCarloRunStatus, "montecarlorunstatus"), nullable=False
+    )
+    num_trades_resampled: Mapped[int | None] = mapped_column(Integer)
+    median_final_equity: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    p5_final_equity: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    p95_final_equity: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    median_max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    p5_max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    p95_max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    probability_of_ruin_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

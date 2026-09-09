@@ -14,6 +14,10 @@ from apps.api.app.api.routes.emergency_stop import router as emergency_stop_rout
 from apps.api.app.api.routes.emergency_stop import status_router as emergency_stop_status_router
 from apps.api.app.api.routes.health import router as health_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
+from apps.api.app.api.routes.monte_carlo import router as monte_carlo_router
+from apps.api.app.api.routes.monte_carlo import (
+    runs_router as monte_carlo_runs_router,
+)
 from apps.api.app.api.routes.orders import fills_router as order_fills_router
 from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
@@ -24,6 +28,10 @@ from apps.api.app.api.routes.strategy_backtests import (
 )
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
+from apps.api.app.api.routes.walk_forward import router as walk_forward_router
+from apps.api.app.api.routes.walk_forward import (
+    runs_router as walk_forward_runs_router,
+)
 from apps.api.app.api.routes.watchlists import router as watchlists_router
 from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.auth.routes.password_reset import router as password_reset_router
@@ -318,6 +326,17 @@ app.include_router(strategies_router)
 # may hold either without the other.
 app.include_router(strategy_backtests_router)
 app.include_router(backtest_runs_router)
+# Phase 57: Monte Carlo resampling of a persisted backtest run - two more
+# routers gated on the same strategy:backtest permission, registered next
+# to the backtest surface whose rows they read.
+app.include_router(monte_carlo_router)
+app.include_router(monte_carlo_runs_router)
+# Phase 57: walk-forward consistency runs, the same two-router split as the
+# backtest surface above and gated on the same strategy:backtest permission
+# - a walk-forward run is n backtests and nothing more, so it needs no
+# permission of its own.
+app.include_router(walk_forward_router)
+app.include_router(walk_forward_runs_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are
