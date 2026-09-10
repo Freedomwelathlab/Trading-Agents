@@ -15,7 +15,7 @@ import { usePathname } from "next/navigation";
  */
 
 type Item = {
-  href: "/dashboard" | "/strategies" | "/admin";
+  href: "/dashboard" | "/strategies" | "/strategies/leaderboard" | "/admin";
   label: string;
   icon: React.ReactNode;
 };
@@ -58,6 +58,28 @@ function IconFlask() {
   );
 }
 
+function IconTrophy() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4 shrink-0"
+      aria-hidden="true"
+    >
+      <path d="M7 4h10v5a5 5 0 0 1-10 0z" />
+      <path d="M7 5H4v1.5A3.5 3.5 0 0 0 7.5 10" />
+      <path d="M17 5h3v1.5A3.5 3.5 0 0 1 16.5 10" />
+      <path d="M12 14v3" />
+      <path d="M9 20.5h6" />
+      <path d="M9.5 17.5h5l.5 3h-6z" />
+    </svg>
+  );
+}
+
 function IconShield() {
   return (
     <svg
@@ -79,6 +101,7 @@ function IconShield() {
 const ITEMS: Item[] = [
   { href: "/dashboard", label: "Trading desk", icon: <IconTerminal /> },
   { href: "/strategies", label: "Strategy Lab", icon: <IconFlask /> },
+  { href: "/strategies/leaderboard", label: "Leaderboard", icon: <IconTrophy /> },
   { href: "/admin", label: "Administration", icon: <IconShield /> },
 ];
 

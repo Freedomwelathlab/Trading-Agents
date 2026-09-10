@@ -7785,3 +7785,146 @@ freshly-migrated, isolated Postgres/Redis on remapped ports 55432/56379):
 
 Status: Implemented and verified as above.
 
+**D076 — Phase 59: strategy ranking / leaderboard — a transparent read-model, no persisted score, and a real cross-phase query bug caught by real cross-phase data**
+
+Reason: the master spec's own words — "NEVER optimize solely for maximum
+ROI… the platform should be willing to return 'No sufficiently robust
+strategy found.' That is preferable to presenting a misleading strategy."
+This phase turns the raw numbers Phases 55/57/58 persist into a ranked
+leaderboard of the caller's own strategies, scored on four equally-weighted
+dimensions (return, risk, out-of-sample consistency, parameter stability)
+where return is capped at a quarter of the total — a strategy cannot rank
+well on return alone. Built by two agents in parallel (backend scoring +
+`GET /strategies/leaderboard`; frontend `/strategies/leaderboard` page),
+mirroring Phase 54's backend/frontend split.
+
+**(1) No `strategy_scores` table, no migration, no ORM model —
+deliberately.** The score is a read-model, recomputed on every request
+from `backtest_runs`/`walk_forward_runs`/`monte_carlo_runs`/`robustness_runs`
+rows that already exist. A persisted score would be a second, staler copy
+of numbers the source tables already hold — wrong the moment a newer run
+lands, and capable of showing a verdict whose inputs no longer exist.
+Recomputation is four indexed single-row lookups per strategy version,
+over a set bounded by how many strategies one person has authored — cheap,
+and always exactly as current as the runs it summarizes. First phase of
+this whole initiative to add a route with no schema change at all.
+
+**(2) Never a black box.** Every score component carries its own `detail`
+string naming the actual column value it came from and the scale that
+turned that value into points (`"total_return_pct=12.45% (scale: 0%→0pts,
+20%+→25pts)"`); the status carries a `status_reason` naming the actual
+counts behind it. `ScoreComponent.max_points` is a real field on the wire,
+not a constant a reader has to look up in the source — the response is
+self-describing, and a future phase reweighting components must not
+silently invalidate every already-rendered score. The four
+`latest_*_run_id` fields make it auditable: a reader who doubts a
+component fetches the exact run it was computed from.
+
+**(3) Absent is never zero.** A component whose underlying run does not
+exist is LEFT OUT of `components` entirely, never scored 0 — "nobody has
+run a walk-forward test on this" and "this strategy failed its
+walk-forward test" are opposite findings, and a zero would state the
+second. `max_possible_points` counts only the present components (25
+each), and `percentage` — never raw `total_points` — is the ranking key,
+so a strategy is not rewarded for skipping the tests that could have gone
+badly. `components_measured` (0-4) is surfaced next to every score so a
+reader always sees how much was actually measured. A strategy with no
+succeeded backtest at all has no score — `compute_strategy_score` returns
+`None` and the leaderboard excludes it entirely, rather than ranking it
+last with a fabricated zero.
+
+**(4) The status heuristic is a documented, deliberate first pass.**
+`insufficient_data` (only return+risk measured), `promising` (one of
+consistency/parameter-stability measured and clean), `validated` (both
+measured, neither flagged), `overfit_risk` (either one measured raises a
+flag — a walk-forward profitable-window ratio under 0.5, or a robustness
+return deviation over 20 percentage points). One warning sign is enough
+for `overfit_risk`, which takes priority over `validated` — a strategy
+that holds up under parameter nudges but falls apart out of sample is not
+validated, it is flagged. The three thresholds live in one place, are
+labeled as adjustable, and `validated` is explicitly documented to mean
+"both available checks ran and neither raised a flag," not "this will make
+money." An `overfit_risk` strategy satisfies no `min_status` filter above
+the floor — it must not surface for `min_status=promising` merely because
+the components that happened to be measured scored well.
+
+**(5) An empty leaderboard is a 200, never an error.** `min_status=validated`
+with nothing meeting it returns `{"items": [], ...}` — the master spec's
+"no sufficiently robust strategy found" IS that answer, and turning the
+correct result into a 404/422 would be exactly the misleading presentation
+the spec warns against.
+
+**(6) A real cross-phase query bug, caught only by real cross-phase data.**
+The contract said "most recent SUCCEEDED `BacktestRun` by `created_at`."
+Taken literally that is wrong: D074's walk-forward orchestrator persists
+one *real* `backtest_runs` row per window (it calls the ordinary engine,
+not a second path), each carrying the strategy version's own
+`strategy_version_id`. So for every version that has ever been
+walk-forward tested — exactly the ones we most want ranked correctly — the
+newest `backtest_runs` row is its final *window*, covering a fraction of
+the range, and scoring `return`/`risk` off it would describe a fragment
+the user never requested. The backend agent's integration test (driving
+the real Phase 55/57/58 routes over really-persisted bars) caught the
+score being computed from a −0.12% third window instead of the +0.24%
+headline backtest. Fixed by excluding
+`BacktestRun.id IN (SELECT backtest_run_id FROM walk_forward_windows)`,
+and pinned by a regression test that asserts the chosen id is the
+requested backtest and none of the window run ids.
+
+**(7) `strategy:manage`, not a new permission.** A leaderboard of your own
+strategies is a read over the resource `strategy:manage` already gates —
+it exposes no strategy and no run that `GET /strategies` and the run
+listings do not already show the same caller. Route registration order
+matters: `/strategies/leaderboard` is registered before
+`routes/strategies.py`'s `/strategies/{strategy_id}` (a `uuid.UUID` path
+param), or the static path would 422 as a malformed UUID — the one place
+in `main.py` where registration order is load-bearing, and commented as
+such.
+
+Alternatives rejected:
+
+- **Persisting the score in a `strategy_scores` table.** Rejected in (1) —
+  a second, staler copy of numbers the source tables already hold.
+- **Ranking `overfit_risk` strategies numerically among the others.**
+  Rejected in (4) — the flag exists precisely to keep them out of a
+  `min_status=promising` result they'd otherwise satisfy on component
+  scores alone.
+- **A weighted composite score (return heavier than stability, or the
+  reverse).** Rejected — equal 25-point weighting is a stated choice, not
+  an absent one; any other weighting would encode a risk preference nobody
+  here has stated, the same refusal D075 recorded.
+- **Scoring Monte Carlo into the total.** Rejected — a Monte Carlo run
+  answers "how much would this have varied by chance," a statement about
+  sequence risk rather than a pass/fail signal; inventing a points scale
+  for it would be exactly the unstated preference this module refuses
+  elsewhere. `latest_monte_carlo_run_id` is surfaced so a reader can go
+  look at it.
+
+Scope discipline: no migration, no ORM model, no change to any existing
+route file, no change to `apps/api/app/backtesting/*` or
+`apps/api/app/strategies/validation.py`/`models.py`/`expressions.py`/
+`perturbation.py`. `main.py` gains one import + one `include_router` (plus
+a comment on the ordering). Frontend adds one page, one proxy route, one
+component, one `SideNav` entry — no new dependency.
+
+Verification (2026-09-10, two parallel subagents, re-verified centrally on
+a freshly-migrated, isolated Postgres/Redis on remapped ports
+55432/56379):
+
+- No migration this phase; `alembic upgrade head` still reaches `0021`
+  cleanly on an empty database.
+- **954 backend tests** (916 → 954; +38: 32 unit in
+  `tests/strategies/test_scoring.py`, 6 DB-backed integration in
+  `tests/api/test_leaderboard.py` driving the real four-phase route
+  chain); `ruff check` clean; `mypy apps` clean, **127 source files** (up
+  from 124); `bash scripts/secret_scan.sh` clean. Confirmed on the clean
+  isolated stack — the shared dev stack's familiar stale-broker-row flake
+  (D070–D075) surfaced again during verification and, again, does not
+  reproduce here.
+- **240 frontend tests across 29 files** (232/28 → 240/29; +8 in
+  `test/StrategyLeaderboard.test.tsx`), `npm run build` clean with
+  `/strategies/leaderboard` and its proxy route in the manifest. No new
+  dependency.
+
+Status: Implemented and verified as above.
+
