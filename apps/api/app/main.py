@@ -13,6 +13,7 @@ from apps.api.app.api.routes.brokers import router as brokers_router
 from apps.api.app.api.routes.emergency_stop import router as emergency_stop_router
 from apps.api.app.api.routes.emergency_stop import status_router as emergency_stop_status_router
 from apps.api.app.api.routes.health import router as health_router
+from apps.api.app.api.routes.leaderboard import router as leaderboard_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
 from apps.api.app.api.routes.monte_carlo import router as monte_carlo_router
 from apps.api.app.api.routes.monte_carlo import (
@@ -319,6 +320,14 @@ app.include_router(watchlists_router)
 # rather than with the broker-scoped routers - the difference from
 # watchlists is that it additionally requires the strategy:manage
 # permission at the router level.
+# Phase 59: the strategy leaderboard - a read-model over the run tables
+# Phases 55/57/58 already persist, gated on the same strategy:manage
+# permission as the /strategies routes it summarises (it exposes nothing
+# those routes do not). Registered BEFORE the strategies router and that
+# order IS load-bearing: /strategies/{strategy_id} takes a uuid.UUID path
+# parameter, so if it matched first, /strategies/leaderboard would answer
+# 422 about a malformed UUID instead of reaching this route.
+app.include_router(leaderboard_router)
 app.include_router(strategies_router)
 # Phase 55: the persisted-backtest surface. Two routers from one module -
 # the nested one shares the /strategies prefix above (a backtest is always

@@ -4,6 +4,56 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 59: strategy ranking / leaderboard (2026-09-10, D076) — turns the
+  raw numbers Phases 55/57/58 persist into a ranked leaderboard of the
+  caller's own strategies. Built by 2 parallel agents (backend scoring +
+  route; frontend page).
+  **(1) A transparent read-model — no `strategy_scores` table, no
+  migration.** The score is recomputed on every request from existing
+  `backtest_runs`/`walk_forward_runs`/`monte_carlo_runs`/`robustness_runs`
+  rows (four indexed lookups per strategy version). First route in this
+  whole initiative with no schema change.
+  **(2) Never a black box.** Four equally-weighted 25-point components
+  (return, risk, out-of-sample consistency, parameter stability); return
+  capped at a quarter of the total so a strategy can't rank on ROI alone.
+  Every component carries a `detail` string naming the actual column value
+  and the scale; every score carries a `status_reason` naming the counts
+  behind it; four `latest_*_run_id` fields make it auditable.
+  **(3) Absent is never zero.** A component with no underlying run is
+  omitted entirely (never scored 0); `percentage` (not raw points) is the
+  ranking key, and `components_measured` (0-4) is always surfaced. A
+  strategy with no succeeded backtest has no score and is excluded from
+  the leaderboard.
+  **(4) A documented, adjustable status heuristic**: `insufficient_data` /
+  `promising` / `validated` / `overfit_risk` (one warning sign —
+  walk-forward profitable ratio < 0.5 or robustness deviation > 20pp —
+  flags it, taking priority over `validated`). An `overfit_risk` strategy
+  satisfies no `min_status` filter above the floor.
+  **(5) An empty leaderboard is a 200, never an error** — the master
+  spec's "no sufficiently robust strategy found" is exactly that answer.
+  **(6) Caught a real cross-phase bug**: D074's walk-forward orchestrator
+  persists a real `backtest_runs` row per window, so "latest backtest by
+  created_at" was picking up a walk-forward window fragment instead of the
+  headline backtest for any version ever walk-forward tested. The backend
+  agent's integration test (real four-phase route chain over real bars)
+  caught it; fixed by excluding window rows, pinned by a regression test.
+  **(7) Reuses `strategy:manage`** (a read over an already-gated
+  resource). `/strategies/leaderboard` registered before
+  `/strategies/{strategy_id}` in `main.py` — the one place registration
+  order is load-bearing (a `uuid.UUID` path param would otherwise 422 the
+  static path), commented as such.
+  **954 backend tests** (916→954, +38: 32 unit in
+  `tests/strategies/test_scoring.py`, 6 integration in
+  `tests/api/test_leaderboard.py`), **240 frontend tests across 29 files**
+  (232/28→240/29, +8). `ruff`, `mypy apps` (127 files, up from 124),
+  `secret_scan`, `npm run build` all clean. Verified on a fresh isolated
+  Postgres/Redis; shared dev stack's familiar stale-broker-row flake
+  resurfaced during verification and does not reproduce on a clean DB.
+  Not built (deliberately): a persisted score (see (1)), a weighted
+  composite (equal weighting is a stated choice), a Monte Carlo points
+  component (`latest_monte_carlo_run_id` is surfaced for reference only —
+  sequence risk isn't a pass/fail signal), an ADMIN cross-user
+  leaderboard.
 - Phase 58: parameter-sensitivity (robustness) testing (2026-09-09, D075)
   — closes the scope split out of the original "walk-forward, robustness,
   Monte Carlo" roadmap line (D074). The platform's first concrete answer

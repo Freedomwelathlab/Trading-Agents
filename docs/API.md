@@ -1680,5 +1680,58 @@ perturbations */ ], "limit": 50, "offset": 0}`, newest first.
 404/403 by ownership. Response (200, `RobustnessRunDetailResponse`) — same
 full shape as the POST above.
 
+## `GET /strategies/leaderboard` — ranked scores of your own strategies
+
+Requires `strategy:manage` (D076, reused — a read over an already-gated
+resource, not a new permission). Computed on request from existing
+backtest / walk-forward / Monte Carlo / robustness run rows — no persisted
+score, no table.
+
+Query params: `limit`/`offset` (same convention as every listing),
+`min_status` (`"insufficient_data"` | `"promising"` | `"validated"` —
+filters to strategies at or above that tier; `overfit_risk` strategies
+satisfy only the floor and never a filter above it).
+
+Each strategy is scored on its **latest version**; a strategy with no
+succeeded backtest has no score and is **excluded entirely** (not ranked
+last with a zero). Ranked by `percentage` descending, then
+`components_measured` descending, then id.
+
+Response (200 — **always**, even when `items` is empty, which is the honest
+answer to "no strategy meets this bar," never an error; `LeaderboardResponse`):
+```json
+{
+  "items": [{
+    "strategy_id": "…", "strategy_name": "SMA crossover", "strategy_version_id": "…", "strategy_version_number": 3,
+    "score": {
+      "strategy_version_id": "…",
+      "components": [
+        {"name": "return", "points": "18.50", "max_points": "25", "detail": "total_return_pct=14.80% (scale: 0%->0pts, 20%+->25pts)"},
+        {"name": "risk", "points": "20.00", "max_points": "25", "detail": "max_drawdown_pct=5.00% (scale: 0%->25pts, 30%+->0pts)"},
+        {"name": "consistency", "points": "16.67", "max_points": "25", "detail": "4 of 6 walk-forward windows profitable (67%) ..."},
+        {"name": "parameter_stability", "points": "15.00", "max_points": "25", "detail": "max_return_deviation_pct=8 percentage points ..."}
+      ],
+      "total_points": "70.17", "max_possible_points": "100", "percentage": "70.17",
+      "components_measured": 4, "status": "validated",
+      "status_reason": "2 of 2 available checks passed: ...",
+      "latest_backtest_run_id": "…", "latest_walk_forward_run_id": "…",
+      "latest_monte_carlo_run_id": null, "latest_robustness_run_id": "…"
+    }
+  }],
+  "limit": 50, "offset": 0
+}
+```
+**The score model** (deliberately simple, stated in one place, adjustable):
+four equally-weighted 25-point components. A component whose underlying run
+doesn't exist is **omitted from `components`** (never a zeroed entry), so a
+backtest-only strategy has exactly 2 components and `max_possible_points`
+of `50`. `percentage = total_points / max_possible_points * 100` is the
+ranking key — never raw points, so skipping a test that could have gone
+badly is not rewarded. `return` is one of four and capped — a strategy
+can't rank on ROI alone. Every numeric field is a JSON string (`Decimal`).
+`status` ∈ `insufficient_data`/`promising`/`validated`/`overfit_risk`;
+`validated` means "both available checks ran and neither flagged," not
+"this will make money."
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.
