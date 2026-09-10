@@ -1733,5 +1733,66 @@ can't rank on ROI alone. Every numeric field is a JSON string (`Decimal`).
 `validated` means "both available checks ran and neither flagged," not
 "this will make money."
 
+## `POST /strategies/{strategy_id}/versions/{version_id}/universe-scans` — run one strategy across many symbols
+
+Requires `strategy:backtest` (D077, reused). 409 (`VERSION_NOT_VALIDATED: …`)
+unless validated. Runs the strategy once per symbol over one shared window
+— each symbol is a real, ordinary `BacktestRun` you can `GET
+/backtest-runs/{id}` for its full equity curve.
+
+Request: `{"symbols": ["AAPL.US", "MSFT.US"] | null, "bar_interval": "1d", "start_date": "2026-01-01", "end_date": "2026-06-30", "starting_cash": "100000"}`
+— `symbols` omitted/`null` = **scan every symbol ingested for this
+interval** (`scan_mode: "all_ingested"`); a non-empty list = explicit
+(max 50, normalized). Every symbol starts fresh at the same
+`starting_cash` (a comparison, not a shared portfolio).
+
+422 (plain-string `detail`), before any row is created, for: an
+explicitly-passed `[]` ("pass symbols to scan, or omit the field entirely
+to scan all ingested symbols"), an explicit list over 50, or "all
+ingested" mode when 0 or more than 50 distinct symbols are ingested — each
+naming the real count.
+
+Response (201, `UniverseScanDetailResponse` — 201 whether succeeded or
+failed):
+```json
+{
+  "id": "…", "strategy_version_id": "…", "bar_interval": "1d",
+  "start_date": "2026-01-01", "end_date": "2026-06-30", "starting_cash": "100000",
+  "scan_mode": "explicit_list", "requested_symbols": ["AAPL.US", "MSFT.US", "NVDA.US"],
+  "status": "succeeded", "num_symbols": 3, "num_succeeded": 3, "num_qualified": 2,
+  "error_detail": null, "created_at": "…", "completed_at": "…",
+  "results": [
+    {"id": "…", "symbol": "NVDA.US", "backtest_run_id": "…", "status": "succeeded",
+     "total_return_pct": "22.40", "max_drawdown_pct": "8.10", "win_rate_pct": "62.50",
+     "num_trades": 8, "error_detail": null, "rank": 1},
+    {"id": "…", "symbol": "AAPL.US", "backtest_run_id": "…", "status": "succeeded",
+     "total_return_pct": "5.10", "max_drawdown_pct": "6.00", "win_rate_pct": "55.00",
+     "num_trades": 6, "error_detail": null, "rank": 2},
+    {"id": "…", "symbol": "MSFT.US", "backtest_run_id": "…", "status": "failed",
+     "total_return_pct": null, "max_drawdown_pct": null, "win_rate_pct": null,
+     "num_trades": null, "error_detail": "no 1d bars persisted for 'MSFT.US' between …", "rank": null}
+  ]
+}
+```
+`results` arrive ordered: succeeded best-first by `rank` (1-indexed among
+succeeded, by `total_return_pct` descending, computed on read — no stored
+rank), then failed results (`rank: null`). A failed per-symbol result (no
+ingested bars for the window) has every metric `null` — never `0`.
+`num_qualified` = succeeded AND `total_return_pct > 0` (a stated, adjustable
+first-pass "qualified" filter). A `"succeeded"` scan with `num_succeeded: 0`
+("none of these symbols had enough data for this window") is a real result,
+not an error.
+
+## `GET /strategies/{strategy_id}/versions/{version_id}/universe-scans` — list scans
+
+Same `limit`/`offset` envelope. Response (200,
+`ListUniverseScansResponse`): `{"items": [ /* UniverseScanSummary, no
+results */ ], "limit": 50, "offset": 0}`, newest first.
+
+## `GET /universe-scans/{scan_id}`
+
+404/403 by ownership. Response (200, `UniverseScanDetailResponse`) — same
+full shape as the POST above.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

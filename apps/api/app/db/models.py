@@ -1393,3 +1393,180 @@ class RobustnessPerturbationResult(Base):
     total_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     error_detail: Mapped[str | None] = mapped_column(String(500))
+
+
+class UniverseScanStatus(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class UniverseScan(Base):
+    """One validated `StrategyVersion` run across MANY symbols over the same
+    window, so the symbols can be ranked against each other (Phase 60,
+    migration 0022) - "which of these markets does this strategy actually
+    suit", where a `BacktestRun` answers "how did it do on this one".
+
+    **Every symbol is a REAL, persisted `BacktestRun`.** The orchestrator
+    (`apps/api/app/backtesting/universe_scan.py`) calls
+    `engine_v2.run_strategy_backtest` unchanged, once per symbol, exactly as
+    `WalkForwardRun` calls it once per window - same risk engine, same
+    portfolio manager, same bar store, same persistence. That is right here
+    for the reason it was right there and NOT right for
+    `RobustnessPerturbationResult`: a scanned symbol replays the version's
+    OWN definition, unaltered, so a `backtest_runs` row filed under that
+    version is an accurate record of what ran. Only a perturbed definition -
+    rules no version contains - has to stay out of that table.
+
+    `strategy_version_id` is `ON DELETE RESTRICT`, the same reasoning
+    `BacktestRun`, `WalkForwardRun` and `RobustnessRun` all give: a persisted
+    result's exact input must never be able to disappear underneath it. A
+    ranking of twenty symbols means nothing without the definition they were
+    ranked under. `requested_by_user_id` is `ON DELETE SET NULL`, matching
+    every sibling: what was scanned, over what window, with what outcome
+    outlives the deletion of whoever asked for it.
+
+    `scan_mode` is a plain `String(16)` (`"explicit_list"` / `"all_ingested"`)
+    rather than a second Postgres enum type - the precedent
+    `BacktestTrade.side` and `RobustnessPerturbationResult.status` set: this
+    value is display-and-provenance only and is never branched on outside its
+    own row. The run-level `status` IS an enum because the orchestrator and
+    the routes both branch on it.
+
+    **`requested_symbols` is the first `ARRAY` column in this schema since
+    `Role.permissions`**, and is used for the same kind of reason: a short,
+    flat, read-as-a-whole list of strings that is never joined against or
+    filtered by, which a child table would model at the cost of a join that
+    buys nothing. It is the EXACT list the caller asked for, normalized -
+    provenance, not a result. The list actually scanned is what
+    `num_symbols` counts and what the `universe_scan_results` rows enumerate;
+    the two can differ in principle, and keeping the request verbatim is what
+    makes that visible. It is NULL - not an empty array - when
+    `scan_mode == "all_ingested"`, because the caller named no symbols at
+    all, and `{}` would read as "asked for none".
+
+    Every aggregate is nullable for the same no-fabrication reason every
+    metric column in this schema is (docs/TRADING_SAFETY.md): a FAILED scan
+    counted none of them, and `NULL` - never `0` - is what "not computed"
+    means. `num_symbols` counts every symbol ATTEMPTED, `num_succeeded`
+    those whose own backtest reached SUCCEEDED, and both stay real
+    observations even when they are 0.
+
+    **`num_qualified` counts SUCCEEDED symbols with `total_return_pct > 0`** -
+    that is, "profitable over this exact window", and nothing more. It is a
+    deliberately simple first-pass filter chosen so its meaning is fully
+    stated by that one sentence, in the same spirit as D075's scoring
+    thresholds and D076's leaderboard tiers: a stated, adjustable heuristic
+    rather than an unexplained composite. It says nothing about risk-adjusted
+    return, drawdown, trade count or statistical significance, and it is not
+    a recommendation to trade anything. A later phase can define a richer
+    qualification rule over these same raw columns; it could not recover the
+    raw columns from a score.
+    """
+
+    __tablename__ = "universe_scans"
+    __table_args__ = (
+        Index("ix_universe_scans_version_created", "strategy_version_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1d")
+    """Plain string, not a Postgres ENUM - the same reasoning
+    `market_data_bars.bar_interval` documents, and it names the same
+    vocabulary, since this is the interval every scanned symbol's bars were
+    read at."""
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    """The REQUESTED window, applied identically to every symbol - a ranking
+    whose rows covered different periods would not be a ranking."""
+    starting_cash: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    """Every symbol starts fresh at this same figure; they do not share or
+    compound a balance. The same reasoning `WalkForwardRun` gives for its
+    windows - these are parallel measurements to be compared, not one
+    portfolio traded across many symbols."""
+    scan_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    requested_symbols: Mapped[list[str] | None] = mapped_column(ARRAY(String(32)))
+    status: Mapped[UniverseScanStatus] = mapped_column(
+        _pg_enum(UniverseScanStatus, "universescanstatus"), nullable=False
+    )
+    num_symbols: Mapped[int | None] = mapped_column(Integer)
+    num_succeeded: Mapped[int | None] = mapped_column(Integer)
+    num_qualified: Mapped[int | None] = mapped_column(Integer)
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class UniverseScanResult(Base):
+    """One symbol's outcome within one `UniverseScan` (Phase 60, migration
+    0022) - a thin index row over the real `BacktestRun` that produced it.
+
+    `backtest_run_id` points at a REAL, ordinary row in `backtest_runs`,
+    exactly as `WalkForwardWindow.backtest_run_id` does, and is
+    `ON DELETE RESTRICT` for the same reason the parent scan's own
+    `strategy_version_id` is: a recorded result must not be able to vanish
+    from under the row that reports it. `universe_scan_id` is
+    `ON DELETE CASCADE` - a per-symbol result has no meaning apart from the
+    scan that requested it, the same relationship `WalkForwardWindow` has to
+    `WalkForwardRun` and `BacktestEquityPoint` has to `BacktestRun`.
+
+    The four metric columns are COPIED from the linked run rather than being
+    read through the FK on every request. That is denormalization with a
+    purpose: ranking twenty symbols is then one indexed read of this table
+    instead of twenty joins, and the copy can never go stale because a
+    terminal `BacktestRun` is never edited again (see `BacktestRun`'s
+    append-only note). `backtest_run_id` remains the handle for everything
+    NOT copied - the equity curve and the trade list are one
+    `GET /backtest-runs/{id}` away, so none of it is duplicated here.
+
+    `status` is a plain `String(16)` (`"succeeded"` / `"failed"`) mirroring
+    the linked run's own status, not a second Postgres enum type - the same
+    precedent `BacktestTrade.side` and `RobustnessPerturbationResult.status`
+    set, and the same reason: display-only, never branched on outside this
+    row.
+
+    Every metric is nullable because a FAILED per-symbol backtest computed
+    none of them - most often a symbol with no ingested bars over this
+    window, which is a normal, recorded outcome of scanning a list someone
+    typed. `error_detail` says why, `NULL` means "not computed" and never
+    `0`, and the failed row still exists so the gap is visible rather than
+    silently dropped from the universe.
+
+    There is deliberately no `rank` column: rank is computed on READ, over
+    the SUCCEEDED rows by `total_return_pct` descending, exactly as D076's
+    leaderboard ranks on read. A stored rank would be a second copy of an
+    ordering already fully determined by the data, and any later change to
+    how the ranking is defined would silently disagree with every row
+    written under the old rule.
+    """
+
+    __tablename__ = "universe_scan_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "universe_scan_id", "symbol", name="uq_universe_scan_result_scan_symbol"
+        ),
+        Index("ix_universe_scan_results_scan", "universe_scan_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    universe_scan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("universe_scans.id", ondelete="CASCADE"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    backtest_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    total_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    win_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    num_trades: Mapped[int | None] = mapped_column(Integer)
+    error_detail: Mapped[str | None] = mapped_column(String(500))

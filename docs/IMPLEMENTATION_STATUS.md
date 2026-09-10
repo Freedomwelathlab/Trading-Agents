@@ -4,6 +4,47 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 60: universe scanning (2026-09-10, D077) — run one validated
+  strategy across many symbols, ranked by performance. Built by 2 parallel
+  agents (backend orchestration + migration `0022`; frontend scan form +
+  ranked results). Where walk-forward asks "does this hold up across
+  periods," this asks "which markets does it suit."
+  **(1) `run_strategy_backtest` is CALLED, never re-implemented** — every
+  scanned symbol is a real, fully-persisted `BacktestRun`, and
+  `universe_scan_results.backtest_run_id` points at it. Right here for the
+  same reason walk-forward reuses real runs and Phase 58's robustness
+  can't: a scanned symbol replays the version's OWN unaltered definition.
+  **(2) Every symbol starts fresh at the same `starting_cash`** — a
+  comparison, not a path-dependent shared-portfolio simulation (which is a
+  different feature).
+  **(3) `MAX_SCAN_SYMBOLS = 50`** — synchronous in-request, one backtest
+  per symbol; the cap is honest about what that can do until a job runner
+  exists. The route 422s (before any row) for an over-cap list, an
+  explicit `[]`, or "all ingested" mode with 0 or >50 distinct ingested
+  symbols — each naming the real count.
+  **(4) Two modes, one resolver** (`resolve_scan_symbols`, called twice
+  per request): `symbols` omitted → scan every distinct symbol in
+  `market_data_bars` for the interval; a list → normalized explicit scan.
+  `requested_symbols` is the first `ARRAY` column since `Role.permissions`.
+  **(5) A per-symbol backtest failure is a normal recorded outcome** (a
+  symbol with no ingested bars) — its own result row with the real FAILED
+  `backtest_run_id`, metrics NULL, scan continues. A `SUCCEEDED` scan with
+  `num_succeeded == 0` is a real result, not an error.
+  **(6) Ranking computed on read** (no `rank` column), `num_qualified` =
+  "succeeded and profitable" — a stated, adjustable first-pass filter.
+  **(7) Reuses `strategy:backtest`** — a scan is a batch of backtests.
+  **976 backend tests** (954→976, +22), **259 frontend tests across 32
+  files** (240/29→259/32, +19). `ruff`, `mypy apps` (130 files, up from
+  127), `secret_scan`, `npm run build` all clean. Migration `0022`
+  round-trips clean. Verified on a fresh isolated Postgres/Redis; shared
+  dev stack's familiar stale-broker-row flake resurfaced during
+  verification and does not reproduce on a clean DB. (Frontend suite is
+  flaky at default worker concurrency on this slow test machine — use
+  `--maxWorkers=2 --testTimeout=20000`; environmental, not a regression.)
+  Not built (deliberately): a shared-portfolio universe backtest (a
+  different feature), a persisted `rank` column, an uncapped/asynchronous
+  scan (needs a job runner this codebase lacks), a `SideNav` entry
+  (universe scans live under a strategy, reached from its detail page).
 - Phase 59: strategy ranking / leaderboard (2026-09-10, D076) — turns the
   raw numbers Phases 55/57/58 persist into a ranked leaderboard of the
   caller's own strategies. Built by 2 parallel agents (backend scoring +
