@@ -33,6 +33,10 @@ from apps.api.app.api.routes.strategy_backtests import (
 )
 from apps.api.app.api.routes.trades import agent_router as agent_trades_router
 from apps.api.app.api.routes.trades import router as trades_router
+from apps.api.app.api.routes.universe_scan import router as universe_scan_router
+from apps.api.app.api.routes.universe_scan import (
+    scans_router as universe_scans_router,
+)
 from apps.api.app.api.routes.walk_forward import router as walk_forward_router
 from apps.api.app.api.routes.walk_forward import (
     runs_router as walk_forward_runs_router,
@@ -355,6 +359,12 @@ app.include_router(walk_forward_runs_router)
 # is another analysis OF a backtest rather than a new capability class.
 app.include_router(robustness_router)
 app.include_router(robustness_runs_router)
+# Phase 60: universe scans - one validated version run across many symbols
+# and ranked. The same two-router split once more, gated on the same
+# strategy:backtest permission, because a scan is n backtests and nothing
+# more.
+app.include_router(universe_scan_router)
+app.include_router(universe_scans_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are

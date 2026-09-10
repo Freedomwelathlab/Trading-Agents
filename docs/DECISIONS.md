@@ -7928,3 +7928,127 @@ a freshly-migrated, isolated Postgres/Redis on remapped ports
 
 Status: Implemented and verified as above.
 
+**D077 — Phase 60: universe scanning — one strategy across many symbols, ranked, reusing the backtest engine unchanged**
+
+Reason: the master spec's "MODE B — RESEARCH & DISCOVER TICKERS" — run a
+validated strategy across a universe and rank which markets it actually
+suits. Where Phase 57's walk-forward asks "does this hold up across
+PERIODS," this asks "which MARKETS does it suit." The two are the same
+shape (parent row, loop, one child row per unit of work, aggregate)
+because they are the same kind of job: an orchestration OF backtests, not
+a second way to run one. Built by two agents in parallel (backend
+orchestration + migration `0022`; frontend scan form + ranked results),
+one migration, no collision.
+
+**(1) `run_strategy_backtest` is CALLED, never re-implemented.** Every
+scanned symbol is an ordinary, fully-persisted `BacktestRun` from
+`engine_v2.py`, and `universe_scan_results.backtest_run_id` points at that
+real row — same risk engine, portfolio manager, fill math, bar store as
+`POST .../backtests`. This is the right structure here for exactly the
+reason it was right for walk-forward and NOT right for Phase 58's
+robustness: a scanned symbol replays the version's OWN unaltered
+definition, so a `backtest_runs` row filed under that version accurately
+records what ran. Only a perturbed definition — rules no version contains
+— had to stay out of that table.
+
+**(2) Every symbol starts fresh at the same `starting_cash`.** Symbols do
+not share a balance or compound through one. "How did this strategy do on
+each of these markets, comparably" is the question; a shared portfolio
+would make every symbol's figure depend on which other symbols were in
+the list and in what order, turning a comparison into a path-dependent
+simulation. Running a strategy as one portfolio across a universe is a
+genuinely different feature and is not this one.
+
+**(3) A `MAX_SCAN_SYMBOLS = 50` cap, honestly scoped.** A scan runs
+synchronously in-request, one backtest per symbol — 50 modest-window
+backtests is a few seconds of pure in-memory simulation, fine inline,
+matching every other analysis job in this codebase (no queue). A larger
+universe is a real need that requires a job runner this codebase does not
+have yet; until then the cap is honest about what a synchronous request
+can do. The route 422s (before creating any row) for an explicit list
+over the cap, an explicitly-passed `[]` (with the helpful message "pass
+symbols to scan, or omit the field entirely to scan all ingested
+symbols"), and "all ingested" mode when the bar store holds either 0 or
+more than 50 distinct symbols for the interval — each naming the real
+count and what to do about it.
+
+**(4) Two modes, one resolver.** `symbols` omitted/null →
+`scan_mode="all_ingested"`: the universe is `SELECT DISTINCT symbol FROM
+market_data_bars WHERE bar_interval = :interval` — whatever has actually
+been backfilled, which is the only universe a backtest could run over
+anyway. A non-null list → `scan_mode="explicit_list"`, normalized (trim,
+upper-case, dedupe preserving order — `schemas_watchlists.normalize_symbol`'s
+rule applied to a list). `resolve_scan_symbols` is one exported function
+called twice per request — once by the route to answer 422 before any row
+exists, once by the orchestrator for the run it records — one definition
+of "the universe," not two that could disagree. `requested_symbols` (an
+`ARRAY(String)` column — the first since `Role.permissions`) is `NULL` in
+all-ingested mode rather than the resolved list, keeping the "what was
+requested" / "what was scanned" distinction the column exists for.
+
+**(5) A per-symbol backtest failure is a normal, recorded outcome.**
+Scanning a list someone typed routinely hits a symbol with no ingested
+bars over the window — that symbol gets its own result row with its real
+FAILED `backtest_run_id` and `error_detail`, its metrics stay NULL (never
+0), it counts toward `num_symbols` but not `num_succeeded`, and the scan
+continues. A `SUCCEEDED` scan with `num_succeeded == 0` ("none of these
+symbols have enough data for this window") is a real, informative result,
+not an error — same posture as walk-forward's per-window failures and
+D076's empty leaderboard.
+
+**(6) Ranking computed on read, `num_qualified` a stated simple filter.**
+No `rank` column — `order_and_rank_results` derives it on the detail
+response (SUCCEEDED first, best `total_return_pct` first, symbol tiebreak;
+FAILED get `rank=None`, never a last place), matching D076's leaderboard.
+`num_qualified` = "succeeded AND profitable over this window" — a
+deliberately simple first-pass filter, documented as adjustable, same
+framing D075/D076 use for their own heuristics.
+
+**(7) Reuses `strategy:backtest`** — a scan is a batch of backtests, not a
+new capability class.
+
+Alternatives rejected:
+
+- **A shared portfolio across the scanned universe.** Rejected in (2) —
+  path-dependent, and a different feature.
+- **Persisting a `rank` column.** Rejected in (6) — a second copy of an
+  ordering the data already fully determines.
+- **A 4xx when a listed symbol has no bars.** Rejected in (5) — one bad
+  symbol should not lose the other forty-nine; a real FAILED result row
+  saying exactly what went wrong is more useful.
+- **Scanning the whole universe synchronously with no cap.** Rejected in
+  (3) — honest about what an in-request job can do; the cap moves when a
+  job runner exists.
+
+Scope discipline: `apps/api/app/backtesting/engine.py`/`engine_v2.py`/
+`executor.py`/`strategy.py`/`metrics.py`/`walk_forward.py`/`monte_carlo.py`/
+`robustness.py` and every existing route file are untouched — the
+orchestrator imports `run_strategy_backtest` and adds new sibling files
+only. Frontend adds two pages, two proxy routes, three components, three
+test files — no new dependency, and `SideNav` is deliberately not touched
+(universe scans live under a strategy, reached from its detail page like
+backtests).
+
+Verification (2026-09-10, two parallel subagents, re-verified centrally
+on a freshly-migrated, isolated Postgres/Redis on remapped ports
+55432/56379):
+
+- `alembic upgrade head` from empty through `0022` clean; `downgrade -1` →
+  `upgrade head` round-trips clean.
+- **976 backend tests** (954 → 976; +22: 11 in `tests/backtesting/
+  test_universe_scan.py`, 11 in `tests/api/test_universe_scan.py`); `ruff
+  check` clean; `mypy apps` clean, **130 source files** (up from 127);
+  `bash scripts/secret_scan.sh` clean. Confirmed on the clean isolated
+  stack — the shared dev stack's familiar stale-broker-row flake
+  (D070–D076) surfaced again during development and, again, does not
+  reproduce here.
+- **259 frontend tests across 32 files** (240/29 → 259/32; +19 across
+  `test/UniverseScan{Form,List,Results}.test.tsx`), `npm run build` clean
+  with all four new routes in the manifest. No new dependency. (Note: on
+  this slow test machine the frontend suite at default worker concurrency
+  produces spurious 5s-timeout failures in pre-existing tests too — run
+  with `--maxWorkers=2 --testTimeout=20000` for a clean signal; that's an
+  environmental artifact, not a regression.)
+
+Status: Implemented and verified as above.
+
