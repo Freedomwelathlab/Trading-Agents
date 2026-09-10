@@ -133,6 +133,54 @@ class Settings(BaseSettings):
     an honest position count, not a real diversification measure (this repo
     stores no sector or correlation data to compute one from)."""
 
+    portfolio_max_portfolio_volatility_pct: Decimal = Decimal("0.40")
+    """Trade-path Portfolio Manager, Phase 62 (D079): ceiling on the
+    PROJECTED post-trade annualized volatility of the whole book
+    (sqrt(wᵀ Σ w) on post-trade market-value weights), as a fraction of 1.0.
+    0.40 = 40% annualized: comfortably above a diversified equity book's
+    long-run ~15-20% and above a single volatile large-cap's ~30-35%, so it
+    binds only when a BUY concentrates the book into genuinely high-variance
+    or tightly-correlated names - the case D079 added it for - rather than
+    on ordinary trading. A BUY that pushes projected vol over this is sized
+    DOWN by bisection, never hard-rejected.
+
+    TRADE PATH ONLY. Every backtest engine omits `market_risk` and this
+    check never runs there, so no backtest result moves (D079). The check
+    also SKIPS itself (audited, non-binding) for any submission where a held
+    or proposed symbol has too little ingested `market_data_bars` history to
+    compute an honest covariance - on the normal local checkout, with no
+    bars ingested, that means it never binds anything."""
+    portfolio_max_position_correlation: Decimal = Decimal("0.80")
+    """Trade-path Portfolio Manager, Phase 62 (D079): ceiling on the
+    proposed symbol's MAXIMUM pairwise Pearson correlation (from daily
+    `market_data_bars` returns) with any OTHER currently-held symbol, above
+    which a NEW position is not opened. 0.80 is high on purpose: below it
+    two names still diversify meaningfully, and this check only means to
+    stop opening a position that is very nearly a duplicate of risk the
+    book already carries. Correlation does not depend on quantity, so a
+    breach is a REJECT, never a resize (exactly like max_open_positions).
+
+    TRADE PATH ONLY, same as the volatility ceiling above: never consulted
+    by any backtest, and SKIPPED (audited) rather than blocking whenever
+    there is too little overlapping bar history between the proposed symbol
+    and a held one to compute a correlation."""
+    portfolio_market_risk_lookback_days: int = 365
+    """Trade-path Portfolio Manager, Phase 62 (D079): trailing CALENDAR days
+    of daily `market_data_bars` closes read to compute the volatility and
+    correlation figures the two checks above compare against. 365 -> ~252
+    trading days, a year of returns: the shortest window that gives a stable
+    annualized volatility without reaching so far back that a regime change
+    dominates it. TRADE PATH ONLY. Must be positive."""
+    portfolio_market_risk_min_observations: int = 60
+    """Trade-path Portfolio Manager, Phase 62 (D079): minimum overlapping
+    daily returns a symbol (or a pair) must have inside the lookback window
+    to be usable. ~3 trading months; below this a standard deviation or a
+    correlation is too noisy to gate a real trade on, so the corresponding
+    check is SKIPPED and recorded rather than run on a thin series - and a
+    symbol with no ingested bars at all is simply never covered, which is
+    why on a checkout with an unconfigured market-data vendor both Phase-62
+    checks are inert. TRADE PATH ONLY. Must be greater than 1."""
+
     portfolio_snapshot_scheduler_enabled: bool = False
     """Opt-in switch for the automatic portfolio snapshot loop (Phase 27,
     docs/DECISIONS.md D030). Defaults to FALSE deliberately: this is
@@ -441,6 +489,37 @@ class Settings(BaseSettings):
                 "LIVE_ORDER_RECONCILER_INTERVAL_SECONDS must be positive. A zero or "
                 "negative interval would busy-loop the reconciliation cycle against a "
                 "real broker's API."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_sane_market_risk_settings(self) -> "Settings":
+        """Phase 62 (D079). Each of these fails in a direction that would
+        surface later as a 500 from inside the trade route rather than as a
+        clear startup error: a non-positive volatility ceiling or a
+        correlation ceiling outside [0, 1] is rejected by `PortfolioLimits`
+        when the route builds it, and a non-positive lookback or a
+        min-observations <= 1 is rejected by `MarketRiskInputs`. Caught here
+        so a bad config fails the app's boot with a readable message. These
+        gate the trade path only; no backtest reads them."""
+        if self.portfolio_max_portfolio_volatility_pct <= 0:
+            raise ValueError(
+                "PORTFOLIO_MAX_PORTFOLIO_VOLATILITY_PCT must be positive - it is a "
+                "volatility ceiling as a fraction of 1.0 (D079)."
+            )
+        if not (0 <= self.portfolio_max_position_correlation <= 1):
+            raise ValueError(
+                "PORTFOLIO_MAX_POSITION_CORRELATION must be between 0 and 1 inclusive - "
+                "it is a Pearson correlation ceiling (D079)."
+            )
+        if self.portfolio_market_risk_lookback_days <= 0:
+            raise ValueError(
+                "PORTFOLIO_MARKET_RISK_LOOKBACK_DAYS must be positive (D079)."
+            )
+        if self.portfolio_market_risk_min_observations <= 1:
+            raise ValueError(
+                "PORTFOLIO_MARKET_RISK_MIN_OBSERVATIONS must be greater than 1 - a "
+                "standard deviation needs at least two observations (D079)."
             )
         return self
 

@@ -10,7 +10,7 @@ stopped a trade.
 import enum
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PortfolioAction(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
@@ -33,12 +33,22 @@ class PortfolioConstraint(str, enum.Enum):  # noqa: UP042 (str mixin kept for in
     """Every portfolio-level rule this component can evaluate. One of these
     (never a bare False) names whichever rule bound a MODIFY or a REJECT.
 
-    Spec Sec18 also lists correlation, sector concentration, portfolio
-    volatility, expected return and drawdown. None of those are here:
-    this repo stores no sector/classification data on `assets`, and no
-    persisted price series a covariance or a volatility could be computed
-    from. Inventing any of them would be fabrication (docs/TRADING_SAFETY.md),
-    so they are deferred rather than approximated - see D029.
+    Spec Sec18 also lists sector concentration, expected return and
+    drawdown. Those are still NOT here: this repo stores no
+    sector/classification data on `assets`, and a persisted per-symbol
+    expected-return or drawdown figure would be a forecast this platform
+    does not make. Inventing any of them would be fabrication
+    (docs/TRADING_SAFETY.md), so they stay deferred - see D029.
+
+    Correlation and portfolio volatility WERE in that deferred list until
+    Phase 62 (D079): `market_data_bars` (Phase 53, D070) now persists the
+    daily price series a covariance and an annualized volatility can be
+    computed from honestly. Those two checks run only when the caller
+    supplies a `MarketRiskInputs` (the trade path does; every backtest
+    caller passes `None`) AND the matching `PortfolioLimits` field is set -
+    and each is SKIPPED, recorded as a non-passing-but-not-binding check
+    with `worsened_by_trade=False`, whenever a symbol it would need has too
+    little bar history, rather than proceeding on a fabricated number.
     """
 
     SYMBOL_CONCENTRATION = "symbol_concentration"
@@ -57,6 +67,33 @@ class PortfolioConstraint(str, enum.Enum):  # noqa: UP042 (str mixin kept for in
     """Count of distinct symbols held post-trade - the crudest available
     proxy for spec Sec18's 'diversification', and honestly labelled as a
     count, not as a diversification measure."""
+
+    PORTFOLIO_VOLATILITY = "portfolio_volatility"
+    """Projected post-trade annualized volatility of the whole book
+    (sqrt(wᵀ Σ w), w = post-trade market-value weights, Σ from
+    `MarketRiskInputs`), as a fraction of 1.0, vs
+    `PortfolioLimits.max_portfolio_volatility_pct`. Phase 62 (D079).
+
+    Only ever worsened by a BUY that raises the weight of a name that adds
+    variance to the book; a de-risking sell that lowers projected vol is
+    never blocked by this (the `worsened_by_trade` rule). When it binds a
+    MODIFY, the cap is found by bisection on integer quantity - projected
+    vol is monotonic in the traded weight over the relevant range, so the
+    largest quantity keeping the book at or under the limit is well
+    defined."""
+
+    POSITION_CORRELATION = "position_correlation"
+    """The proposed symbol's correlation with the rest of the book - the
+    maximum pairwise Pearson correlation (from `MarketRiskInputs`) between
+    it and any currently-held OTHER symbol - vs
+    `PortfolioLimits.max_position_correlation`. Phase 62 (D079).
+
+    Correlation does not depend on quantity, so this check only ever blocks
+    OPENING a new position that is too correlated with something already
+    held; adding to a position already in the book cannot worsen it (that
+    is the volatility check's job), and it is never sized down - the cap is
+    0, exactly like MAX_OPEN_POSITIONS, so a blocking correlation is a
+    REJECT, not a MODIFY."""
 
 
 class PortfolioHolding(BaseModel):
@@ -102,13 +139,95 @@ class PortfolioState(BaseModel):
 
 
 class PortfolioLimits(BaseModel):
-    """No defaults here, for the same reason RiskLimits has none: an
-    unconfigured portfolio limit is a configuration bug, not 'unlimited'.
-    apps/api/app/core/config.py owns the actual numbers."""
+    """No defaults for the first three, for the same reason RiskLimits has
+    none: an unconfigured portfolio limit is a configuration bug, not
+    'unlimited'. apps/api/app/core/config.py owns the actual numbers.
+
+    The last two (Phase 62, D079) DO default to `None`, and `None` here
+    means exactly 'do not run this check' rather than 'unlimited' - the
+    same meaning `market_risk=None` has one level up in `decide()`. They
+    are optional because the volatility and correlation checks need a
+    `MarketRiskInputs` that only the trade path builds; a caller that has
+    no bar data to compute one (every backtest) leaves both unset and the
+    two Phase-62 checks simply never appear in the decision. `config.py`
+    always sets them for the trade path, so on that path they are only
+    `None` in a test that deliberately omits them.
+    """
 
     max_symbol_pct_of_equity: Decimal = Field(gt=0, le=1)
     min_cash_reserve_pct_of_equity: Decimal = Field(ge=0, lt=1)
     max_open_positions: int = Field(gt=0)
+    max_portfolio_volatility_pct: Decimal | None = Field(default=None, gt=0)
+    """Ceiling on projected post-trade annualized book volatility, as a
+    fraction of 1.0 (e.g. 0.40 = 40% annualized). Checked only when a
+    `MarketRiskInputs` is also supplied."""
+    max_position_correlation: Decimal | None = Field(default=None, ge=0, le=1)
+    """Ceiling on the proposed symbol's maximum pairwise correlation with
+    any other held symbol, above which a NEW position is not opened.
+    Checked only when a `MarketRiskInputs` is also supplied."""
+
+
+class MarketRiskInputs(BaseModel):
+    """Pre-computed, deterministic per-symbol volatility and pairwise
+    correlation for the two Phase-62 constraints (D079). Built by the
+    trade path from `market_data_bars` daily closes
+    (apps/api/app/marketdata/portfolio_risk.py) and handed in as plain
+    data - exactly like the Risk Engine's `recent_orders` and the
+    emergency-stop boolean, so `decide()` stays zero-I/O (D029 rejected
+    alternative (f): a market-data dependency inside the component).
+
+    A symbol appears in `annualized_volatility` if and only if enough
+    daily bars were ingested to compute it; `covered()` is the single
+    check `decide()` uses to decide whether a symbol's risk numbers are
+    real. A symbol the book holds but that is NOT covered makes the
+    portfolio-volatility check skip (audited), never guess.
+
+    `correlation` is a flattened upper-triangle map keyed by
+    `"<A>|<B>"` with A < B lexicographically, so there is exactly one
+    entry per unordered pair; use `correlation_between()` rather than
+    indexing it directly. A pair with no entry (either symbol uncovered,
+    or the two return series had no overlapping days) reads as `None`,
+    not as 0.
+    """
+
+    annualized_volatility: dict[str, Decimal] = Field(default_factory=dict)
+    correlation: dict[str, Decimal] = Field(default_factory=dict)
+    lookback_days: int = Field(gt=0)
+    """How many trailing calendar days of bars were requested to build
+    this - carried through to the audit detail so a reader knows the
+    window the numbers describe."""
+    min_observations: int = Field(gt=1)
+    """The minimum overlapping daily returns required for a symbol (or a
+    pair) to be 'covered'; a symbol with fewer is absent from
+    `annualized_volatility` (or the pair from `correlation`)."""
+
+    @staticmethod
+    def _pair_key(symbol_a: str, symbol_b: str) -> str:
+        lo, hi = sorted((symbol_a, symbol_b))
+        return f"{lo}|{hi}"
+
+    def covered(self, symbol: str) -> bool:
+        """True when `symbol` has a real, computed annualized volatility."""
+        return symbol in self.annualized_volatility
+
+    def volatility(self, symbol: str) -> Decimal | None:
+        return self.annualized_volatility.get(symbol)
+
+    def correlation_between(self, symbol_a: str, symbol_b: str) -> Decimal | None:
+        """The Pearson correlation of the two daily-return series, or `None`
+        when it could not be computed. A symbol with itself is 1."""
+        if symbol_a == symbol_b:
+            return Decimal(1) if self.covered(symbol_a) else None
+        return self.correlation.get(self._pair_key(symbol_a, symbol_b))
+
+    @model_validator(mode="after")
+    def _correlations_are_in_range(self) -> "MarketRiskInputs":
+        for key, value in self.correlation.items():
+            if not (Decimal(-1) <= value <= Decimal(1)):
+                raise ValueError(f"correlation[{key}] = {value} is outside [-1, 1]")
+        if any(v < 0 for v in self.annualized_volatility.values()):
+            raise ValueError("annualized_volatility has a negative entry")
+        return self
 
 
 class PortfolioCheck(BaseModel):
@@ -121,15 +240,26 @@ class PortfolioCheck(BaseModel):
     passed: bool
     projected_value: Decimal
     """The measured post-trade quantity (a market value, a cash balance, or
-    a position count as a Decimal)."""
+    a position count as a Decimal). Zero on a `skipped` check, where it
+    carries no meaning - read `skipped` first."""
     limit_value: Decimal
-    """The threshold projected_value was compared against."""
+    """The threshold projected_value was compared against. Zero on a
+    `skipped` check."""
     worsened_by_trade: bool
     """True when the trade moves this measure in the disallowed direction.
     A failed check only blocks when this is also True: a portfolio that is
     already over-concentrated must not have a de-risking sell refused
-    because of the very condition that sell would relieve."""
+    because of the very condition that sell would relieve. Always False on
+    a `skipped` check - a check that did not run cannot bind."""
     detail: str
+    skipped: bool = False
+    """Phase 62 (D079): the check was in scope (its limit was configured and
+    a `MarketRiskInputs` was supplied) but could not be evaluated because a
+    symbol it needed had too little ingested bar history. It is recorded -
+    `passed=False`, `worsened_by_trade=False` - so the audit trail shows the
+    check was considered and why it produced no verdict, rather than the
+    trail being silent about a constraint that exists. Never set on the
+    three D029 constraints, which need no external data."""
 
 
 class PortfolioDecision(BaseModel):

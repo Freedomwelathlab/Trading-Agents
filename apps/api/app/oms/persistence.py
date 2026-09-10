@@ -32,7 +32,11 @@ from apps.api.app.db.models import Order as OrderRow
 from apps.api.app.db.models import OrderStatus
 from apps.api.app.execution.broker import BrokerAdapter, OrderNotConfirmedError
 from apps.api.app.oms.service import OMSResult, OMSStatus, submit_trade
-from apps.api.app.portfolio_manager.models import PortfolioLimits, PortfolioState
+from apps.api.app.portfolio_manager.models import (
+    MarketRiskInputs,
+    PortfolioLimits,
+    PortfolioState,
+)
 from apps.api.app.risk.models import AccountState, RecentOrder, RiskLimits, TradeProposal
 
 logger = get_logger(__name__)
@@ -203,6 +207,7 @@ async def submit_trade_and_record(
     recent_orders: list[RecentOrder] | None = None,
     portfolio: PortfolioState | None = None,
     portfolio_limits: PortfolioLimits | None = None,
+    market_risk: MarketRiskInputs | None = None,
 ) -> OMSResult:
     try:
         result = submit_trade(
@@ -215,6 +220,7 @@ async def submit_trade_and_record(
             recent_orders=recent_orders,
             portfolio=portfolio,
             portfolio_limits=portfolio_limits,
+            market_risk=market_risk,
         )
     except OrderNotConfirmedError as exc:
         await _record_unconfirmed_order(

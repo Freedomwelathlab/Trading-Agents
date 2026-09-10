@@ -422,8 +422,17 @@ Manager's own verdict, which is separate from `approved`:
   (`PortfolioAction` also declares `"request_more_research"` for spec §18
   fidelity, but this deterministic implementation never emits it).
 - `portfolio_binding_constraint`: `"symbol_concentration"`,
-  `"cash_reserve"`, or `"max_open_positions"` on a modify/reject; null on
-  approve.
+  `"cash_reserve"`, `"max_open_positions"`, `"portfolio_volatility"`, or
+  `"position_correlation"` on a modify/reject; null on approve. The last
+  two (D079) are computed from the trailing year of daily
+  `market_data_bars` for the traded and held symbols: `portfolio_volatility`
+  caps the projected post-trade annualized book volatility (a `modify`
+  sizes the trade down), `position_correlation` blocks *opening* a new
+  position too correlated with something already held (always a `reject`).
+  Both are **skipped** — the trade proceeds on the other checks, and the
+  skip is recorded in the decision's audit detail — when a needed symbol
+  has under ~60 daily bars in that window, rather than gating on a
+  fabricated covariance.
 - `portfolio_requested_quantity`: the quantity the Portfolio Manager was
   given. On `"modify"` it is larger than `fill_quantity` — the trade was
   shrunk to fit a portfolio-level limit, and the resized quantity was
