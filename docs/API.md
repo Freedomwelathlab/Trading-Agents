@@ -1794,5 +1794,67 @@ results */ ], "limit": 50, "offset": 0}`, newest first.
 404/403 by ownership. Response (200, `UniverseScanDetailResponse`) — same
 full shape as the POST above.
 
+## `POST /strategies/{strategy_id}/versions/{version_id}/signals` — current signal for a batch of symbols
+
+Requires `strategy:signal` (D078 — a **new** permission, not
+`strategy:backtest`: a signal is a present-tense instruction, the input
+Phase 63's paper-trading runner acts on). 409 (`VERSION_NOT_VALIDATED: …`)
+unless validated. Evaluates the version against the **latest** ingested
+bars for each symbol and persists one `SignalEvaluation` per symbol. Runs
+synchronously in-request. Nothing here places, sizes or proposes an order —
+a signal is an assertion about rules and prices.
+
+Request: `{"symbols": ["AAPL.US", "MSFT.US"], "bar_interval": "1d"}` —
+`symbols` 1–50, normalized (trim, upper-case), **not** deduped (one item
+per requested symbol). No date range: a current signal is by definition off
+the newest bars (`POST .../backtests` is the windowed path). 422 for `[]`
+or >50.
+
+Response (201, `SignalEvaluationBatchResponse` — one item per requested
+symbol, **in request order**; no `limit`/`offset`):
+```json
+{
+  "items": [
+    {"id": "…", "strategy_version_id": "…", "symbol": "AAPL.US", "bar_interval": "1d",
+     "as_of_bar_date": "2026-06-30", "latest_close": "108.000000", "signal": "buy",
+     "entry_rule_held": true, "exit_rule_held": false, "insufficient_data": false,
+     "indicator_values": {"sma_20": "105.500000"},
+     "explanation": "close (108.000000) crossed above sma_20 (105.500000) on the latest bar (2026-06-30); entry rule holds -> BUY",
+     "created_at": "…"},
+    {"id": "…", "strategy_version_id": "…", "symbol": "MSFT.US", "bar_interval": "1d",
+     "as_of_bar_date": null, "latest_close": null, "signal": "hold",
+     "entry_rule_held": null, "exit_rule_held": null, "insufficient_data": true,
+     "indicator_values": {},
+     "explanation": "no bars are ingested for this symbol -> HOLD (insufficient data)",
+     "created_at": "…"}
+  ]
+}
+```
+`signal` is `buy` / `sell` / `hold` and is exactly
+`generate_signals(bars, definition)[-1]` — never a second opinion.
+`entry_rule_held` / `exit_rule_held` are **three-valued**: `true`, `false`,
+or `null` for "could not be evaluated at that bar" (warmup, or a crossing
+operator with no previous bar) — do not render `null` as "no".
+`insufficient_data: true` is a real persisted answer (no bars, or too few
+for the indicators), never dropped; a 201 does not mean any symbol produced
+a tradable signal. `as_of_bar_date` / `latest_close` are `null` only in the
+zero-bar case — never back-filled. `indicator_values` are strings (`null`
+where an indicator has no value yet), never `0`. `explanation` always names
+the concrete numbers, including for HOLD and insufficient data.
+
+## `GET /strategies/{strategy_id}/versions/{version_id}/signals` — list evaluations
+
+`limit`/`offset` envelope plus optional `?symbol=` (normalized like the
+POST). Response (200, `ListSignalEvaluationsResponse`): `{"items": [ /*
+full SignalEvaluationResponse — no summary shape */ ], "limit": 50,
+"offset": 0}`, newest `created_at` first (`id` tiebreak). The table is
+append-only: re-evaluating a symbol adds a row.
+
+## `GET /signal-evaluations/{evaluation_id}`
+
+404/403 by ownership (re-derived: evaluation → version → strategy → owner).
+Response (200, `SignalEvaluationResponse`) — the same item shape as the
+batch above.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

@@ -26,6 +26,10 @@ from apps.api.app.api.routes.robustness import router as robustness_router
 from apps.api.app.api.routes.robustness import (
     runs_router as robustness_runs_router,
 )
+from apps.api.app.api.routes.signals import (
+    evaluations_router as signal_evaluations_router,
+)
+from apps.api.app.api.routes.signals import router as signals_router
 from apps.api.app.api.routes.strategies import router as strategies_router
 from apps.api.app.api.routes.strategy_backtests import router as strategy_backtests_router
 from apps.api.app.api.routes.strategy_backtests import (
@@ -365,6 +369,13 @@ app.include_router(robustness_runs_router)
 # more.
 app.include_router(universe_scan_router)
 app.include_router(universe_scans_router)
+# Phase 61: the signal engine - what a validated version says to do RIGHT NOW
+# off the latest ingested bars. The same two-router split once more, but gated
+# on the NEW strategy:signal permission rather than strategy:backtest: a
+# backtest is a historical what-if, a signal is a present-tense instruction and
+# is what Phase 63's paper-trading runner will act on.
+app.include_router(signals_router)
+app.include_router(signal_evaluations_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are
