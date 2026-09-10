@@ -52,7 +52,13 @@ def test_approves_a_trade_that_breaches_nothing():
     assert decision.requested_quantity == Decimal(10)
     assert decision.binding_constraint is None
     # The audit record lists every constraint considered, not only failures.
-    assert {c.constraint for c in decision.checks} == set(PortfolioConstraint)
+    # With no MarketRiskInputs supplied (Phase 62, D079), only the three
+    # base D029 constraints run - the two market-risk checks stay absent.
+    assert {c.constraint for c in decision.checks} == {
+        PortfolioConstraint.SYMBOL_CONCENTRATION,
+        PortfolioConstraint.CASH_RESERVE,
+        PortfolioConstraint.MAX_OPEN_POSITIONS,
+    }
     assert all(c.passed for c in decision.checks)
 
 

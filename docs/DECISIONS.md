@@ -8192,3 +8192,147 @@ Verification (2026-09-10, isolated Postgres/Redis on remapped ports
 
 Status: Implemented and verified as above.
 
+---
+
+**D079 — Phase 62: risk / position-sizing v2 — correlation- and volatility-aware portfolio constraints, computed from the bar store, gating the live trade path**
+
+Reason: D029 built the trade-path Portfolio Manager with exactly three
+constraints and its own docstring named the reason the rest of spec §18
+was deferred: "no persisted price series a covariance or a volatility could
+be computed from." Phase 53 (D070) added that series — `market_data_bars`.
+Phase 62 closes the two the bar store now supports, `PORTFOLIO_VOLATILITY`
+and `POSITION_CORRELATION`, and leaves sector concentration / expected
+return / drawdown still deferred (this repo still has no sector data and
+makes no return forecast). Built by two agents against a frozen interface
+the orchestrator wrote first (`portfolio_manager/models.py` +
+`portfolio_manager/manager.py` + `marketdata/portfolio_risk.py`); one agent
+did the trade-path wiring + integration tests, the other the unit tests +
+docs; no migration, no collision.
+
+**(1) `decide()` stays zero-I/O — the route hands it the finished numbers.**
+D029's rejected alternative (f) was "add a market-data dependency inside
+the component"; that stays rejected. `decide(proposal, portfolio, limits,
+market_risk=None)` gains one optional parameter carrying a pre-computed
+`MarketRiskInputs` (per-symbol annualized volatility + pairwise
+correlation). `apps/api/app/api/routes/trades.py` reads the trailing year
+of daily bars for the proposed symbol and every held symbol
+(`marketdata/portfolio_risk.py::load_market_risk_inputs`), computes the
+statistics, and passes them in as plain data — exactly where and how it
+already reads `recent_orders` and the emergency-stop boolean for the Risk
+Engine. The Portfolio Manager remains a pure function with no session, no
+clock, no network.
+
+**(2) The two new checks run only when there is a real number for them, and
+every backtest is byte-identical.** `market_risk` defaults to `None`;
+`backtesting/engine.py` (the one call site the whole backtest subsystem
+funnels through — walk-forward, universe scan, robustness and engine_v2 all
+reuse `_attempt_trade`) never passes it, so `PORTFOLIO_VOLATILITY` /
+`POSITION_CORRELATION` never appear in a backtest decision and no Phase
+55–61 result moves. On the trade path each check also requires its
+`PortfolioLimits` field (`max_portfolio_volatility_pct` /
+`max_position_correlation`) to be set; `config.py` always sets them there.
+
+**(3) Fail-open, audited, on thin history.** When a symbol the check needs
+has fewer than `portfolio_market_risk_min_observations` (60) overlapping
+daily returns in the trailing `portfolio_market_risk_lookback_days` (365),
+the check is recorded as a `PortfolioCheck` with `skipped=True`,
+`passed=False`, `worsened_by_trade=False` — it appears in the audit trail
+saying exactly which symbol and window fell short, and it does not block
+the trade. The three D029 constraints still gate. This is the same
+"`docs/TRADING_SAFETY.md` no-fabrication beats a convenient default"
+reasoning D029 and D075/D078 already applied: a fabricated covariance
+dressed as a real limit is worse than a check that honestly did not run,
+and fail-closed would block trading on every symbol not yet backfilled (the
+bar store is deliberately sparse, and the market-data vendor is
+NOT_CONFIGURED in local dev). `LIVE_TRADING_ENABLED` is false throughout;
+this decision would be revisited before it is turned on.
+
+**(4) `PORTFOLIO_VOLATILITY` — projected `sqrt(wᵀ Σ w)`, sized down by
+bisection, never blocks a de-risking sell.** Weights `w` are post-trade
+market values over (invariant) equity; Σ is built from the annualized
+vols and pairwise correlations, ρ_ii = 1. `worsened_by_trade` is true only
+for a BUY that raises projected vol above the pre-trade level, so a sell
+that lowers book volatility is never refused by the very measure it
+improves (the D029 rule). When it binds a MODIFY, the largest integer
+quantity keeping projected vol ≤ limit is found by bisection on `[0,
+requested]` — projected vol is monotonic in the traded weight over that
+range, so no closed-form quadratic solve is attempted and the search is
+obviously correct. If any weighted symbol is uncovered, or any needed
+pairwise correlation is missing, the whole check skips (3) rather than
+treating an unknown as zero covariance.
+
+**(5) `POSITION_CORRELATION` — max pairwise vs held OTHERs, opening-only,
+REJECT not MODIFY.** The measure is the largest Pearson correlation
+between the proposed symbol and any *other* currently-held symbol.
+Correlation does not depend on quantity, so `worsened_by_trade` is true
+only when the trade OPENS a new position (`held_quantity == 0`) whose
+correlation exceeds the limit; adding to a position already in the book
+cannot worsen it (that is the volatility check's job). There is no partial
+way to open a less-correlated position, so the cap is 0 — a binding
+correlation is a REJECT. With no other holdings the check passes trivially;
+with the proposed symbol uncovered or every pair unmeasurable it skips (3).
+
+**(6) No migration.** `orders.portfolio_binding_constraint` is `String(64)`
+(migration 0009), so the two new enum values persist as-is; the full
+`PortfolioCheck` list (including `skipped`) is in the API response but was
+never a persisted column, so nothing schema-level changes. Frontend
+`PortfolioVerdict.tsx` / `TradeHistory.tsx` already render the binding
+constraint as a raw string with no label map, so the new values surface
+with zero frontend change — consistent with how `symbol_concentration`
+etc. already display.
+
+**(7) Config: 0.40 annualized book-volatility ceiling, 0.80 max position
+correlation, 365-day lookback, 60-observation floor, 252 trading days for
+annualization (a constant, not a setting — changing it would silently move
+every volatility figure).** A `_enforce_sane_market_risk_settings`
+validator rejects a non-positive or out-of-range value at startup rather
+than as a 500 from inside the route, matching the file's other
+`_enforce_*` validators.
+
+Alternatives rejected:
+
+- **Fail-closed on thin bar history.** Rejected in (3) — blocks trading on
+  every un-backfilled symbol; fabrication is the worse failure.
+- **Wiring the constraints into the backtest engines now.** Rejected in
+  (2) — it would move every existing backtest result and force re-baselining
+  Phases 55–61; can be its own phase later if wanted.
+- **A market-data fetch inside `decide()`.** Still rejected (D029 (f)) —
+  it breaks the zero-I/O property that makes the gate testable.
+- **A persisted covariance / correlation table.** Rejected — the numbers
+  are a deterministic function of bars already stored; a second copy could
+  only drift, the same reasoning D076/D077 gave for not persisting a rank.
+- **A naive same-ticker-prefix correlation heuristic.** Already rejected in
+  D029 as a fabricated risk number; a real Pearson correlation over
+  overlapping daily returns, or an honest skip, is the only option.
+- **A closed-form quadratic solve for the volatility MODIFY cap.** Rejected
+  in (4) — bisection on integer quantity is exact here and unarguable.
+
+Scope discipline: `risk/engine.py` untouched (this is a second gate it does
+not know about). `backtesting/*` untouched — the new parameter is optional
+and no backtest caller passes it. `oms/service.py` and `oms/persistence.py`
+each gain one optional keyword parameter, threaded to the existing
+`portfolio_decide` call. `routes/trades.py` gains the bar read + input
+build beside the two reads already there. `core/config.py` gains four
+settings + one validator. New file `marketdata/portfolio_risk.py` (pure
+stats + a thin async loader). No new dependency, no migration, no frontend
+change.
+
+Verification (2026-09-10, isolated Postgres/Redis on remapped ports,
+freshly migrated from empty; `alembic downgrade -1` → `upgrade head`
+round-trips clean):
+
+- **1050 backend tests** (1021 → 1050, +29 test functions across
+  `tests/portfolio_manager/test_manager_market_risk.py` (15),
+  `tests/marketdata/test_portfolio_risk.py` (10),
+  `tests/api/test_trades_portfolio_market_risk.py` (4), plus one assertion
+  updated in `tests/portfolio_manager/test_manager.py` for the grown enum);
+  every existing `tests/oms/`, `tests/backtesting/` and `tests/api/test_trades*`
+  test unchanged and green. `ruff check apps tests migrations` clean;
+  `mypy apps` clean, **135 source files** (up from 134);
+  `bash scripts/secret_scan.sh` clean; full run 5m58s, exit 0.
+- Frontend unchanged — **273 tests / 34 files**, `npm run build` clean. No
+  frontend file was touched (the binding constraint renders as a raw
+  string).
+
+Status: Implemented and verified as above.
+

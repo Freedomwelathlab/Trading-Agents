@@ -23,6 +23,11 @@ deliberately not a fail-closed decision, because skipping this component
 cannot make a trade less safe - the Risk Engine still gated it, and this
 component can only ever shrink or stop a trade. The HTTP trade path
 (apps/api/app/api/routes/trades.py) always supplies both.
+
+`market_risk` (Phase 62, D079) is optional on the same footing: every
+backtest caller omits it and the Portfolio Manager's two market-risk
+checks then never run, so no existing backtest result moves; the trade
+path builds a `MarketRiskInputs` from `market_data_bars` and supplies it.
 """
 
 import enum
@@ -41,6 +46,7 @@ from apps.api.app.execution.broker import (
 )
 from apps.api.app.portfolio_manager.manager import decide as portfolio_decide
 from apps.api.app.portfolio_manager.models import (
+    MarketRiskInputs,
     PortfolioAction,
     PortfolioDecision,
     PortfolioLimits,
@@ -90,6 +96,7 @@ def submit_trade(
     recent_orders: list[RecentOrder] | None = None,
     portfolio: PortfolioState | None = None,
     portfolio_limits: PortfolioLimits | None = None,
+    market_risk: MarketRiskInputs | None = None,
 ) -> OMSResult:
     decision = evaluate_trade(
         proposal,
@@ -106,7 +113,9 @@ def submit_trade(
     portfolio_decision: PortfolioDecision | None = None
 
     if portfolio is not None and portfolio_limits is not None:
-        portfolio_decision = portfolio_decide(proposal, portfolio, portfolio_limits)
+        portfolio_decision = portfolio_decide(
+            proposal, portfolio, portfolio_limits, market_risk
+        )
 
         if portfolio_decision.action is PortfolioAction.REJECT:
             return OMSResult(

@@ -144,8 +144,10 @@ from apps.api.app.marketdata.fundamentals_provider import FundamentalsProvider
 from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
 from apps.api.app.marketdata.news_provider import NewsProvider
+from apps.api.app.marketdata.portfolio_risk import load_market_risk_inputs
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from apps.api.app.marketdata.router import MarketDataRouter, NoDataAvailableError
+from apps.api.app.marketdata.store import MarketDataStore
 from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
 from apps.api.app.portfolio_manager.manager import portfolio_state_from_positions
 from apps.api.app.portfolio_manager.models import PortfolioLimits
@@ -459,6 +461,12 @@ async def _execute_trade(
         max_symbol_pct_of_equity=settings.portfolio_max_symbol_pct_of_equity,
         min_cash_reserve_pct_of_equity=settings.portfolio_min_cash_reserve_pct_of_equity,
         max_open_positions=settings.portfolio_max_open_positions,
+        # Phase 62 (D079): the two market-risk ceilings. The Portfolio
+        # Manager still only runs the matching check when a MarketRiskInputs
+        # is also supplied (below), and skips it - audited, non-binding -
+        # for any symbol with too little ingested bar history.
+        max_portfolio_volatility_pct=settings.portfolio_max_portfolio_volatility_pct,
+        max_position_correlation=settings.portfolio_max_position_correlation,
     )
 
     # D029: the trade-path Portfolio Manager's view of the book, built from
@@ -496,6 +504,23 @@ async def _execute_trade(
         window_seconds=settings.risk_duplicate_order_window_seconds,
     )
 
+    # D079 (D029 rejected alternative (f)): the Portfolio Manager stays
+    # zero-I/O, so the real `market_data_bars` read for the two Phase-62
+    # market-risk checks happens HERE - one layer above it, exactly like
+    # get_recent_filled_orders and is_emergency_stop_active - and the
+    # finished MarketRiskInputs is handed down as plain data. The window
+    # ends on the proposal's own market-data timestamp. On a checkout with
+    # no ingested bars this returns an empty-but-valid MarketRiskInputs and
+    # decide() simply skips both new checks - that empty-inputs path IS the
+    # off switch, so there is no config flag to disable it.
+    market_risk = await load_market_risk_inputs(
+        MarketDataStore(session),
+        [proposal.symbol, *portfolio.open_symbols],
+        as_of=proposal.market_data_as_of.date(),
+        lookback_days=settings.portfolio_market_risk_lookback_days,
+        min_observations=settings.portfolio_market_risk_min_observations,
+    )
+
     try:
         result = await submit_trade_and_record(
             session,
@@ -509,6 +534,7 @@ async def _execute_trade(
             recent_orders=recent_orders,
             portfolio=portfolio,
             portfolio_limits=portfolio_limits,
+            market_risk=market_risk,
         )
     except LiveOrderNotFilledError as exc:
         # D058: the live broker ACCEPTED a real order but has not executed

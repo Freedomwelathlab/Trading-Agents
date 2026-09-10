@@ -4,6 +4,50 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 62: risk / position-sizing v2 (2026-09-10, D079) — adds the two
+  market-risk constraints D029 deferred for want of a price series, now
+  that Phase 53's `market_data_bars` supplies one. Built by 2 agents
+  against a frozen core (models + manager + `marketdata/portfolio_risk.py`)
+  the orchestrator wrote first. **No migration** (`portfolio_binding_constraint`
+  is `String(64)`), **no frontend change** (the value renders as a raw
+  string).
+  **(1) `decide()` stays zero-I/O** — gains one optional 4th param
+  `market_risk: MarketRiskInputs | None`; `routes/trades.py` reads the
+  trailing year of daily bars for the proposed + held symbols, computes the
+  stats (`load_market_risk_inputs`), and hands them in as plain data, right
+  where it already reads `recent_orders` and the emergency-stop bool.
+  **(2) Every backtest is byte-identical** — `backtesting/engine.py` (the
+  one funnel for walk-forward / scan / robustness / engine_v2) never passes
+  `market_risk`, so the two checks never appear in a backtest decision and
+  no Phase 55–61 result moves.
+  **(3) Fail-open, audited** — a symbol with < 60 overlapping daily returns
+  in the trailing 365 days makes the check a recorded `PortfolioCheck`
+  with `skipped=True, passed=False, worsened_by_trade=False`; it names the
+  gap and does not block. The 3 D029 checks still gate. Fabricating a
+  covariance is the worse failure (TRADING_SAFETY), and fail-closed would
+  block every un-backfilled symbol.
+  **(4) `PORTFOLIO_VOLATILITY`** = projected `sqrt(wᵀΣw)` on post-trade
+  weights vs `portfolio_max_portfolio_volatility_pct` (0.40); MODIFY sizes
+  down by bisection on integer quantity; never blocks a de-risking sell.
+  **(5) `POSITION_CORRELATION`** = max Pearson correlation of the proposed
+  symbol vs any held OTHER symbol vs `portfolio_max_position_correlation`
+  (0.80); quantity-independent, so it only blocks OPENING a new position,
+  and it is a REJECT (cap 0), never a MODIFY.
+  **(6) Config** — 4 new settings (0.40, 0.80, 365d, 60 obs) + a
+  `_enforce_sane_market_risk_settings` validator; annualization constant
+  252 (not a setting).
+  **1050 backend tests** (1021→1050, +29 test functions: 15
+  `test_manager_market_risk`, 10 `test_portfolio_risk`, 4
+  `test_trades_portfolio_market_risk`; 1 assertion updated in `test_manager`
+  for the grown enum). `ruff`, `mypy apps` (135 files, up from 134),
+  `secret_scan` clean. No migration.
+  `alembic downgrade -1` → `upgrade head` still round-trips clean. Frontend
+  unchanged (273/34). `LIVE_TRADING_ENABLED` stays false — this posture
+  would be revisited before live.
+  Not built (deliberately): sector concentration / expected-return /
+  drawdown constraints (no data), backtest-engine wiring (would move every
+  result), fail-closed on thin data, a persisted covariance table, a
+  closed-form MODIFY solve.
 - Phase 61: signal engine (2026-09-10, D078) — turns a validated strategy
   into "what does it say to do about this symbol right now," off the latest
   ingested bars, with the reasoning kept. Built by 2 agents (backend engine
