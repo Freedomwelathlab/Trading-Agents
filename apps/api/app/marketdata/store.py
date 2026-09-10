@@ -76,6 +76,45 @@ class MarketDataStore:
         )
         return [_row_to_bar(row) for row in rows]
 
+    async def get_latest_bars(self, symbol: str, *, bar_interval: str, count: int) -> list[Bar]:
+        """The most recent `count` bars for (symbol, bar_interval), returned
+        OLDEST-FIRST (so it drops straight into the same evaluators `get_bars`
+        feeds). Fewer than `count` if that much history has not been ingested -
+        callers handle a short series explicitly, exactly as `get_bars`'s own
+        contract requires; never pad.
+
+        Deliberately NOT expressible as a `get_bars` call: "the newest N bars"
+        has no date range a caller could name without already knowing which
+        calendar days have bars, which is the very thing the store is being
+        asked. The window is therefore selected NEWEST-first in SQL - so
+        Postgres reads only `count` rows off the (symbol, bar_interval, ts)
+        index rather than the symbol's whole history - and reversed here, in
+        Python, over that already-bounded list.
+
+        `bar_interval` is matched exactly, never coerced: "the latest 1d bars"
+        and "the latest 1m bars" are different series, and silently answering
+        with the wrong one would feed a strategy bars it was never evaluated
+        against.
+        """
+        if count <= 0:
+            return []
+        rows = (
+            (
+                await self._session.execute(
+                    select(MarketDataBar)
+                    .where(
+                        MarketDataBar.symbol == symbol,
+                        MarketDataBar.bar_interval == bar_interval,
+                    )
+                    .order_by(MarketDataBar.ts.desc())
+                    .limit(count)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_row_to_bar(row) for row in reversed(rows)]
+
     async def upsert_bars(self, bars: Sequence[Bar]) -> int:
         """Idempotent: re-ingesting an overlapping window overwrites each
         (symbol, bar_interval, ts) row with the latest vendor figures

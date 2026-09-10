@@ -4,6 +4,50 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 61: signal engine (2026-09-10, D078) — turns a validated strategy
+  into "what does it say to do about this symbol right now," off the latest
+  ingested bars, with the reasoning kept. Built by 2 agents (backend engine
+  + routes + migration `0023`; frontend page + form + table). Where Phase
+  55's backtest asks "what would this have done over that window," this
+  asks "what does it say at the newest bar."
+  **(1) The headline signal IS the backtest's** —
+  `evaluate_current_signal` takes `generate_signals(bars, definition)[-1]`,
+  the last element of the exact series `backtesting/executor.py` would
+  produce over those bars; the per-rule breakdown is
+  `strategies/expressions.py::evaluate_rule`. Both unchanged. The one thing
+  added is a human-readable `explanation` naming the concrete numbers
+  (spec section 25's "never a black-box BUY").
+  **(2) Insufficient data is a persisted answer** — a symbol with no bars,
+  or too few for its indicators, is a real `SignalEvaluation` row:
+  `signal="hold"`, `insufficient_data=True`, an `explanation` naming how
+  many bars exist. Never an exception, never a fabricated HOLD.
+  **(3) `entry_rule_held` / `exit_rule_held` are three-valued** — `true` /
+  `false` / `null` for "could not be evaluated there"; `null` is never
+  collapsed to `false`. `insufficient_data` still `false` when the exit
+  rule alone settles a SELL (exit beats entry).
+  **(4) `strategy:signal` is a NEW permission** — not `strategy:backtest`.
+  A signal is a present-tense instruction (the input Phase 63's runner
+  acts on); studying a strategy's past must not grant asking what it says
+  now. No ADMIN override; ownership re-derived per request.
+  **(5) On demand, synchronous in-request** — ≤50 symbols, each one
+  indexed read + in-memory evaluation. No recurring job in this phase.
+  **(6) The persisted bar store (D070) is the only source** — never a live
+  vendor call. `MarketDataStore.get_latest_bars` added (newest-N, returned
+  oldest-first, never padded).
+  **(7) `indicator_values` / `latest_close` as strings, `null` never 0**;
+  `as_of_bar_date` / `latest_close` `null` only in the zero-bar case,
+  never back-filled.
+  **(8) No summary/detail split** — a signal evaluation has no large child
+  collection; the list route returns the full shape (the `explanation` is
+  its most useful field). The POST response has no `limit`/`offset`.
+  **1021 backend tests** (976→1021, +45: engine unit tests incl.
+  parametrized families, 3 store, 7 API), **273 frontend tests across 34
+  files** (259/32→273/34, +14). `ruff`, `mypy apps` (134 files, up from
+  130), `secret_scan`, `npm run build` all clean. Migration `0023`
+  round-trips clean. Verified on a fresh isolated Postgres/Redis.
+  Not built (deliberately): any recurring/scheduled evaluation (Phase 63),
+  a live vendor fetch when the store is short, a `SideNav` entry (signals
+  live under a strategy), a summary DTO.
 - Phase 60: universe scanning (2026-09-10, D077) — run one validated
   strategy across many symbols, ranked by performance. Built by 2 parallel
   agents (backend orchestration + migration `0022`; frontend scan form +

@@ -115,6 +115,59 @@ async def test_get_bars_returns_empty_list_never_padded_when_nothing_ingested():
 
 
 @pytest.mark.asyncio
+async def test_get_latest_bars_returns_the_newest_n_oldest_first():
+    """The selection is newest-first (that is what "latest" means) but the
+    RESULT is oldest-first, because that is what every evaluator this feeds
+    expects - the same contract `get_bars` has."""
+    async with db_session() as session, clean_bars(session):
+        store = MarketDataStore(session)
+        await store.upsert_bars(
+            [_bar(day, str(100 + day)) for day in (17, 18, 19, 20, 21)]
+        )
+        await session.commit()
+
+        latest = await store.get_latest_bars(TEST_SYMBOL, bar_interval="1d", count=3)
+
+        # The three NEWEST days (19, 20, 21) - not the first three ingested.
+        assert [b.ts.day for b in latest] == [19, 20, 21]
+        assert [b.close for b in latest] == [Decimal(119), Decimal(120), Decimal(121)]
+
+
+@pytest.mark.asyncio
+async def test_get_latest_bars_returns_fewer_than_asked_never_padded():
+    """Two ingested bars answer a request for ten with two rows, never with
+    ten - a short series is a real data gap the caller must handle, exactly as
+    `get_bars`'s own contract requires."""
+    async with db_session() as session, clean_bars(session):
+        store = MarketDataStore(session)
+        await store.upsert_bars([_bar(18, "100"), _bar(19, "101")])
+        await session.commit()
+
+        latest = await store.get_latest_bars(TEST_SYMBOL, bar_interval="1d", count=10)
+
+        assert [b.close for b in latest] == [Decimal(100), Decimal(101)]
+
+
+@pytest.mark.asyncio
+async def test_get_latest_bars_is_empty_when_nothing_is_ingested_for_that_series():
+    """Nothing for the symbol at all, and nothing for the symbol at a
+    DIFFERENT interval - the interval is matched exactly, never coerced, so
+    ingested 1d bars are not silently returned as 1m ones."""
+    async with db_session() as session, clean_bars(session):
+        store = MarketDataStore(session)
+        await store.upsert_bars([_bar(18, "100")])
+        await session.commit()
+
+        assert (
+            await store.get_latest_bars(
+                "NOTHING-INGESTED.US", bar_interval="1d", count=5
+            )
+            == []
+        )
+        assert await store.get_latest_bars(TEST_SYMBOL, bar_interval="1m", count=5) == []
+
+
+@pytest.mark.asyncio
 async def test_upsert_bars_with_empty_sequence_is_a_no_op():
     async with db_session() as session, clean_bars(session):
         store = MarketDataStore(session)

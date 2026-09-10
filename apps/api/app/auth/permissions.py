@@ -82,3 +82,35 @@ class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
 
     Like STRATEGY_MANAGE, this deliberately carries no ADMIN override.
     """
+    STRATEGY_SIGNAL = "strategy:signal"
+    """Phase 61. Gates evaluating a strategy's CURRENT signal
+    (`POST /strategies/{id}/versions/{id}/signals`) and the signal listings
+    (`GET` on that same path, and `GET /signal-evaluations/{id}`), at the
+    router level exactly as STRATEGY_BACKTEST gates the backtest surface.
+
+    Deliberately SEPARATE from STRATEGY_BACKTEST, not folded into it. A
+    backtest is a historical what-if - it asks what WOULD have happened over a
+    window that is already over, and nothing about its answer is a
+    present-tense instruction. A signal is "what should happen now, for this
+    symbol, today", and it is the input Phase 63's paper-trading runner will
+    act on. A role that may study a strategy's past - an evaluation or
+    research account reading someone's else's results - must not automatically
+    be able to ask what that strategy says to DO right now, because that answer
+    is one step from an order rather than one step from a chart. The converse
+    also comes apart: a role could hold this without STRATEGY_BACKTEST, only
+    ever reading current signals for definitions it never re-runs history on.
+    Merging the two would make granting either grant both, with no way back.
+
+    Ownership is still checked per request ON TOP of this permission - a caller
+    may only evaluate, and only see signals on, their OWN strategies
+    (`_load_owned_strategy` / `_load_version`, imported from
+    apps/api/app/api/routes/strategies.py rather than re-implemented). Same
+    two-part authorization shape STRATEGY_MANAGE established (D071): the
+    permission says this account may ask for signals at all, the
+    `owner_user_id` check says over which strategies. Neither alone suffices.
+
+    Like both permissions above, this deliberately carries no ADMIN override,
+    and holding it authorizes no trade of any kind - a signal is a proposal,
+    and every actual order still goes through the deterministic Risk Engine
+    and the trade-submission permissions.
+    """

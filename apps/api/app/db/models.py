@@ -1570,3 +1570,109 @@ class UniverseScanResult(Base):
     win_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     num_trades: Mapped[int | None] = mapped_column(Integer)
     error_detail: Mapped[str | None] = mapped_column(String(500))
+
+
+class SignalDirection(str, enum.Enum):  # noqa: UP042 (str mixin kept for SQLAlchemy Enum interop)
+    """What a strategy currently says to do (Phase 61, migration 0023).
+
+    The same three words - and the same three string values - as
+    `apps/api/app/backtesting/strategy.py::Signal`, which is what the
+    evaluator actually returns. Deliberately a SECOND enum rather than
+    persisting that one: `Signal` is an in-memory value of the backtesting
+    package, and making a Postgres type out of it would tie the schema to a
+    module free to grow a fourth member (SHORT, SCALE_IN) for its own reasons
+    on a day nobody was thinking about the audit table. The route maps one to
+    the other by `.value`, and `tests/api/test_signals.py` pins that the two
+    vocabularies still line up.
+    """
+
+    BUY = "buy"
+    SELL = "sell"
+    HOLD = "hold"
+
+
+class SignalEvaluation(Base):
+    """One answer to "what does this strategy say to do for this symbol RIGHT
+    NOW, off the latest bars we hold" (Phase 61, migration 0023).
+
+    **APPEND-ONLY.** A row is written once and never updated afterwards - the
+    same discipline `Order` states, and for a sharper reason: this is an audit
+    record of what the engine said at time T from the data it had THEN. Editing
+    it later, even to "correct" it against bars ingested since, would destroy
+    the only evidence of what was actually decided at the time. A newer answer
+    is a newer row; `created_at` orders them.
+
+    **`insufficient_data = true` rows are KEPT, not skipped.** "This strategy
+    could not be evaluated for this symbol right now" is itself a real,
+    recorded answer - and the one most worth having later, because it is what
+    explains why nothing happened for a symbol someone expected a signal on. A
+    scheduler that silently dropped those rows would leave a gap
+    indistinguishable from never having been asked.
+
+    `strategy_version_id` is `ON DELETE RESTRICT`, matching every persisted
+    result in this schema (`BacktestRun`, `WalkForwardRun`, `RobustnessRun`,
+    `UniverseScan`) for the identical reason: a recorded signal's exact rule
+    set must never be able to vanish underneath it. A stored "BUY" means
+    nothing if the rules that produced it can be deleted.
+    `requested_by_user_id` is `ON DELETE SET NULL`, also matching every
+    sibling - what was evaluated and what it said outlives whoever asked.
+
+    `indicator_values` and `explanation` are what make this row satisfy spec
+    sections 25 and 52 - "never produce a black-box BUY without explanation",
+    "signals must be deterministic and reproducible". Together with the
+    version's frozen `definition` they are enough to re-derive the verdict by
+    hand from the row alone, without re-running anything.
+
+    `indicator_values` is JSONB - the second such column in this schema after
+    `StrategyVersion.definition`, and for a related reason: its KEYS are the
+    indicator ids of a user-authored definition, so no fixed set of columns
+    could hold them. Decimals are stored as STRINGS (`"105.50"`), never JSON
+    numbers, because JSON numbers are IEEE floats and this codebase is Decimal
+    end to end; `null` is preserved and means "this indicator had no value at
+    that bar", never 0.
+
+    `as_of_bar_date` is the DATE of the evaluated bar, and is NULL only when
+    zero bars existed to evaluate. It is deliberately not defaulted to the
+    request time: "as of no data" and "as of now" are different statements,
+    and only the former is honest when nothing was ingested.
+    """
+
+    __tablename__ = "signal_evaluations"
+    __table_args__ = (
+        Index(
+            "ix_signal_evaluations_version_symbol_created",
+            "strategy_version_id",
+            "symbol",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1d")
+    """Plain string, not a Postgres ENUM - the same reasoning
+    `market_data_bars.bar_interval` documents, and naming the same vocabulary,
+    since this is the interval the evaluated bars were read at."""
+    as_of_bar_date: Mapped[date | None] = mapped_column(Date)
+    latest_close: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    signal: Mapped[SignalDirection] = mapped_column(
+        _pg_enum(SignalDirection, "signaldirection"), nullable=False
+    )
+    entry_rule_held: Mapped[bool | None] = mapped_column(Boolean)
+    """Three-valued on purpose: TRUE, FALSE, or NULL for "could not be
+    evaluated at that bar". Collapsing NULL to FALSE would make a rule nobody
+    could check indistinguishable from one that was checked and did not
+    hold."""
+    exit_rule_held: Mapped[bool | None] = mapped_column(Boolean)
+    insufficient_data: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    indicator_values: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    explanation: Mapped[str] = mapped_column(String(1000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

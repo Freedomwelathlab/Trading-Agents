@@ -8052,3 +8052,143 @@ on a freshly-migrated, isolated Postgres/Redis on remapped ports
 
 Status: Implemented and verified as above.
 
+---
+
+**D078 — Phase 61: signal engine — a validated strategy's present-tense verdict for a symbol, off the latest bars, with the reasoning kept**
+
+Reason: the master spec's section 25 — turn a validated strategy into "what
+should I do about this symbol right now," and never show a BUY (or a HOLD)
+without the numbers behind it. Where Phase 55's backtest asks "what would
+this have done over that window" and Phase 60's scan asks "which markets
+does it suit," this asks "what does it say to do at the newest bar." Built
+by one agent (backend engine + routes + migration `0023`) plus one agent
+(frontend page + form + table); one migration, no collision.
+
+**(1) The headline signal IS the backtest's, not a second opinion.**
+`signals/engine.py::evaluate_current_signal` takes
+`generate_signals(bars, definition)[-1]` — the last element of the exact
+signal series `backtesting/executor.py` would produce over those same bars,
+already carrying the exit-before-entry precedence that module owns. The
+per-rule breakdown (`entry_rule_held` / `exit_rule_held`) comes from
+`strategies/expressions.py::evaluate_rule`, also unchanged — the module
+whose own docstring anticipated this reuse. This file adds exactly one
+thing neither has: a human-readable `explanation` naming the concrete
+numbers, which is the section-25 requirement. A signal engine that
+recomputed the verdict its own way could disagree with a backtest over
+identical bars; this one structurally cannot.
+
+**(2) Insufficient data is an answer, persisted, never an exception or a
+fabricated HOLD.** A symbol with zero ingested bars, or with fewer than its
+indicators need at the latest bar, comes back as a real `SignalEvaluation`
+row: `signal="hold"`, `insufficient_data=True`, and an `explanation` naming
+how many bars actually exist ("sma_20 (period 20) has no value at the
+latest bar (2026-06-30): it needs more than the 12 bars ingested for this
+symbol"). The bar count and boundary wording defer to
+`marketdata/indicators.py` rather than restating a warmup formula — the
+same off-by-one drift `compute_indicator_series` refuses to risk. Same
+"never pad, never guess" posture as `expressions.py`'s `None`-means-cannot-
+evaluate rule and universe-scan's recorded per-symbol FAILED rows.
+
+**(3) `entry_rule_held` / `exit_rule_held` are THREE-VALUED.** `true`,
+`false`, or `null` for "could not be evaluated at that bar" (an operand
+still inside its warmup, or a crossing operator with no previous bar).
+`null` is deliberately not collapsed to `false`: "the entry condition is
+absent" and "we could not tell" are different facts about a strategy
+someone may be about to act on, and `schemas_signals.py` states a client
+must not render `null` as "no". `insufficient_data` is
+`not (exit_held is True or (exit_held is False and entry_held is not None))`
+— an exit rule that HOLDS settles the verdict on its own (exit beats
+entry), so a SELL stays fully determined even when the entry rule had too
+little history; flagging that would grey out a determined exit signal in
+the one direction where being wrong leaves an unmanaged position.
+
+**(4) `strategy:signal` is a NEW permission, not `strategy:backtest`.**
+First surface since Phase 55 to add one rather than reuse. The reason is on
+`Permission.STRATEGY_SIGNAL`: a backtest is a historical what-if; a signal
+is a present-tense instruction, and is the input Phase 63's paper-trading
+runner will act on each cycle. A role that may study a strategy's past must
+not automatically be able to ask what it says to do right now. No ADMIN
+override; two-part authorization (router permission + per-request ownership
+via the imported `_load_owned_strategy` / `_load_version`) unchanged from
+D071. `GET /signal-evaluations/{id}` re-derives ownership by joining
+evaluation → version → strategy → owner, never trusting an id to be
+unguessable.
+
+**(5) On demand, not scheduled; synchronous in-request.** Each `POST`
+evaluates and persists inside the request — at most 50 symbols, each one
+indexed read of a few dozen bars plus an in-memory rule evaluation, no
+replay, no fills, no capital modelling. There is no recurring job in this
+phase; the plan's "first component needing real recurring job scheduling"
+is about Phase 63's deployed-strategy runner, which will call this same
+engine. `count = _warmup_bar_count(definition) + EVALUATION_BAR_BUFFER`
+(5) — the buffer is a cheap over-fetch so a genuine crossing on the newest
+bar is never missed for want of one row of context; `_warmup_bar_count`
+stays the single definition of warmup, reused not restated.
+
+**(6) The persisted bar store (D070) is the only data source** — never a
+live vendor call, exactly as every Strategy Lab surface since Phase 55
+requires. `MarketDataStore.get_latest_bars(symbol, bar_interval, count)`
+was added: newest-N selection, returned oldest-first (the
+`HistoricalBarProvider` contract every evaluator expects), never padded.
+
+**(7) `indicator_values` and `latest_close` as strings, `null` never 0.**
+Each declared indicator's value at the latest bar, `"105.50"` not `105.5`,
+so no Decimal is routed through a JSON float; `null` where the indicator
+has no value yet. `as_of_bar_date` / `latest_close` are `null` only in the
+zero-bar case — never back-filled with the request time or a last-known
+price (`docs/TRADING_SAFETY.md`).
+
+**(8) No summary/detail split** — unlike every other Strategy Lab listing.
+A `BacktestRun` has an equity curve and a trade list to leave out of a
+listing; a signal evaluation's whole content is a verdict, a few scalars
+and one small indicator map. The `explanation` a summary would drop is the
+single most useful field on it, so the list route returns the full shape.
+`SignalEvaluationBatchResponse` (the POST's response) has no `limit`/
+`offset`: the batch is exactly the symbols the caller asked for, in request
+order, nothing paged and nothing omitted.
+
+Alternatives rejected:
+
+- **Reusing `strategy:backtest`.** Rejected in (4) — present-tense
+  instruction vs historical study; Phase 63 acts on the former.
+- **Collapsing unevaluable rules to `false`.** Rejected in (3) — hides the
+  warmup/absent distinction from someone about to trade.
+- **Raising / 4xx for a symbol with no bars.** Rejected in (2) — a
+  persisted HOLD row naming the gap is the honest answer and keeps the
+  other symbols in the batch.
+- **A live vendor fetch when the store is short.** Rejected in (6) —
+  every other surface reads the store; a signal that silently pulled
+  fresher data than a backtest could see would not be checkable against
+  one.
+- **Recomputing the verdict in the engine.** Rejected in (1) — it could
+  disagree with a backtest over identical bars.
+
+Scope discipline: `backtesting/executor.py` / `strategy.py` /
+`engine_v2.py` / `expressions.py` and every existing route file are
+untouched — the engine imports what it needs and lives in a new
+`apps/api/app/signals/` package; `main.py` gains two `include_router`
+lines. `MarketDataStore` gains one additive method. Frontend adds one page,
+two proxy routes, two components, two test files — no new dependency,
+`SideNav` untouched (signals live under a strategy, reached from its detail
+page like backtests and scans).
+
+Verification (2026-09-10, isolated Postgres/Redis on remapped ports
+55432/56379, freshly migrated from empty):
+
+- `alembic upgrade head` from empty through `0023` clean; `downgrade -1` →
+  `upgrade head` round-trips clean.
+- **1021 backend tests** (976 → 1021, +45: `tests/signals/test_engine.py`
+  — 9 cases plus two parametrized families, 3 in
+  `tests/marketdata/test_store.py`, 7 in `tests/api/test_signals.py`);
+  `ruff check apps tests migrations` clean; `mypy apps` clean, **134 source
+  files** (up from 130); `bash scripts/secret_scan.sh` clean; full run
+  16m49s, exit 0. The shared dev stack's stale-broker-row flake
+  (D070–D077) does not reproduce on this clean stack.
+- **273 frontend tests across 34 files** (259/32 → 273/34; +14 across
+  `test/CheckSignalsForm.test.tsx` and `test/SignalTable.test.tsx`),
+  `npm run build` clean with the new routes in the manifest. No new
+  dependency. (Same slow-machine frontend flake as D077 — run with
+  `--maxWorkers=2 --testTimeout=20000`.)
+
+Status: Implemented and verified as above.
+
