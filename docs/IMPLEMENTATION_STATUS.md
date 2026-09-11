@@ -4,6 +4,50 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+**Phases 53-68 (D070-D086), the Strategy Lab initiative, are now complete.**
+`LIVE_TRADING_ENABLED` stays `false` on every default and every test, and
+real, unattended live order placement remains structurally impossible
+(the deployment runner refuses every `live`-mode cycle unconditionally,
+before consulting `TRADING_MODE` or `LIVE_TRADING_ENABLED` at all — D082)
+pending a future, separately-approved phase that deliberately designs and
+the user explicitly authorizes an actual unattended-execution path. Nothing
+below claims the platform is "production ready" or "fully secure" beyond
+what each phase actually verified.
+
+- Phase 68: final hardening (2026-09-11, D086) — pure verification, no new
+  API surface, no schema change, no user-facing capability; the last phase
+  of the Strategy Lab initiative. **Fuzz-testing**
+  (`tests/strategies/test_fuzz.py`) found and fixed THREE real crash bugs:
+  `validate_definition` raised `TypeError` on an unhashable vocabulary
+  value (`{"op": {...}}` instead of a string) instead of returning an
+  itemized error — fixed with a new `_in_vocabulary()` helper used at all
+  three vocabulary-check sites in `strategies/validation.py`; the evaluator
+  (`strategies/expressions.py`) raised `TypeError` on a `None` bar close
+  and `decimal.InvalidOperation` on a Decimal NaN close instead of failing
+  closed with `None` — both now caught and answered with the module's
+  existing `None` semantics. A static AST guard also now runs against
+  `validation.py`/`expressions.py`/`perturbation.py`/`engine_v2.py` proving
+  none of them ever calls `eval`/`exec`/`compile`/`__import__` or imports by
+  name inside a function body. **A permission-matrix audit**
+  (`tests/auth/test_permission_matrix.py`) mechanically walks the real
+  constructed FastAPI app and proves every non-public route requires SOME
+  authentication dependency (not a claim about which permission is
+  correct — each route's own tests already prove that); found zero routes
+  missing auth, but did surface one stale docstring
+  (`Permission.SUBMIT_LIVE_TRADE` claimed "not enforced anywhere yet" —
+  false since Phase 43/D058) while the new `docs/PERMISSION_MATRIX.md`
+  table was being cross-checked, now fixed. **One real capped-load test**
+  (`tests/backtesting/test_universe_scan_load.py`) runs a real universe
+  scan at `MAX_SCAN_SYMBOLS` (50) real seeded symbols against real
+  Postgres through the real HTTP API, asserting it completes within a
+  generous 60-second bound — explicitly NOT a concurrency benchmark (this
+  codebase has no task queue to load-test concurrently).
+  [orchestrator fills test counts]; `ruff check apps tests migrations`,
+  `mypy apps`, `bash scripts/secret_scan.sh` — status per orchestrator's
+  full run. No new migration (schema unchanged, still at `0026`). No new
+  dependency (no `hypothesis` added — a hand-crafted 42-case adversarial
+  table per the phase's own instruction). No frontend change.
+
 - Phase 67: AI strategy research assistant (2026-09-11, D085) — advisory-only
   agent (`apps/api/app/agents/strategy_research_assistant.py::
   StrategyResearchAssistant`) that proposes a candidate `StrategyDefinition`
