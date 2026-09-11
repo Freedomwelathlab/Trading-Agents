@@ -126,9 +126,32 @@ class RoundTrip:
     return_pct: Decimal
 
 
+@dataclass(frozen=True)
+class OpenLot:
+    """A position this deployment opened and has not yet closed, carrying
+    the REAL entry fill's price and time - the same provenance discipline
+    `RoundTrip` applies to closed positions.
+
+    Phase 69 (D087) needs the entry price, not just the quantity: an
+    unattended live runner's capital ceiling is denominated in committed
+    cost basis, and its unrealized-P&L circuit breaker marks each open lot
+    against the latest bar. Both are unanswerable from quantity alone.
+    `build_deployment_monitoring` continues to expose only the quantities
+    (`DeploymentActualPerformance.open_positions`), so Phase 65's public
+    monitoring shape is unchanged by this."""
+
+    quantity: Decimal
+    entry_price: Decimal
+    entered_at: datetime
+
+    @property
+    def cost_basis(self) -> Decimal:
+        return self.entry_price * self.quantity
+
+
 def _build_round_trips(
     order_fills: Sequence[tuple[Order, Fill]],
-) -> tuple[list[RoundTrip], dict[str, Decimal]]:
+) -> tuple[list[RoundTrip], dict[str, OpenLot]]:
     """Walk `(Order, Fill)` pairs - already filtered to `status == FILLED`
     and ordered by `Order.submitted_at` ascending by the caller - maintaining
     one open lot per symbol, and return the closed round trips plus the
@@ -187,8 +210,11 @@ def _build_round_trips(
                 )
             )
 
-    open_positions = {symbol: quantity for symbol, (quantity, _, _) in open_lots.items()}
-    return round_trips, open_positions
+    remaining = {
+        symbol: OpenLot(quantity=quantity, entry_price=entry_price, entered_at=entered_at)
+        for symbol, (quantity, entry_price, entered_at) in open_lots.items()
+    }
+    return round_trips, remaining
 
 
 @dataclass(frozen=True)
@@ -264,7 +290,11 @@ async def build_deployment_monitoring(
     ).all()
     order_fills: list[tuple[Order, Fill]] = [(row[0], row[1]) for row in rows]
 
-    round_trips, open_positions = _build_round_trips(order_fills)
+    round_trips, open_lots = _build_round_trips(order_fills)
+    # Phase 65's reported shape is quantities only; the lots' entry prices
+    # exist for Phase 69's capital guard and are deliberately not widened
+    # into this report's API.
+    open_positions = {symbol: lot.quantity for symbol, lot in open_lots.items()}
 
     num_round_trips = len(round_trips)
     num_winning = sum(1 for rt in round_trips if rt.realized_pnl > 0)

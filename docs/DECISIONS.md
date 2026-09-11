@@ -9388,3 +9388,256 @@ still `false` and real live order placement still structurally impossible
 (D082/D086).
 
 Status: Implemented and verified as above.
+
+---
+
+## D087 — Phase 69: unattended live execution, armed by one dedicated switch and bounded by capital controls
+
+**Supersedes the operative half of D082.** D082's reasoning is preserved
+there and is still correct about the problem; what changed is that the
+problem now has a solution D082 did not have.
+
+### 1. What D082 actually decided, and why it is being revisited
+
+Phase 64 built the live-deployment data model and permissions, then made
+the runner refuse every `mode='live'` cycle **unconditionally** - writing
+`SKIPPED_LIVE_TRADING_DISABLED` before touching market data, the broker, or
+the risk engine, and deliberately without consulting `TRADING_MODE` /
+`LIVE_TRADING_ENABLED`, so flipping those for an unrelated reason could not
+arm a robot.
+
+The stated reason was that `docs/TRADING_SAFETY.md` requires explicit,
+in-the-moment human approval for every live trade, and a scheduler
+structurally cannot supply one. That is true, and D087 does not pretend
+otherwise. What D082 got wrong was the conclusion it drew: it treated
+"cannot approve per order" as "cannot be approved at all," when the real
+gap was that **no switch existed by which an operator could state the
+intent unambiguously**, so refusing was the only honest option available.
+
+D087 builds that switch. The approval is still explicit - it is given once,
+over a mandate bounded by numbers the operator has to choose, rather than
+once per order.
+
+### 2. The third key, and why it is not a reuse of the two that exist
+
+`STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` (default `false`) is a **third**
+independent setting, on top of `TRADING_MODE=live` and
+`LIVE_TRADING_ENABLED=true`.
+
+Reusing the existing two was the obvious shortcut and is wrong. Those two
+arm the *interactive* live path (D058), where a human supplies
+`confirm: true` for one specific order. A person who enables them to place
+a single live trade by hand must not thereby, silently, also start an
+unsupervised robot trading their account on a timer. Those are different
+decisions with different risk profiles, and they get different switches.
+
+Same "strictly more demanding" direction D058 chose when it required
+`trade:submit:live` **in addition to** `trade:submit:paper`.
+
+A dedicated test holds the line:
+`test_a_live_deployment_is_still_skipped_with_interactive_live_trading_on`
+turns both D058 keys on, leaves the robot switch off, and asserts the cycle
+is still skipped with zero orders and zero market-data reads. That test is
+D082's own test, rewritten: its assertions are unchanged, because the
+property it protects is the one that still matters most.
+
+### 3. Capital controls, and why the per-trade limit is a cap not an override
+
+The operator supplies two numbers. Neither has a default; there is
+deliberately no "unlimited" value for either, and the app refuses to start
+if the robot is armed without both.
+
+- `STRATEGY_LIVE_TOTAL_CAPITAL` bounds total deployed cost basis.
+- `STRATEGY_LIVE_CAPITAL_PER_TRADE` bounds one entry.
+
+The per-trade number is applied as a **cap on** the strategy's own
+`position_sizing`, not a replacement for it: the runner sizes what the
+strategy asked for, then takes the smaller of that and the cap. Overriding
+outright was considered and rejected - it would mean raising this number
+could silently *increase* a conservative strategy's position size, the
+wrong direction for a control whose entire job is bounding exposure. The
+cap is floored to whole shares with `ROUND_FLOOR` against the real trade
+price, because rounding up would commit more than the operator allowed, and
+that is the one direction a cap must never fail in.
+
+Both figures are recomputed every cycle from this deployment's **own real
+fills** (joined through `Order.deployment_run_id`, the same query shape
+D083's monitoring uses), never from a remembered running total and never
+from the whole brokerage account - which may hold positions a human opened
+by hand or another deployment owns.
+
+**Scope: per deployment, not per account - stated explicitly because the
+first draft of the documentation got this wrong.** The capital ceiling and
+both loss breakers are evaluated against ONE deployment's own book, so N
+active live deployments can commit up to N x `STRATEGY_LIVE_TOTAL_CAPITAL`.
+Summing across deployments was considered and is genuine future work; it
+was not done here because the clean attribution stops at
+`deployment_run_id`, and aggregating would have meant either re-deriving
+lots across deployments that may trade the same symbol (where one shared
+per-symbol lot walk would mis-attribute entries between them) or reading
+the whole brokerage account, which includes positions this system did not
+open and must not claim. Documented loudly in `config.py`,
+`docs/TRADING_SAFETY.md` and `docs/LIVE_AUTO_TRADING.md` rather than left
+for an operator to discover by arithmetic.
+
+### 4. Circuit breakers: pause, never liquidate
+
+`STRATEGY_LIVE_MAX_DAILY_LOSS_PCT` (default 3) and
+`STRATEGY_LIVE_MAX_TOTAL_LOSS_PCT` (default 10) halt the runner and
+**pause** the deployment through the existing `pause_deployment()` - the
+same "reuse the one implementation" choice D084's drift auto-pause made, so
+a breaker-paused deployment is indistinguishable in state and in the API
+from a human-paused one, and is resumed the same way.
+
+**They never liquidate.** Auto-selling into whatever is happening on the day
+a loss breaker fires is how a bad hour gets converted into a realized loss
+at the worst price on offer. The positions stay, the robot stops opening new
+ones, and a human decides. Re-arming is a deliberate human action, which is
+the difference between a breaker and a filter. Asserted by test: after a
+halt, zero SELL orders exist.
+
+Unlike D084's drift auto-pause, these default **ON** rather than off. D084's
+standing rule that automation stays opt-in applies to automation that
+*acts*; these breakers only ever *stop* the robot, and an armed live robot
+with its loss limits disabled is not a configuration worth making easy.
+
+### 5. Total loss, not drawdown - named for what it measures
+
+The slower breaker was initially drafted as a drawdown-from-peak limit and
+deliberately renamed. A true drawdown breaker needs a stored high-water mark
+of equity over time, and this system persists no such series for live
+deployments. Computing a peak from whatever history happens to be queryable
+would produce a threshold that silently drifts as old rows age out - a
+breaker whose trigger point moves is worse than one that measures something
+simpler and says so in its name.
+
+### 6. The daily window is conservative, on purpose
+
+`realized_pnl_today` counts round trips closed today; `unrealized_pnl`
+counts every open lot regardless of when it was opened. Their sum therefore
+charges a multi-day open loss against today's breaker on every day it
+persists, so the breaker fires earlier than a strict day-over-day measure
+would.
+
+The strict measure needs a start-of-day equity snapshot that does not exist
+for live deployments. Between a breaker that fires somewhat early and one
+that needs a number this system cannot honestly produce, a control whose job
+is stopping losses should err toward firing early - and should say so rather
+than implying a precision it does not have.
+
+### 7. An unpriceable position halts but does not pause
+
+If a held symbol has no ingested bar, `_unrealized` returns `None` - never a
+partial sum, which would understate the loss in exactly the direction that
+keeps the robot trading. The cycle halts.
+
+It does **not** pause the deployment, unlike a loss breach. A missing bar is
+an ingestion gap, not a loss event; pausing on it would disguise a stale
+data feed as a risk decision and send an operator looking in the wrong
+place. Mirrors how the paper path already fails visibly on an unpriceable
+held position rather than marking it at cost.
+
+### 8. Alternatives considered
+
+- **Leave D082's refusal in place and decline the request.** Rejected: the
+  refusal was a consequence of a missing mechanism, not a standing judgement
+  that the mechanism must never exist, and the user owns the platform, the
+  account and the capital.
+- **Reuse `LIVE_TRADING_ENABLED` alone.** Rejected - §2.
+- **Per-cycle confirmation via a notification the operator answers.**
+  Rejected for this phase: it reintroduces a human into a loop whose whole
+  purpose is running unattended, and a confirmation prompt that is always
+  answered "yes" is a worse control than an honest capital bound, because it
+  looks like supervision without providing any.
+- **Auto-liquidate on a breaker.** Rejected - §4.
+- **Override strategy sizing with `capital_per_trade`.** Rejected - §3.
+- **A drawdown-from-peak breaker.** Rejected as unimplementable honestly
+  without a persisted equity series - §5.
+
+### 9. What this phase did NOT do
+
+It did not enable live trading. `LIVE_TRADING_ENABLED` and
+`STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` are both `false` in every default and
+every test in this repository, no live credentials were handled, and no live
+order was placed at any point during this phase's development or
+verification. Arming is an act the operator performs in their own
+environment.
+
+It also did not make any strategy profitable. Every control here bounds loss
+and speed; none is a view on whether running a given strategy on real money
+is wise.
+
+### A note on the risk limits, recorded because it was nearly a silent bug
+
+The first draft swapped the runner's `_risk_limits(settings)` for
+`build_risk_limits(settings, live=...)` wholesale. Those two are not
+equivalent: `build_risk_limits` honours `risk_require_stop_price` (default
+**true**), while `_risk_limits` forces it `false`. A deployed strategy
+carries no stop price - its exit rule is its exit (D035) - so the swap would
+have made the Risk Engine reject **every** automated entry, paper and live
+alike. Caught by an existing paper test before it went anywhere.
+
+`_deployment_risk_limits` now returns `_risk_limits(settings)` byte-for-byte
+for paper (so every pre-existing paper test and backtest comparison stays
+valid) and D058's tighter `live_risk_*` limits with `require_stop_price`
+re-cleared for live.
+
+### Files
+
+- `apps/api/app/deployments/live_guard.py` (new) - `evaluate_live_arming`,
+  `evaluate_live_capital`, `live_entry_budget`.
+- `apps/api/app/deployments/runner.py` - arming gate replaces the
+  unconditional refusal; live broker selection; capital breakers; per-trade
+  cap at the sizing site; `_deployment_risk_limits`; `save_paper_broker`
+  skipped for live.
+- `apps/api/app/deployments/monitoring.py` - `_build_round_trips` now
+  returns `OpenLot` (quantity + real entry price/time) instead of bare
+  quantities; Phase 65's reported API shape is unchanged.
+- `apps/api/app/core/config.py` - six new settings plus
+  `_enforce_live_auto_execution_is_fully_configured`.
+- `apps/api/app/db/models.py` - `SKIPPED_LIVE_RISK_HALT`; D082 status
+  docstring corrected from "unconditional" to "conditional on the switch".
+- `migrations/versions/0027_deployment_run_live_risk_halt.py` (new).
+- `docs/TRADING_SAFETY.md`, `docs/IMPLEMENTATION_STATUS.md`.
+- Tests: `tests/deployments/test_live_guard.py` (new),
+  `tests/deployments/test_runner_live.py` (new),
+  `tests/core/test_live_auto_execution_settings.py` (new),
+  `tests/deployments/test_runner.py` (D082 test rewritten),
+  `tests/deployments/test_monitoring.py` (OpenLot assertions),
+  `tests/deployments/conftest.py` (live-broker teardown now cleans orders).
+
+### Verification
+
+2026-09-11, isolated Postgres/Redis (timescaledb 2.15.3-pg16 + redis:7),
+freshly migrated from empty, confirmed at head `0027` with no drift:
+
+- **1215 backend tests** (1178 → 1215, +37: `tests/deployments/test_live_guard.py`
+   +13, `tests/deployments/test_runner_live.py` +6,
+  `tests/core/test_live_auto_execution_settings.py` +18), full run 9m11s,
+  exit 0.
+- **312 frontend tests across 39 files** (311 → 312), `npm run build` clean.
+- `ruff check apps tests migrations` clean; `mypy apps` clean, **144 source
+  files** (143 → 144, the new `live_guard.py`); `bash scripts/secret_scan.sh`
+  clean.
+- `LIVE_TRADING_ENABLED` and `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` both
+  `false` in every default and every test in the run above. No live
+  credential was present or handled; no live order was placed. The armed
+  live path is exercised in tests against an in-memory
+  `PaperBrokerAdapter` substituted for the only function that can build a
+  real one (`tests/deployments/test_runner_live.py` documents why).
+
+**A note on two failures seen during development, both bogus.** An
+intermediate run reported 2 failures in
+`tests/api/test_snapshot_scheduler_market_hours.py`, which asserts a GLOBAL
+`captured_count == 1` against the shared test database. Cause: an earlier
+failing test in this phase's own development aborted
+`deployment_world`'s teardown mid-way (the live-broker cleanup did not yet
+delete the orders an ARMED live deployment now really places - fixed in
+`conftest.py`), orphaning `Broker` rows that the snapshot scheduler then
+counted. Reproduced in isolation on the polluted database, and absent on
+every fresh one. Not a regression, but a reminder that a global-count
+assertion against a shared database reports someone else's leftovers as its
+own failure, and that a cross-module failure should be re-checked on a fresh
+container before it is believed.
+
+Status: Implemented and verified.

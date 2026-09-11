@@ -231,6 +231,52 @@ describe("DeploymentList", () => {
     expect(calls()[1][0]).toBe("/api/deployments/dep-1/signals?limit=50&offset=0");
   });
 
+  it("renders a live capital halt with its full error detail (Phase 69, D087)", async () => {
+    // A capital circuit breaker fired on real money and paused the
+    // deployment. The operator must be able to read WHY straight off the
+    // run row, so the backend's detail is rendered verbatim.
+    mockOnce(200, {
+      items: [
+        {
+          id: "run-halt",
+          deployment_id: "dep-1",
+          status: "skipped_live_risk_halt",
+          started_at: "2026-09-11T00:00:00Z",
+          completed_at: "2026-09-11T00:00:01Z",
+          symbols_evaluated: 0,
+          signals_actionable: 0,
+          orders_submitted: 0,
+          orders_filled: 0,
+          error_detail:
+            "daily loss circuit breaker: net P&L -400 is at or beyond the limit -300. Deployment paused; open positions were NOT liquidated.",
+          created_at: "2026-09-11T00:00:00Z",
+        },
+      ],
+      limit: 50,
+      offset: 0,
+    });
+    mockOnce(200, { items: [], limit: 50, offset: 0 });
+
+    render(
+      <DeploymentList
+        deployments={[deployment({ status: "paused" })]}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("deployment-toggle-dep-1"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("run-status-run-halt")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("run-status-run-halt")).toHaveTextContent(
+      "skipped_live_risk_halt",
+    );
+    expect(
+      screen.getByText(/open positions were NOT liquidated/),
+    ).toBeInTheDocument();
+  });
+
   it("loads drift checks independently on expanding the Drift checks section", async () => {
     mockOnce(200, {
       items: [

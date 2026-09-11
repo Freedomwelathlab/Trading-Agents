@@ -14,10 +14,16 @@ import type {
 } from "@/components/CreateDeploymentForm";
 
 /** succeeded -> pos, failed -> neg, every `skipped_*` -> neutral. A skipped
- * cycle is a real, honest answer ("nothing to do"), never an error. */
+ * cycle is a real, honest answer ("nothing to do"), never an error.
+ *
+ * One deliberate exception (Phase 69, D087): `skipped_live_risk_halt` is
+ * styled `neg`. It is technically a skip, but it means a capital circuit
+ * breaker fired on REAL money and paused the deployment — the one skip an
+ * operator must not scan past as routine. */
 function runTone(status: DeploymentRunStatus): "pos" | "neg" | "neutral" {
   if (status === "succeeded") return "pos";
   if (status === "failed") return "neg";
+  if (status === "skipped_live_risk_halt") return "neg";
   return "neutral";
 }
 

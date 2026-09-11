@@ -1735,17 +1735,38 @@ class StrategyDeploymentRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin for
     SKIPPED_MARKET_CLOSED = "skipped_market_closed"
     SKIPPED_LOCK_HELD = "skipped_lock_held"
     SKIPPED_LIVE_TRADING_DISABLED = "skipped_live_trading_disabled"
-    """Phase 64 (migration 0025, D082). The deployment's `mode` is `live`.
-    The runner writes exactly this row and touches nothing else - no market
-    data, no broker, no risk engine - for every cycle of every `live`
-    deployment, unconditionally, regardless of `TRADING_MODE` /
-    `LIVE_TRADING_ENABLED`. Automated per-cycle execution has no per-trade
-    human present to confirm it, and this project's non-negotiable rule
-    (docs/TRADING_SAFETY.md) requires an explicit, in-the-moment approval
-    for every live trade - something a scheduler structurally cannot supply.
-    A real live-execution path is a future phase the user must separately
-    design and approve; this status exists so that phase's absence is an
-    honest, visible, audited fact rather than silence."""
+    """The deployment's `mode` is `live` and unattended live execution is
+    NOT armed. The runner writes exactly this row and touches nothing else -
+    no market data, no broker, no risk engine.
+
+    Introduced by Phase 64 (migration 0025, D082) as an UNCONDITIONAL
+    refusal: at that point no switch existed by which an operator could
+    state the intent to run a robot on real money, so every live cycle
+    refused regardless of configuration. Phase 69 (D087) built that switch
+    (`STRATEGY_LIVE_AUTO_EXECUTION_ENABLED`) and this status became
+    conditional on it: still the outcome for every live cycle on every
+    deployment where the switch, the two D058 keys, the live credential
+    trio, and the capital controls are not ALL affirmatively present -
+    which includes every default checkout. `run.error_detail` names the
+    specific gate that was not satisfied, so "the robot is off" is never
+    indistinguishable from "the robot is misconfigured"."""
+
+    SKIPPED_LIVE_RISK_HALT = "skipped_live_risk_halt"
+    """Phase 69 (migration 0027, D087). Unattended live execution IS armed
+    and correctly configured, and a capital circuit breaker fired: the
+    daily loss limit, the total-loss limit, the total-capital ceiling, or
+    the open-position ceiling.
+
+    Distinct from `SKIPPED_LIVE_TRADING_DISABLED` because the two mean
+    opposite things operationally. That one says the robot was never
+    running. This one says the robot WAS running and stopped itself, which
+    is a fact an operator needs to see immediately and which reads as
+    silence if both collapse into one status.
+
+    A breach also PAUSES the deployment (never liquidates it), so this
+    status is written once at the moment of the halt rather than every
+    cycle forever after - subsequent cycles are `SKIPPED_NOT_ACTIVE`.
+    Re-arming is a deliberate human action."""
 
 
 class StrategyDeployment(Base):

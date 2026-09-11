@@ -1918,12 +1918,19 @@ let the row trade — see the runner note below.
 `approved_at`. Optional body `{"note": "…"}`. 409 (`NOT_PENDING_APPROVAL: …`)
 from any other state. Response (200, `StrategyDeploymentResponse`).
 
-**A `live` deployment, once `active`, still never trades.** Every runner
-cycle for it resolves straight to a `strategy_deployment_runs` row with
+**A `live` deployment, once `active`, trades only if the server is
+explicitly armed for unattended live execution** (Phase 69, D087). On any
+default deployment it is not, and every runner cycle resolves straight to a
+`strategy_deployment_runs` row with
 `status="skipped_live_trading_disabled"` — no market data read, no broker
-call, no risk engine — regardless of `TRADING_MODE` / `LIVE_TRADING_ENABLED`.
-Real live execution is out of scope for this phase; see `docs/DECISIONS.md`
-D082.
+call, no risk engine — with `error_detail` naming the gate that refused.
+
+Arming requires `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED=true` **in addition
+to** `TRADING_MODE=live` / `LIVE_TRADING_ENABLED=true` (those two alone arm
+only the interactive, per-order-confirmed live path of D058), plus both
+capital bounds and the live credential trio. See
+`docs/LIVE_AUTO_TRADING.md` for the operator guide and `docs/DECISIONS.md`
+D087 / D082 for the reasoning.
 
 ## `POST /deployments/{deployment_id}/pause` — active → paused
 
@@ -1954,9 +1961,17 @@ Response (200, `ListDeploymentRunsResponse`): `{"items": [{"id": "…",
 "orders_submitted": 1, "orders_filled": 1, "error_detail": null,
 "created_at": "…"}], "limit": 50, "offset": 0}`, newest first. `status` is
 `succeeded` / `failed` / `skipped_not_active` / `skipped_emergency_stop` /
-`skipped_market_closed` / `skipped_lock_held` / `skipped_live_trading_disabled`
-(Phase 64, D082 — every cycle of a `mode="live"` deployment) — a skipped
-cycle is an honest answer, never an error.
+`skipped_market_closed` / `skipped_lock_held` /
+`skipped_live_trading_disabled` (a `mode="live"` cycle on a server not armed
+for unattended live execution — every default deployment; D082/D087) /
+`skipped_live_risk_halt` (an ARMED live cycle that stopped itself on a
+capital circuit breaker and paused the deployment; Phase 69, D087) — a
+skipped cycle is an honest answer, never an error.
+
+The last two mean opposite things and must not be read interchangeably:
+`skipped_live_trading_disabled` says the robot was never running;
+`skipped_live_risk_halt` says it **was** running on real money and stopped
+itself, which is urgent.
 
 ## `GET /deployments/{deployment_id}/signals` — the deployment's signal trail
 
