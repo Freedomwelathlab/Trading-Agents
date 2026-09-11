@@ -8,8 +8,9 @@ Two routers, the same split the signal and universe-scan surfaces use:
   is always OF one.
 - `deployments_router` (`/deployments/...`) - read one deployment, run its
   lifecycle actions (approve / pause / resume / stop), list its runs and
-  the signals its runs produced. A deployment has its own id and a caller
-  holding it should not need to know the version path.
+  the signals its runs produced, and (Phase 65, D083) report its actual vs.
+  expected performance. A deployment has its own id and a caller holding it
+  should not need to know the version path.
 
 Authorization is two-part, unchanged from D071:
 - the router-level permission (`STRATEGY_DEPLOY` for everything except
@@ -37,11 +38,15 @@ from apps.api.app.api.routes.strategy_backtests import DEFAULT_LIST_LIMIT, MAX_L
 from apps.api.app.api.schemas_deployments import (
     ApproveDeploymentRequest,
     CreateDeploymentRequest,
+    DeploymentActualPerformanceResponse,
+    DeploymentExpectedPerformanceResponse,
+    DeploymentMonitoringResponse,
     DeploymentSignalResponse,
     ListDeploymentRunsResponse,
     ListDeploymentSignalsResponse,
     ListDeploymentsResponse,
     PauseDeploymentRequest,
+    RoundTripResponse,
     StrategyDeploymentResponse,
     StrategyDeploymentRunResponse,
 )
@@ -57,6 +62,7 @@ from apps.api.app.db.models import (
     StrategyVersion,
     User,
 )
+from apps.api.app.deployments.monitoring import build_deployment_monitoring
 from apps.api.app.deployments.service import (
     DeploymentError,
     approve_deployment,
@@ -421,4 +427,54 @@ async def list_deployment_signals(
         ],
         limit=limit,
         offset=offset,
+    )
+
+
+@deployments_router.get(
+    "/{deployment_id}/monitoring", response_model=DeploymentMonitoringResponse
+)
+async def get_deployment_monitoring(
+    deployment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DeploymentMonitoringResponse:
+    """Phase 65 (D083) - actual performance (built strictly from this
+    deployment's own real orders/fills) side by side with expected
+    performance (the strategy version's own latest real backtest), never
+    blended. Read-only: places no orders, writes nothing."""
+    deployment = await _load_owned_deployment(session, deployment_id, current_user)
+    result = await build_deployment_monitoring(session, deployment)
+    return DeploymentMonitoringResponse(
+        deployment_id=result.deployment_id,
+        as_of=result.as_of,
+        actual=DeploymentActualPerformanceResponse(
+            round_trips=[
+                RoundTripResponse(
+                    symbol=rt.symbol,
+                    quantity=rt.quantity,
+                    entry_price=rt.entry_price,
+                    entered_at=rt.entered_at,
+                    exit_price=rt.exit_price,
+                    exited_at=rt.exited_at,
+                    realized_pnl=rt.realized_pnl,
+                    return_pct=rt.return_pct,
+                )
+                for rt in result.actual.round_trips
+            ],
+            open_positions=result.actual.open_positions,
+            num_round_trips=result.actual.num_round_trips,
+            num_winning=result.actual.num_winning,
+            win_rate_pct=result.actual.win_rate_pct,
+            total_realized_pnl=result.actual.total_realized_pnl,
+            avg_return_pct=result.actual.avg_return_pct,
+        ),
+        expected=DeploymentExpectedPerformanceResponse(
+            status=result.expected.status,
+            reference_backtest_run_id=result.expected.reference_backtest_run_id,
+            symbol=result.expected.symbol,
+            total_return_pct=result.expected.total_return_pct,
+            max_drawdown_pct=result.expected.max_drawdown_pct,
+            win_rate_pct=result.expected.win_rate_pct,
+            num_trades=result.expected.num_trades,
+        ),
     )

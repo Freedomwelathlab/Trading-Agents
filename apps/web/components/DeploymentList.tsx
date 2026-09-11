@@ -27,6 +27,7 @@ import {
 } from "@/components/CreateDeploymentForm";
 import { DeploymentRunTable } from "@/components/DeploymentRunTable";
 import { DeploymentSignalTable } from "@/components/DeploymentSignalTable";
+import { DeploymentMonitoringPanel } from "@/components/DeploymentMonitoringPanel";
 
 const HISTORY_LIMIT = 50;
 
@@ -116,6 +117,8 @@ function DeploymentRow({
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [runs, setRuns] = useState<StrategyDeploymentRunResponse[]>([]);
   const [signals, setSignals] = useState<DeploymentSignalResponse[]>([]);
+
+  const [performanceOpened, setPerformanceOpened] = useState(false);
 
   async function act(action: LifecycleAction) {
     setActionError(null);
@@ -350,6 +353,31 @@ function DeploymentRow({
                     <DeploymentSignalTable signals={signals} />
                   </div>
                 </>
+              )}
+            </div>
+          </details>
+        </td>
+      </tr>
+
+      <tr className={tbodyRowClass} data-testid={`deployment-performance-row-${d.id}`}>
+        <td className={`${tdClass} whitespace-normal`} colSpan={5}>
+          <details
+            data-testid={`deployment-performance-details-${d.id}`}
+            onToggle={(e) => {
+              if ((e.currentTarget as HTMLDetailsElement).open) {
+                setPerformanceOpened(true);
+              }
+            }}
+          >
+            <summary
+              className={`${btnGhost} list-none [&::-webkit-details-marker]:hidden`}
+              data-testid={`deployment-performance-toggle-${d.id}`}
+            >
+              Performance
+            </summary>
+            <div className="mt-3">
+              {performanceOpened && (
+                <DeploymentMonitoringPanel deploymentId={d.id} />
               )}
             </div>
           </details>

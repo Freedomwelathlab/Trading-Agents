@@ -11,6 +11,7 @@ right endpoints.
 
 import contextlib
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete, select
@@ -399,6 +400,63 @@ async def test_another_users_deployment_is_403_and_an_unknown_id_is_404() -> Non
                         f"/deployments/{uuid.uuid4()}", headers=_h(owner_token)
                     )
                 ).status_code == 404
+                assert (
+                    await client.get(
+                        f"/deployments/{deployment_id}/monitoring", headers=_h(other_token)
+                    )
+                ).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_deployment_monitoring_returns_actual_and_expected_shape() -> None:
+    """Phase 65 (D083): a fresh deployment has placed no orders yet and has
+    no reference backtest, so both halves of the response report an honest
+    "nothing yet" rather than a fabricated number."""
+    async with (
+        db_session() as session,
+        deploy_user(session) as (_uid, email),
+        paper_broker(session) as broker_id,
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            strategy_id, version_id = await _validated_strategy(
+                client, token, definition=SMA2_DEFINITION
+            )
+            created = await client.post(
+                f"/strategies/{strategy_id}/versions/{version_id}/deployments",
+                headers=_h(token),
+                json={"broker_id": str(broker_id), "symbols": ["GOOD.US"]},
+            )
+            deployment_id = created.json()["id"]
+            await client.post(
+                f"/deployments/{deployment_id}/approve", headers=_h(token), json={}
+            )
+
+            resp = await client.get(
+                f"/deployments/{deployment_id}/monitoring", headers=_h(token)
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["deployment_id"] == deployment_id
+            assert body["as_of"] is not None
+
+            actual = body["actual"]
+            assert actual["round_trips"] == []
+            assert actual["open_positions"] == {}
+            assert actual["num_round_trips"] == 0
+            assert actual["num_winning"] == 0
+            assert actual["win_rate_pct"] is None
+            assert Decimal(actual["total_realized_pnl"]) == 0
+            assert actual["avg_return_pct"] is None
+
+            expected = body["expected"]
+            assert expected["status"] == "no_reference_backtest"
+            assert expected["reference_backtest_run_id"] is None
+            assert expected["symbol"] is None
+            assert expected["total_return_pct"] is None
+            assert expected["max_drawdown_pct"] is None
+            assert expected["win_rate_pct"] is None
+            assert expected["num_trades"] is None
 
 
 @pytest.mark.asyncio
