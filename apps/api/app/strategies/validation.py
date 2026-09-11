@@ -82,6 +82,26 @@ def _vocabulary(enum_cls: type[enum.Enum]) -> str:
     return ", ".join(str(member.value) for member in enum_cls)
 
 
+def _in_vocabulary(value: Any, enum_cls: type[enum.Enum]) -> bool:
+    """Whether `value` equals one of `enum_cls`'s string values - safe for
+    ANY value, including an unhashable one (a `list`, `dict`, or `set`
+    submitted where a string was expected).
+
+    A bare `value in {member.value for member in enum_cls}` looks
+    equivalent but is not: Python's `set.__contains__` hashes its argument
+    before comparing, so an unhashable `value` raises `TypeError` from
+    inside what is supposed to be a validator that only ever RETURNS
+    errors (found by Phase 68's adversarial fuzzing, D086 -
+    `{"op": {"a": 1}}` used to crash `validate_definition` instead of
+    reporting "not one of: ..."). An unhashable value can never legally
+    equal one of these string members anyway, so treating it as simply
+    not-in-vocabulary is both crash-safe and correct."""
+    try:
+        return value in {member.value for member in enum_cls}
+    except TypeError:
+        return False
+
+
 def _check_keys(
     errors: list[str], obj: dict[str, Any], allowed: tuple[str, ...], where: str
 ) -> None:
@@ -132,7 +152,7 @@ def _validate_indicators(errors: list[str], raw: Any) -> tuple[set[str], bool]:
 
         if "type" not in entry:
             errors.append(f"{where}.type is required")
-        elif entry["type"] not in {member.value for member in IndicatorType}:
+        elif not _in_vocabulary(entry["type"], IndicatorType):
             errors.append(
                 f"{where}.type {entry['type']!r} is not one of: {_vocabulary(IndicatorType)}"
             )
@@ -180,7 +200,7 @@ def _validate_rule(
 
     if "op" not in raw:
         errors.append(f"{where}.op is required")
-    elif raw["op"] not in {member.value for member in RuleOperator}:
+    elif not _in_vocabulary(raw["op"], RuleOperator):
         errors.append(f"{where}.op {raw['op']!r} is not one of: {_vocabulary(RuleOperator)}")
 
     for side in ("left", "right"):
@@ -199,7 +219,7 @@ def _validate_position_sizing(errors: list[str], raw: Any) -> None:
     if "type" not in raw:
         errors.append(f"{where}.type is required")
         return
-    if raw["type"] not in {member.value for member in PositionSizingType}:
+    if not _in_vocabulary(raw["type"], PositionSizingType):
         errors.append(
             f"{where}.type {raw['type']!r} is not one of: {_vocabulary(PositionSizingType)}"
         )

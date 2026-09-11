@@ -9135,3 +9135,256 @@ empty; no new migration this phase):
   manifest. No new dependency.
 
 Status: Implemented and verified as above.
+
+---
+
+**D086 — Phase 68: final hardening — fuzz-testing, a permission-matrix audit,
+one real capped-load test, and closing out the Strategy Lab initiative**
+
+Reason: Phases 53-67 built the Strategy Lab's entire surface — the closed
+vocabulary, the evaluator, backtesting (v1 and v2), walk-forward,
+robustness, universe scans, the signal engine, the paper-trading runner,
+live-execution scaffolding, monitoring, drift detection, and the research
+assistant — each verified against well-formed examples as it shipped. This
+phase is different in kind from D070-D085: it adds no API surface, no
+database schema, and no user-facing capability. It exists to throw
+adversarial input at the pieces the rest of the suite never had reason to
+misuse, to prove — mechanically, not by inspection — that every mounted
+route actually requires authentication, and to run one real test at the
+one hard numeric cap (`MAX_SCAN_SYMBOLS`) this initiative has always
+described but never load-tested. Where it found real gaps, it closed them;
+where it only found what it was designed to prove, it documents that too.
+
+**(1) Fuzz-testing (`tests/strategies/test_fuzz.py`) found and fixed THREE
+real crash bugs, not zero.** This matters more than a clean pass would
+have: it means the exercise was a real test of the "never raises" claims
+`validation.py` and `expressions.py` make of themselves, not a formality.
+
+- **A static no-code-execution guard**, AST-walking `validation.py`,
+  `expressions.py`, `perturbation.py`, and `engine_v2.py` for a call to
+  `eval`/`exec`/`compile`/`__import__` (as a bare name or an attribute) and
+  for an `import`/`from ... import` statement nested inside a function body
+  (as opposed to the ordinary module-level imports every one of these files
+  legitimately has). This turns each module's own "no code execution,
+  ever" docstring claim into an automated regression guard a future edit
+  cannot silently violate — grep would catch the same literal names, but
+  cannot distinguish a legitimate top-level import from one chosen at
+  runtime inside a function, or a name that merely appears in a comment.
+  Zero violations found, as expected — this guard exists for the NEXT
+  change to one of these files, not this one.
+- **`validate_definition` never raises, for any input** — a hand-crafted
+  table of 42 adversarial cases (non-dict top-level values, deeply nested
+  garbage, huge strings, unicode/control characters, NaN/Infinity as both
+  strings and actual floats, negative/zero/huge periods, a dict made to
+  contain itself via runtime mutation since dict literal syntax cannot
+  self-reference, and every legal top-level key present with a completely
+  wrong type). `hypothesis` is not a dependency of this project
+  (`pyproject.toml` checked) and none was added for this one table, per the
+  phase's own instruction. **This found a real bug**: `_validate_indicators`,
+  `_validate_rule`, and `_validate_position_sizing` each checked a
+  vocabulary value with `value not in {member.value for member in EnumCls}`
+  — a bare `set` membership test, which hashes its argument before
+  comparing. An unhashable `value` (a `list`, `dict`, or `set` submitted
+  where a string was expected — e.g. `{"op": {"nested": "dict"}}`) raised
+  `TypeError: unhashable type` straight out of a function whose entire
+  contract is "returns a list of strings, never raises." Fixed with one
+  helper, `_in_vocabulary()`, that catches `TypeError` and treats an
+  unhashable value as simply not-in-vocabulary — correct as well as
+  crash-safe, since an unhashable value could never legally equal one of
+  these string members anyway. All three call sites now go through it.
+- **The evaluator (`compute_indicator_series` / `evaluate_rule`) never
+  raises against a validated definition plus adversarial bar data** — three
+  valid definitions (SMA crossing, RSI threshold, notional-sized crossing)
+  against an empty bar list, a single bar, bars with a `None` close, bars
+  with duplicate timestamps, bars with a negative/zero close, and 3,000
+  bars for a wall-clock sanity check (`< 5s`, a generous bound, not a
+  benchmark — it passed in a small fraction of that). `Bar.close` is
+  Pydantic-validated as `Field(gt=0)`, so a `None`, NaN, or non-positive
+  close cannot reach the evaluator through the normal constructor — the
+  adversarial cases that need one use `Bar.model_construct()` to bypass
+  that validation deliberately, proving the evaluator's OWN defenses hold
+  independently of Pydantic's, rather than relying solely on an upstream
+  guarantee. **This found two more real bugs**: a `None` close raised
+  `TypeError` out of `compute_indicator_series` (`sum(..., Decimal(0))`
+  cannot add `None`), and a Decimal `NaN` close raised
+  `decimal.InvalidOperation` out of `evaluate_rule`'s ordering comparisons
+  (`<`, `<=`, `>`, `>=`) — unlike IEEE-754 float, which quietly returns
+  `False` against NaN, Decimal raises. Both are now caught at the point
+  they occur and answered with this module's own existing `None` — "cannot
+  be evaluated here," exactly like insufficient indicator history — rather
+  than propagating an exception type no caller of this "never raises"
+  module was expecting.
+
+**(2) The permission-matrix audit is a real, mechanical route walk over
+the ACTUAL constructed `app`, not a table transcribed by hand.**
+`tests/auth/test_permission_matrix.py` walks `app.routes` down to every
+real `fastapi.routing.APIRoute` — recursing through the `_IncludedRouter`
+wrapper the installed FastAPI version (0.141.1, well past this project's
+`>=0.115` floor) uses for `app.include_router(...)`, via
+`.original_router.routes`, since a naive `isinstance(route, APIRoute)`
+filter over `app.routes` alone finds NOTHING on this version and would
+make the whole test vacuously pass — and for every route not on an
+explicit, source-cross-checked public allowlist (`GET /health`,
+`GET /health/ready`, `POST /auth/login`, `POST /auth/password-reset/request`,
+`POST /auth/password-reset/confirm`), asserts `get_current_user` appears
+somewhere in that route's full resolved dependency tree
+(`route.dependant`, recursed through every nested `.dependencies` entry —
+where FastAPI merges a router-level `dependencies=[Depends(require_permission
+(...))]` and a per-parameter `Depends(...)` alike, covering both shapes this
+codebase uses without needing to special-case either one). This is what the
+phase asked for specifically: a test that would catch a FUTURE route added
+with zero auth dependency at all. It is **not**, and its own docstring says
+so explicitly, a claim that the permission checked is the CORRECT one for
+that route — verifying authorization LOGIC is what each route's own
+dedicated tests already do — and it does not reach two in-handler checks
+that run AFTER the dependency graph resolves
+(`routes/trades.py::_authorize_live_trade`'s `SUBMIT_LIVE_TRADE` check,
+`routes/deployments.py::approve_strategy_deployment`'s in-handler
+`STRATEGY_APPROVE_LIVE_DEPLOYMENT` check) — both already pass this test via
+their own base `Depends(...)`, and both already have dedicated route tests
+that verify the permission itself. Found on the FIRST run, over the real
+app: zero routes with no auth dependency. **It did find one real, separate
+discrepancy while the table in `docs/PERMISSION_MATRIX.md` was being
+cross-checked against the route source, not from the automated test
+itself**: `Permission.SUBMIT_LIVE_TRADE`'s docstring in
+`apps/api/app/auth/permissions.py` still read "Reserved, not enforced
+anywhere yet" — true before Phase 43 (D058), false since it: it IS enforced
+today, in `routes/trades.py::_authorize_live_trade`. Fixed by rewriting the
+docstring to state what the code has done since D058, rather than by
+touching the (already correct) enforcement code — the simpler side, per
+this phase's own instruction.
+
+**(3) The load test is one real request, at the real cap, timed once — not
+a concurrency benchmark, and its own docstring says so.**
+`tests/backtesting/test_universe_scan_load.py` runs a real universe scan
+over exactly `MAX_SCAN_SYMBOLS` (50) real seeded symbols through the real
+HTTP API against real Postgres — same risk engine, same portfolio manager,
+same paper-broker fill math as every other backtest in this codebase — and
+asserts the whole request completes inside 60 seconds, a deliberately
+generous bound chosen the same way `apps/api/app/deployments/service.py`'s
+`MAX_DEPLOYMENT_SYMBOLS` docstring frames its own sibling cap: fifty
+modest-window, no-vendor-I/O backtests is a few seconds of pure in-memory
+Decimal arithmetic, and 60 seconds is headroom over that, not a target. A
+second test proves the cap this load test depends on is actually enforced
+(`MAX_SCAN_SYMBOLS + 1` real symbols → 422 before any work starts), so the
+load test's premise — "50 is where this system draws its own synchronous
+line" — is not merely asserted by the first test's parameter choice. This
+is deliberately **not** a concurrent-request load test: this codebase has
+no async task queue or worker pool for a universe scan to run on
+(`MAX_SCAN_SYMBOLS`'s own docstring states the design constraint directly),
+so there is nothing to load-test concurrently — one worker handles one
+request at a time either way. A future job-runner-backed scan, if this
+system ever grows one, would need its own, different load test; this one
+proves only what the current, deliberately synchronous design can be
+proven to do.
+
+**(4) Closing out the Strategy Lab initiative (Phases 53-68, D070-D086).**
+This is the last phase of this initiative. `LIVE_TRADING_ENABLED` stays
+`false` on every default and every test, and real, unattended live order
+placement remains structurally impossible (`StrategyDeploymentRunStatus.
+SKIPPED_LIVE_TRADING_DISABLED`, checked before touching market data, the
+broker, or the risk engine, and proven by test even with
+`TRADING_MODE=live` / `LIVE_TRADING_ENABLED=true` nominally set) — nothing
+in this phase changes that, and nothing in this phase claims the platform
+is "production ready" or "fully secure" beyond what was actually verified
+here. A short retrospective, naming the handful of decisions across the
+whole arc that everything after them actually depended on: **D070** (the
+persisted historical bar store) is what every backtest, walk-forward run,
+robustness check, universe scan, signal evaluation, and deployment cycle
+after it reads from — nothing in this initiative would exist without a
+real, queryable OHLCV history to replay. **D072** (letting `engine_v2`
+coexist permanently alongside `engine.py` as a sibling, never a
+replacement) is the reuse seam every later orchestrator (`universe_scan.py`,
+`walk_forward.py`, the deployment runner) was built on top of, rather than
+each reimplementing the RISK → PORTFOLIO → BROKER sequence its own way.
+**D081** (the mandatory per-deployment human-approval state machine — a
+`pending_approval` row the runner's own enumeration query cannot see until
+an explicit, separately-permissioned `POST .../approve`) is what makes an
+unattended scheduler that places real orders acceptable at all under this
+project's non-negotiable safety rules. **D082** (the runner's unconditional
+refusal of a `live` deployment, checked before consulting `TRADING_MODE` or
+`LIVE_TRADING_ENABLED` at all) is this initiative's single most
+safety-critical design choice: it is the reason a future config change made
+for an unrelated purpose cannot silently arm unattended live trading as a
+side effect, and it is the one property this phase's own hardening work
+was most careful not to weaken while proving everything around it.
+
+Alternatives considered:
+- *Add `hypothesis` for true property-based fuzzing.* Rejected per the
+  phase's own instruction — it is not currently a dependency, and adding
+  one for a single test file was explicitly out of scope. The hand-crafted
+  34-case table found three real bugs without it; a property-based version
+  remains a reasonable future addition if this module's surface grows.
+- *Have the permission-matrix test re-verify which specific permission each
+  route requires, not just that some auth dependency exists.* Rejected —
+  that is a claim about authorization LOGIC, which is what each route's own
+  dedicated tests already prove, in detail, per-permission. Conflating the
+  two would make this test either redundant with dozens of existing tests
+  or, worse, a second, weaker copy of what they already check that could
+  drift out of agreement with them.
+- *Load-test universe scans concurrently, simulating several callers at
+  once.* Rejected — see (3). There is no worker pool or task queue for
+  concurrent requests to actually exercise differently from one at a time;
+  building a concurrency harness would exercise the ASGI server's own
+  request handling, not anything specific to this codebase's universe-scan
+  orchestrator.
+- *Silently patch the three bugs fuzzing found without naming them as
+  bugs.* Rejected — a hardening phase whose own fuzz test found real
+  crashes and did not say so in the record would undermine the entire
+  point of writing the test: proving the property, including proving it
+  was previously false.
+
+Files: `apps/api/app/strategies/validation.py` (`_in_vocabulary()` helper;
+the three vocabulary-check call sites in `_validate_indicators`,
+`_validate_rule`, `_validate_position_sizing` now route through it),
+`apps/api/app/strategies/expressions.py` (module docstring addition;
+`compute_indicator_series` catches `TypeError` alongside
+`InsufficientDataError`; `evaluate_rule`'s instantaneous and crossing
+branches both catch `decimal.InvalidOperation` around their comparisons),
+`apps/api/app/auth/permissions.py` (`SUBMIT_LIVE_TRADE`'s stale docstring
+rewritten to match `routes/trades.py::_authorize_live_trade`'s real,
+D058-era enforcement). New tests: `tests/strategies/test_fuzz.py` (new — the
+AST guard, 34 adversarial `validate_definition` cases, and the evaluator's
+bar-data edge cases), `tests/auth/test_permission_matrix.py` (new — the
+route-walk auth-dependency guard, the allowlist's own two-way sanity check,
+and a permission-enum-member-is-referenced-somewhere sanity check),
+`tests/backtesting/test_universe_scan_load.py` (new — the capped-load test
+and its cap-is-enforced companion). Docs: `docs/PERMISSION_MATRIX.md` (new —
+all 10 `Permission` values, their routes, and their ADMIN-override status,
+linked from `docs/TRADING_SAFETY.md`), `docs/TRADING_SAFETY.md` (link to
+the new permission matrix), `docs/IMPLEMENTATION_STATUS.md` (new top
+`## Completed` entry, plus the closing note that Phases 53-68 are now
+complete).
+
+This phase's own isolated-environment check (ports 55451/56401, freshly
+migrated from empty): `alembic upgrade head` confirms no new migration is
+needed — the schema is already at `0026` from Phase 66; the three new test
+files (69 tests: `test_fuzz.py`, `test_permission_matrix.py`,
+`test_universe_scan_load.py`) pass, along with the full targeted run of
+every module touched or exercised by this phase's fixes (`tests/strategies`,
+`tests/backtesting`, `tests/signals`, `tests/deployments`, `tests/auth`,
+plus the relevant `tests/api/test_*` strategy-lab modules — 465 tests, all
+passing); `ruff check apps tests migrations` and `mypy apps` (143 source
+files, unchanged from Phase 67 — no new source file under `apps/`) both
+clean; `bash scripts/secret_scan.sh` clean.
+
+Verification (2026-09-11, isolated Postgres/Redis, freshly migrated from
+empty; confirmed at head `0026`, no new migration this phase — the final
+full-suite regression for the entire Phase 53-68 initiative):
+
+- **1178 backend tests** (1109 → 1178, +69: `tests/strategies/test_fuzz.py`,
+  `tests/auth/test_permission_matrix.py`,
+  `tests/backtesting/test_universe_scan_load.py`); `ruff check apps tests
+  migrations` clean; `mypy apps` clean, **143 source files** (unchanged from
+  Phase 67 — no new `apps/` source file this phase, only fixes to existing
+  ones); `bash scripts/secret_scan.sh` clean; full run 23m51s, exit 0.
+- Frontend unaffected — **311 tests across 39 files**, unchanged from Phase
+  67; no frontend file was touched this phase.
+
+This is the final verification pass of the Strategy Lab initiative
+(Phases 53-68, D070-D086): 1178 backend tests and 311 frontend tests, all
+green, on a single fresh isolated database, with `LIVE_TRADING_ENABLED`
+still `false` and real live order placement still structurally impossible
+(D082/D086).
+
+Status: Implemented and verified as above.

@@ -9,12 +9,18 @@ import enum
 class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     SUBMIT_PAPER_TRADE = "trade:submit:paper"
     SUBMIT_LIVE_TRADE = "trade:submit:live"
-    """Reserved, not enforced anywhere yet - there is no live execution
-    path (spec Sec3/Sec46) for this permission to gate. Do not wire this to
-    the trades endpoint's live-broker branch without also building the
-    live confirmation flow spec Sec56 requires; granting this permission
-    today would be a permission that does nothing, not a shortcut to live
-    trading."""
+    """Phase 43 (D058). STALE DOCSTRING FIXED Phase 68 (D086): this used to
+    say "reserved, not enforced anywhere yet" - true before Phase 43, false
+    since it. It IS enforced today, in
+    `apps/api/app/api/routes/trades.py::_authorize_live_trade`, required IN
+    ADDITION to `SUBMIT_PAPER_TRADE` (which `require_broker_access` already
+    checked) for a request against a `kind=LIVE` broker - checked LAST of
+    that function's three gates (confirmation, then live-path
+    configuration, then this permission), by design, because it is the
+    only one of the three that needs the resolved role. No ADMIN override:
+    an operational admin is not automatically authorized to place a live
+    order, for the same reason `STRATEGY_APPROVE_LIVE_DEPLOYMENT` below
+    carries none."""
     VIEW_PORTFOLIO = "portfolio:view"
     """Gates GET /brokers/{broker_id}/portfolio (D022). Deliberately
     separate from SUBMIT_PAPER_TRADE - viewing a broker's positions/P&L is

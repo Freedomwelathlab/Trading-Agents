@@ -32,10 +32,24 @@ a decision they make explicitly rather than one silently made for them.
 All arithmetic is Decimal end to end - the same discipline as
 marketdata/indicators.py, which these functions call rather than
 recomputing any indicator math a second way.
+
+**Fails closed against a corrupted bar, not just a well-formed one
+(Phase 68, D086).** `Bar.close` is Pydantic-validated as `Field(gt=0)`, so a
+`None`, NaN, or non-positive close cannot reach here through the normal
+constructor - but this module's own `None`-means-"cannot answer" contract
+must hold on its own, not merely because an upstream model happens to
+enforce it today. Adversarial fuzzing found two real gaps this phase closed:
+a `None` close raised `TypeError` out of `compute_indicator_series` (a
+`None` cannot be summed with a `Decimal`), and a Decimal `NaN` close raised
+`decimal.InvalidOperation` out of `evaluate_rule` (unlike IEEE-754 float,
+Decimal's ordering comparisons raise on NaN rather than quietly returning
+`False`). Both are now caught at the point they occur and answered with
+this module's existing `None`, exactly like insufficient history - a
+corrupted close is exactly as unusable as a not-yet-defined indicator.
 """
 
 from collections.abc import Callable
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from apps.api.app.marketdata.bar_provider import Bar
 from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
@@ -91,6 +105,24 @@ def compute_indicator_series(bars: list[Bar], indicator: dict) -> list[Decimal |
         try:
             series.append(compute(closes[: i + 1], period))
         except InsufficientDataError:
+            series.append(None)
+        except (TypeError, InvalidOperation):
+            # Phase 68 (D086) fuzzing: `Bar.close` is `Field(gt=0)`, so a
+            # `None` or non-Decimal close cannot reach here through
+            # Pydantic's own validated constructor - but this function's
+            # OWN contract ("None means cannot be evaluated here") must
+            # hold independently of that upstream guarantee, not merely
+            # because nothing else in this codebase currently bypasses it.
+            # A `None` close makes `sum(..., Decimal(0))` raise `TypeError`
+            # (arithmetic against `None`); a NaN close's own arithmetic
+            # never raises here (Decimal NaN propagates through +/-), so
+            # this branch exists for the corrupted-input case specifically,
+            # not the NaN one (see evaluate_rule's own InvalidOperation
+            # guard for where NaN actually surfaces: comparison, not
+            # computation). Recording `None` is this function's existing
+            # "cannot be evaluated" answer, unchanged in kind - a corrupted
+            # close is exactly as unusable as an indicator with too little
+            # history.
             series.append(None)
     return series
 
@@ -177,13 +209,26 @@ def evaluate_rule(
         )
         if left is None or right is None:
             return None
-        if op == RuleOperator.GT.value:
-            return left > right
-        if op == RuleOperator.GTE.value:
-            return left >= right
-        if op == RuleOperator.LT.value:
-            return left < right
-        return left <= right
+        try:
+            if op == RuleOperator.GT.value:
+                return left > right
+            if op == RuleOperator.GTE.value:
+                return left >= right
+            if op == RuleOperator.LT.value:
+                return left < right
+            return left <= right
+        except InvalidOperation:
+            # Phase 68 (D086) fuzzing: a Decimal NaN close cannot reach this
+            # function through `Bar`'s own Pydantic validation, but IF a
+            # corrupted close ever did, Decimal's ordering comparisons
+            # (unlike IEEE-754 float, which quietly returns False against
+            # NaN) raise `InvalidOperation` rather than returning a bool.
+            # Neither operand is `None` here - both resolved to a real
+            # Decimal - so this is not the ordinary "insufficient history"
+            # case; it is "the numbers cannot be compared", which gets the
+            # SAME answer this function already gives for "cannot be
+            # evaluated here": `None`, never a guessed `True`/`False`.
+            return None
 
     if op in (RuleOperator.CROSSES_ABOVE.value, RuleOperator.CROSSES_BELOW.value):
         if index == 0:
@@ -203,9 +248,17 @@ def evaluate_rule(
         )
         if prev_left is None or prev_right is None or curr_left is None or curr_right is None:
             return None
-        if op == RuleOperator.CROSSES_ABOVE.value:
-            return prev_left <= prev_right and curr_left > curr_right
-        return prev_left >= prev_right and curr_left < curr_right
+        try:
+            if op == RuleOperator.CROSSES_ABOVE.value:
+                return prev_left <= prev_right and curr_left > curr_right
+            return prev_left >= prev_right and curr_left < curr_right
+        except InvalidOperation:
+            # Same guard, and the same reasoning, as the instantaneous
+            # branch above: a NaN operand makes Decimal ordering
+            # comparisons raise rather than answer, and "cannot be
+            # compared" gets this function's existing `None`, never a
+            # guessed direction of crossing.
+            return None
 
     allowed = ", ".join(member.value for member in RuleOperator)
     raise ValueError(

@@ -208,6 +208,18 @@ not enabling it. `LIVE_TRADING_ENABLED` stays `false` in every default and
 every test. Flipping it still requires explicit user approval given in
 that moment, per this document's confirmation section above.
 
+## Permission matrix
+
+See `docs/PERMISSION_MATRIX.md` (Phase 68, D086) for the complete table of
+all 10 `Permission` values, the routes each one gates, and whether an
+ADMIN override applies to it (per each permission's own documented
+"No ADMIN override" — none of them have one except `admin:manage` itself).
+An automated test (`tests/auth/test_permission_matrix.py`) walks the real
+constructed app and asserts every non-public route requires SOME
+authentication dependency — a regression guard against a future route
+shipped with none, not a claim that the permission checked on any given
+route is the correct one.
+
 ## Not yet enforced (because not yet built)
 
 The full audit/decision-chain tables. On the live path specifically: limit
