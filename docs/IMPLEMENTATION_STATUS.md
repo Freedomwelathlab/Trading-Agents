@@ -42,11 +42,14 @@ what each phase actually verified.
   Postgres through the real HTTP API, asserting it completes within a
   generous 60-second bound — explicitly NOT a concurrency benchmark (this
   codebase has no task queue to load-test concurrently).
-  [orchestrator fills test counts]; `ruff check apps tests migrations`,
-  `mypy apps`, `bash scripts/secret_scan.sh` — status per orchestrator's
-  full run. No new migration (schema unchanged, still at `0026`). No new
-  dependency (no `hypothesis` added — a hand-crafted 42-case adversarial
-  table per the phase's own instruction). No frontend change.
+  **Final regression: 1178 backend tests** (1109→1178, +69 across the three
+  new test files above), `ruff check apps tests migrations` clean, `mypy
+  apps` clean (143 files, unchanged), `bash scripts/secret_scan.sh` clean,
+  full run 23m51s on one fresh isolated Postgres/Redis. **311 frontend
+  tests / 39 files, unchanged** (no frontend file touched). No new
+  migration (schema unchanged, still at `0026`). No new dependency (no
+  `hypothesis` added — a hand-crafted 42-case adversarial table per the
+  phase's own instruction).
 
 - Phase 67: AI strategy research assistant (2026-09-11, D085) — advisory-only
   agent (`apps/api/app/agents/strategy_research_assistant.py::
