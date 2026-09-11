@@ -52,10 +52,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from apps.api.app.agents.strategy_research_assistant import StrategyResearchAssistant
+from apps.api.app.agents.technical_analyst import AnalystOutputError
+from apps.api.app.api.dependencies import get_strategy_research_assistant
 from apps.api.app.api.schemas_strategies import (
     CreateStrategyRequest,
     ForkStrategyVersionRequest,
     ListStrategiesResponse,
+    ProposeStrategyRequest,
+    ProposeStrategyResponse,
     StrategyDetailResponse,
     StrategyResponse,
     StrategySummary,
@@ -592,3 +597,74 @@ async def validate_strategy_version(
         actor_user_id=str(current_user.id),
     )
     return _version_response(version)
+
+
+@router.post("/research/propose", response_model=ProposeStrategyResponse)
+async def propose_strategy(
+    payload: ProposeStrategyRequest,
+    current_user: User = Depends(get_current_user),
+    assistant: StrategyResearchAssistant | None = Depends(get_strategy_research_assistant),
+) -> ProposeStrategyResponse:
+    """Phase 67 (D085): call the LLM, run the SAME structural validator every
+    manually-authored strategy must pass, return the result. NO database
+    write of any kind happens in this route - no session dependency is even
+    requested, so there is nothing for it to commit. A caller who likes the
+    draft creates it for real through the existing `POST /strategies` +
+    `POST /strategies/{id}/versions/{id}/validate` path, which is the only
+    place a `Strategy` or `StrategyVersion` row is ever written.
+
+    Gated by `Permission.STRATEGY_MANAGE` (reused verbatim via this router's
+    own `dependencies=[...]`, same as every other route here) rather than a
+    new permission - proposing a draft for review is a strictly weaker
+    capability than the strategy-creation permission a caller already needs
+    to save what it proposes, so a separate permission would gate nothing a
+    stronger one doesn't already cover.
+
+    400 NOT_CONFIGURED when no LLM provider is wired - this mirrors
+    `get_trader_agent`'s convention (`POST /brokers/{id}/agent-trades`), not
+    `get_technical_analyst`'s: this agent's output IS the response, so there
+    is no proposal to return without it, unlike an analyst whose absence
+    just narrows another agent's context.
+
+    502 on `AnalystOutputError` - a malformed/unparseable LLM response, not
+    a structural verdict on a strategy (that verdict is 200 with
+    `is_valid: false`, see below). Mirrors the existing precedent for a
+    PRIMARY agent call's own output failure: `POST /brokers/{id}/agent-trades`
+    answers the equivalent `AgentOutputError` from `TraderAgent.propose()`
+    with `502 AGENT_OUTPUT_INVALID: ...` (`apps/api/app/api/routes/
+    trades.py`) rather than the 400 it uses for NOT_CONFIGURED - a reachable
+    provider that returned something unusable is a different failure than no
+    provider being configured at all, and 502 Bad Gateway reads correctly
+    for "the upstream provider gave us something we could not use."
+
+    A structurally invalid draft is NOT an error response: `validate_definition`
+    running against the LLM's own draft can find real problems the same way
+    it can against a human's, and `is_valid: false` with an itemized
+    `validation_errors` list is exactly as informative to the caller as any
+    other rejected draft - see `strategy_research_assistant.py`'s module
+    docstring for why this is a 200, never a 4xx/5xx.
+    """
+    if assistant is None:
+        raise HTTPException(
+            status_code=400,
+            detail="NOT_CONFIGURED: no LLM provider is wired (see docs/DECISIONS.md D018).",
+        )
+
+    try:
+        proposal = await assistant.propose(brief=payload.brief)
+    except AnalystOutputError as exc:
+        raise HTTPException(status_code=502, detail=f"AGENT_OUTPUT_INVALID: {exc}") from None
+
+    logger.info(
+        "strategy_research_proposal_generated",
+        is_valid=proposal.is_valid,
+        error_count=len(proposal.validation_errors),
+        actor_user_id=str(current_user.id),
+    )
+    return ProposeStrategyResponse(
+        name=proposal.name,
+        definition=proposal.definition,
+        rationale=proposal.rationale,
+        is_valid=proposal.is_valid,
+        validation_errors=proposal.validation_errors,
+    )

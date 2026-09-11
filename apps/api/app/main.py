@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from apps.api.app.agents.anthropic_compatible import build_llm_provider
 from apps.api.app.agents.fundamental_analyst import build_fundamental_analyst
 from apps.api.app.agents.news_analyst import build_news_analyst
+from apps.api.app.agents.strategy_research_assistant import build_strategy_research_assistant
 from apps.api.app.agents.technical_analyst import build_technical_analyst
 from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
@@ -136,6 +137,14 @@ async def lifespan(app: FastAPI):
     # separately-configured provider would be unused parallel infra with
     # nothing to parallelize against (see D019's "future work" note).
     app.state.technical_analyst = build_technical_analyst(llm_provider)
+    # Phase 67 (D085): the advisory strategy-research agent. Same shared
+    # LLM_PROVIDER_* connection as every agent above, for the same reason
+    # D019 gave - one configured provider, no unused parallel infra. Unlike
+    # the three analysts below, this agent is not optional context for
+    # another agent's call - it is the whole answer to its own endpoint - so
+    # its NOT_CONFIGURED handling at the route layer mirrors trader_agent's,
+    # not technical_analyst's.
+    app.state.strategy_research_assistant = build_strategy_research_assistant(llm_provider)
     # Phase 44 (D059): the analyst layer's second and third members. They
     # share the same LLM_PROVIDER_* connection as the trader agent and the
     # technical analyst, for the same reason D019 gave - one configured
@@ -257,6 +266,9 @@ async def lifespan(app: FastAPI):
         email_provider="configured" if app.state.email_provider else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",
         technical_analyst="configured" if app.state.technical_analyst else "NOT_CONFIGURED",
+        strategy_research_assistant=(
+            "configured" if app.state.strategy_research_assistant else "NOT_CONFIGURED"
+        ),
         fundamental_analyst=(
             "configured" if app.state.fundamental_analyst else "NOT_CONFIGURED"
         ),

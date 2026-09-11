@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.agents.fundamental_analyst import FundamentalAnalyst
 from apps.api.app.agents.news_analyst import NewsAnalyst
+from apps.api.app.agents.strategy_research_assistant import StrategyResearchAssistant
 from apps.api.app.agents.technical_analyst import TechnicalAnalyst
 from apps.api.app.agents.trader import TraderAgent
 from apps.api.app.auth.dependencies import require_permission
@@ -54,6 +55,15 @@ def get_technical_analyst(request: Request) -> TechnicalAnalyst | None:
     absence means agent-trades proceeds without technical commentary, it
     never blocks the trader agent's own proposal."""
     return request.app.state.technical_analyst
+
+
+def get_strategy_research_assistant(request: Request) -> StrategyResearchAssistant | None:
+    """None means no LLM provider is configured (D018/D085) - callers must
+    treat this exactly like get_trader_agent's NOT_CONFIGURED convention,
+    not like get_technical_analyst's optional-context one: this agent's
+    entire output is the response, so there is no proposal to proceed
+    without."""
+    return request.app.state.strategy_research_assistant
 
 
 def get_live_broker_adapter(request: Request) -> LiveBrokerAdapter | None:

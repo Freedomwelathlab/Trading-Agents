@@ -25,14 +25,19 @@ Three claims carry most of the weight:
 """
 
 import contextlib
+import json
 import uuid
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
+from apps.api.app.agents.provider import LLMProviderError
+from apps.api.app.agents.strategy_research_assistant import StrategyResearchAssistant
+from apps.api.app.api.dependencies import get_strategy_research_assistant
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.auth.security import hash_password
 from apps.api.app.db.models import Role, Strategy, StrategyVersion, User
+from apps.api.app.main import app
 from tests.api.test_admin import (
     TEST_PASSWORD,
     _get_token,
@@ -536,3 +541,168 @@ async def test_version_numbers_are_dense_and_unique_per_strategy_in_the_database
             .all()
         )
         assert list(numbers) == [1, 2, 3]
+
+
+# --- Phase 67 (D085): POST /strategies/research/propose -------------------
+#
+# Hermetic w.r.t. the LLM provider the same way tests/api/test_agent_trades.py
+# is: no test here relies on LLM_PROVIDER_* being set in .env. The
+# NOT_CONFIGURED test relies on the test environment's default (no provider
+# wired); the 200 tests override get_strategy_research_assistant explicitly
+# with a fake provider - never a real network call.
+
+INVALID_RESEARCH_DEFINITION = {
+    "indicators": [{"id": "macd_1", "type": "macd", "period": 12}],
+    "entry_rule": {"op": "crosses_below", "left": "macd_1", "right": "close"},
+    "exit_rule": {"op": "crosses_above", "left": "macd_1", "right": "close"},
+    "position_sizing": {"type": "fixed_fraction"},
+}
+
+
+class FakeLLMProvider:
+    name = "fake-llm"
+
+    def __init__(self, response: str) -> None:
+        self._response = response
+
+    async def complete(self, *, system: str, user: str, max_tokens: int) -> str:
+        return self._response
+
+
+async def _strategy_row_count(session, user_id: uuid.UUID) -> int:
+    return (
+        await session.execute(
+            select(func.count()).select_from(Strategy).where(Strategy.owner_user_id == user_id)
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_propose_without_a_wired_llm_provider_is_400_not_configured():
+    """Explicitly overrides the dependency to None rather than relying on no
+    LLM_PROVIDER_* being set in the environment - .env may configure a real
+    one for local dev (as tests/api/test_agent_trades.py's own
+    `_no_real_analysts` fixture docstring notes), and this test must stay
+    hermetic regardless."""
+    async with db_session() as session, strategy_user(session) as (_uid, email):
+        async with api_client() as client:
+            app.dependency_overrides[get_strategy_research_assistant] = lambda: None
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    "/strategies/research/propose",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"brief": "a mean-reversion idea using RSI"},
+                )
+            finally:
+                del app.dependency_overrides[get_strategy_research_assistant]
+    assert response.status_code == 400
+    assert "NOT_CONFIGURED" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_propose_requires_the_permission_like_every_other_strategy_route():
+    async with db_session() as session, non_admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            response = await client.post(
+                "/strategies/research/propose",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"brief": "anything"},
+            )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_valid_draft_returns_200_is_valid_and_writes_nothing():
+    fake_assistant_response = json.dumps(
+        {
+            "name": "RSI mean reversion",
+            "definition": VALID_DEFINITION,
+            "rationale": "Buys when RSI turns up from oversold, exits on the reverse cross.",
+        }
+    )
+    fake_assistant = StrategyResearchAssistant(FakeLLMProvider(fake_assistant_response))
+
+    async with db_session() as session, strategy_user(session) as (user_id, email):
+        before = await _strategy_row_count(session, user_id)
+        async with api_client() as client:
+            app.dependency_overrides[get_strategy_research_assistant] = lambda: fake_assistant
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    "/strategies/research/propose",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"brief": "a mean-reversion idea using RSI"},
+                )
+            finally:
+                del app.dependency_overrides[get_strategy_research_assistant]
+        after = await _strategy_row_count(session, user_id)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_valid"] is True
+    assert body["validation_errors"] == []
+    assert body["definition"] == VALID_DEFINITION
+    assert body["name"] == "RSI mean reversion"
+    assert after == before  # no Strategy row was created by this route
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_draft_still_returns_200_with_real_errors_and_writes_nothing():
+    fake_assistant_response = json.dumps(
+        {
+            "name": "MACD idea",
+            "definition": INVALID_RESEARCH_DEFINITION,
+            "rationale": "Buys on a MACD signal cross.",
+        }
+    )
+    fake_assistant = StrategyResearchAssistant(FakeLLMProvider(fake_assistant_response))
+
+    async with db_session() as session, strategy_user(session) as (user_id, email):
+        before = await _strategy_row_count(session, user_id)
+        async with api_client() as client:
+            app.dependency_overrides[get_strategy_research_assistant] = lambda: fake_assistant
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    "/strategies/research/propose",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"brief": "a MACD-based idea"},
+                )
+            finally:
+                del app.dependency_overrides[get_strategy_research_assistant]
+        after = await _strategy_row_count(session, user_id)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_valid"] is False
+    assert body["validation_errors"]  # non-empty, real errors
+    assert after == before  # a structurally invalid draft still writes nothing
+
+
+@pytest.mark.asyncio
+async def test_a_provider_error_is_502_agent_output_invalid():
+    class ExplodingProvider:
+        name = "fake-llm"
+
+        async def complete(self, *, system: str, user: str, max_tokens: int) -> str:
+            raise LLMProviderError("rate limited")
+
+    fake_assistant = StrategyResearchAssistant(ExplodingProvider())
+
+    async with db_session() as session, strategy_user(session) as (_uid, email):
+        async with api_client() as client:
+            app.dependency_overrides[get_strategy_research_assistant] = lambda: fake_assistant
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    "/strategies/research/propose",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"brief": "anything"},
+                )
+            finally:
+                del app.dependency_overrides[get_strategy_research_assistant]
+
+    assert response.status_code == 502
+    assert "AGENT_OUTPUT_INVALID" in response.json()["detail"]
