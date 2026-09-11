@@ -1734,6 +1734,18 @@ class StrategyDeploymentRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin for
     SKIPPED_EMERGENCY_STOP = "skipped_emergency_stop"
     SKIPPED_MARKET_CLOSED = "skipped_market_closed"
     SKIPPED_LOCK_HELD = "skipped_lock_held"
+    SKIPPED_LIVE_TRADING_DISABLED = "skipped_live_trading_disabled"
+    """Phase 64 (migration 0025, D082). The deployment's `mode` is `live`.
+    The runner writes exactly this row and touches nothing else - no market
+    data, no broker, no risk engine - for every cycle of every `live`
+    deployment, unconditionally, regardless of `TRADING_MODE` /
+    `LIVE_TRADING_ENABLED`. Automated per-cycle execution has no per-trade
+    human present to confirm it, and this project's non-negotiable rule
+    (docs/TRADING_SAFETY.md) requires an explicit, in-the-moment approval
+    for every live trade - something a scheduler structurally cannot supply.
+    A real live-execution path is a future phase the user must separately
+    design and approve; this status exists so that phase's absence is an
+    honest, visible, audited fact rather than silence."""
 
 
 class StrategyDeployment(Base):
@@ -1753,8 +1765,11 @@ class StrategyDeployment(Base):
     same reasoning every persisted result since migration 0018 uses.
     `requested_by_user_id` / `approved_by_user_id` are `ON DELETE SET NULL`.
 
-    `mode` is `paper` for every Phase-63 row; the API rejects any other
-    value until Phase 64 wires `live` behind the existing triple gate.
+    `mode` is `paper` or `live` (Phase 64, D082). A `live` row can be
+    created and approved (behind its own `STRATEGY_APPROVE_LIVE_DEPLOYMENT`
+    permission), but the runner never places a live order for one - every
+    cycle resolves it straight to `SKIPPED_LIVE_TRADING_DISABLED`. See that
+    status's docstring for why.
     """
 
     __tablename__ = "strategy_deployments"

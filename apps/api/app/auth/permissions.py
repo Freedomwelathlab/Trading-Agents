@@ -153,4 +153,23 @@ class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     without being able to green-light its own proposal. Ownership of the
     underlying strategy is still checked. No ADMIN override - an operational
     admin is not automatically a strategy-trading approver.
+
+    Approving a `mode='live'` deployment ALSO requires
+    `STRATEGY_APPROVE_LIVE_DEPLOYMENT` below - this permission alone is
+    enough for paper, never for live.
+    """
+    STRATEGY_APPROVE_LIVE_DEPLOYMENT = "strategy:approve_live_deployment"
+    """Phase 64 (D082). Required IN ADDITION to `STRATEGY_APPROVE_DEPLOYMENT`
+    to approve a `mode='live'` deployment - the same "strictly more
+    demanding than either alone" shape `SUBMIT_LIVE_TRADE` was meant to add
+    on top of `SUBMIT_PAPER_TRADE` for a single live order (spec Sec56).
+
+    Holding this permission does not make the runner place a live order: it
+    cannot, in this phase (see `StrategyDeploymentRunStatus.
+    SKIPPED_LIVE_TRADING_DISABLED`). What this permission gates today is
+    strictly the bookkeeping act of approving a live deployment's existence
+    - real live execution needs a future, separately-approved runner change,
+    at which point this is the permission that will already be gating the
+    one step upstream of it. Granting this today is not itself a step
+    toward enabling live trading.
     """

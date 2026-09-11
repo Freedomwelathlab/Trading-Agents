@@ -13,14 +13,17 @@ Two routers, the same split the signal and universe-scan surfaces use:
 
 Authorization is two-part, unchanged from D071:
 - the router-level permission (`STRATEGY_DEPLOY` for everything except
-  approval, which needs `STRATEGY_APPROVE_DEPLOYMENT`);
+  approval, which needs `STRATEGY_APPROVE_DEPLOYMENT` - and, for a `live`
+  deployment, `STRATEGY_APPROVE_LIVE_DEPLOYMENT` as well, Phase 64/D082);
 - a per-request ownership check - the deployment's version must belong to a
   strategy the caller owns (`_load_owned_strategy` / `_load_version`,
   imported from `routes/strategies.py`).
 
-Nothing here starts trading. Creating a deployment leaves it
+Nothing here starts trading, in either mode. Creating a deployment leaves it
 `PENDING_APPROVAL`; only the explicit approval action moves it to `ACTIVE`,
-and only then does the runner (if enabled at all) look at it.
+and only then does the runner (if enabled at all) look at it - and for a
+`live` deployment, "look at it" means writing a `SKIPPED_LIVE_TRADING_DISABLED`
+run row and nothing else (see `deployments/runner.py`).
 """
 
 import uuid
@@ -239,8 +242,25 @@ async def approve_strategy_deployment(
 ) -> StrategyDeploymentResponse:
     """The mandatory human gate: `PENDING_APPROVAL` -> `ACTIVE`. Gated by
     `STRATEGY_APPROVE_DEPLOYMENT`, deliberately separate from
-    `STRATEGY_DEPLOY` so an organization can require a second person."""
+    `STRATEGY_DEPLOY` so an organization can require a second person.
+
+    A `mode='live'` deployment additionally requires
+    `STRATEGY_APPROVE_LIVE_DEPLOYMENT` (Phase 64, D082) - strictly more
+    demanding than the paper case, the same shape `trade:submit:live` adds
+    on top of `trade:submit:paper` for a single order (D058)."""
     deployment = await _load_owned_deployment(session, deployment_id, current_user)
+    if deployment.mode == "live":
+        role = current_user.role
+        if role is None or Permission.STRATEGY_APPROVE_LIVE_DEPLOYMENT.value not in (
+            role.permissions
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Missing required permission: "
+                    f"{Permission.STRATEGY_APPROVE_LIVE_DEPLOYMENT.value}"
+                ),
+            )
     try:
         await approve_deployment(deployment, approved_by_user_id=current_user.id)
     except DeploymentError as exc:

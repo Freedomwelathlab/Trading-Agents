@@ -4,6 +4,45 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 64: broker abstraction + controlled live execution — SCAFFOLDING
+  ONLY (2026-09-11, D082) — `mode` widens to `"paper" | "live"` at the
+  schema and service layer, symmetrically validated (a `live` deployment
+  needs a LIVE broker, `NOT_A_LIVE_BROKER` otherwise, mirroring the existing
+  `NOT_A_PAPER_BROKER`). **The runner never places a live order.** A new
+  `StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED` is written,
+  unconditionally, for every cycle of every `live` deployment — before
+  touching market data, the broker, or the risk engine, and without
+  consulting `TRADING_MODE` / `LIVE_TRADING_ENABLED` at all, so it cannot be
+  flipped on by an environment variable. Proven by test with a settings
+  object where that gate is nominally wide open.
+  **(1) Why not reuse Phase 43/D058's live-trade gate** — that gate assumes
+  a human supplying `confirm=true` on one interactive HTTP request; a
+  scheduled cycle has no per-trade human, and this project's rule requires
+  in-the-moment approval for every live trade. Rather than fake a
+  per-request confirmation for an unattended loop, the runner refuses live
+  execution outright until a future, separately-approved phase builds a
+  mechanism actually suited to it.
+  **(2) New permission `strategy:approve_live_deployment`** — required IN
+  ADDITION to `strategy:approve_deployment` to approve a `live` deployment
+  specifically (checked in the route handler once the deployment's mode is
+  known). Holding it approves the row; it does not make anything trade.
+  **(3) A live deployment is still enumerated and visibly skipped**, not
+  filtered out of the runner's query — an explicit, audited
+  `SKIPPED_LIVE_TRADING_DISABLED` every cycle beats silent invisibility.
+  **(4) Migration `0025`** — one new Postgres enum label on
+  `strategydeploymentrunstatus` (`ALTER TYPE ... ADD VALUE`, D014's
+  precedent); no schema change for `mode` (already `VARCHAR(8)`). Round-trips
+  clean. **(5) No frontend change** — `CreateDeploymentForm.tsx` still only
+  POSTs `mode: "paper"`; a `live` row (created via the API) would render
+  correctly since `DeploymentList.tsx` already shows `mode` raw, but the web
+  app offers no way to create one, deliberately.
+  **1078 backend tests** (1071→1078, +7: 3 service, 1 runner, 3 API);
+  `ruff`, `mypy apps` (140 files, unchanged), `secret_scan` clean. Frontend
+  unchanged — no frontend file touched.
+  Not built (deliberately, this phase): any way for the runner to actually
+  place a live order; a per-cycle or per-strategy live-confirmation UX; any
+  change to `live_broker.py` / `execution/broker.py` (reused, untouched,
+  because the runner never calls them). `LIVE_TRADING_ENABLED` stays `false`.
 - Phase 63: paper-trading execution (2026-09-10, D081) — puts a validated
   `StrategyVersion` on a scheduled PAPER-trading runner, behind a mandatory
   human-approval gate. The first order-placement path with no HTTP request

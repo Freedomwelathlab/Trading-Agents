@@ -20,20 +20,23 @@ from apps.api.app.db.models import (
 
 
 class CreateDeploymentRequest(BaseModel):
-    """Put a validated version on the paper-trading runner. The version is
-    named by the path; this body says which paper broker account it trades,
-    which symbols, and at what bar interval.
+    """Put a validated version on the scheduled deployment runner. The
+    version is named by the path; this body says which broker account it
+    trades, which symbols, at what bar interval, and in which mode.
 
-    `mode` is `Literal["paper"]` - the API rejects anything else until
-    Phase 64 wires `live` behind the existing TRADING_MODE / LIVE_TRADING
-    gate. It is present now so a reader sees the distinction was always
-    intended and so adding `live` needs no schema migration.
+    `mode="live"` (Phase 64, D082) creates a real, approvable deployment
+    against a LIVE broker - but the runner never places a live order for
+    one; every cycle resolves it straight to `SKIPPED_LIVE_TRADING_DISABLED`
+    (see that status's docstring in `db/models.py`). Creating or even
+    approving a live deployment today changes nothing about what can
+    actually trade - it is scaffolding for a future, separately-approved
+    execution path, not a way to reach one now.
     """
 
     broker_id: uuid.UUID
     symbols: list[str] = Field(min_length=1, max_length=50)
     bar_interval: Literal["1d"] = "1d"
-    mode: Literal["paper"] = "paper"
+    mode: Literal["paper", "live"] = "paper"
 
 
 class ApproveDeploymentRequest(BaseModel):

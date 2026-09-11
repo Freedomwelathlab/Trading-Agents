@@ -8515,3 +8515,159 @@ Verification (2026-09-10, isolated Postgres/Redis, freshly migrated from empty;
   --testTimeout=20000`.)
 
 Status: Implemented and verified as above.
+
+
+---
+
+**D082 — Phase 64: broker abstraction + controlled live execution — scaffolding only, the runner refuses every live order unconditionally**
+
+Reason: the roadmap's Phase 64 line calls for "a strategy-scoped live-approval
+flow on top of the existing `TRADING_MODE=live` / `LIVE_TRADING_ENABLED` /
+live-credential gate." Phase 43 (D058) already built that gate and the
+`LiveBrokerAdapter` it protects, for a single interactive trade: a human
+calls `POST /brokers/{id}/trades` with `confirm=true` for that one order, and
+`trade:submit:live` is required in addition to `trade:submit:paper`. Phase
+63's deployment runner has no equivalent of `confirm=true` — it is a
+scheduler with no human present at any given cycle — and this project's
+non-negotiable rule (docs/TRADING_SAFETY.md: "never enable live trading
+without explicit user approval given in that moment") is written for a human
+in the moment, not a human who once approved a deployment and then leaves.
+So this phase does not attempt to reuse Phase 43's per-order confirmation for
+an unattended loop; it builds the data model and permission split a live
+deployment needs to exist, and makes the runner refuse to act on one, full
+stop, until a future phase deliberately designs and the user explicitly
+approves a mechanism actually suited to unattended execution. `live_broker.py`
+/ `execution/broker.py` are untouched — there was nothing to reuse, because
+the runner never calls them.
+
+**(1) `mode` widens to `"paper" | "live"`, symmetrically validated.**
+`CreateDeploymentRequest.mode` was `Literal["paper"]`; it is now
+`Literal["paper", "live"]`. `deployments/service.py::create_deployment`
+already required a `PAPER` broker for a `paper` deployment (`NOT_A_PAPER_BROKER`);
+it now requires a `LIVE` broker for a `live` one (`NOT_A_LIVE_BROKER`), and any
+other mode string is `UNSUPPORTED_MODE` before a row exists — the same
+guardrail shape as every other create-time check in that function, just
+widened rather than replaced. (In passing: `create_deployment` had a latent
+bug where the persisted row's `mode` was hardcoded to `"paper"` regardless of
+the validated input — harmless while `"paper"` was the only legal value, now
+fixed to `mode=mode`.)
+
+**(2) A second permission gates live approval, additively.** `STRATEGY_DEPLOY`
+still covers create/list/read/pause/resume/stop for both modes — deploying a
+live-mode row is exactly as much of an operational action as deploying a
+paper one; nothing about it can trade anything by itself. `STRATEGY_APPROVE_DEPLOYMENT`
+still moves any deployment `pending_approval → active`. A new
+`STRATEGY_APPROVE_LIVE_DEPLOYMENT` is required *in addition* for a `live`
+deployment specifically — checked in the route handler after loading the
+deployment (its mode isn't known until then), not at the router-dependency
+level. This is deliberately the same "strictly more demanding than either
+alone" shape D058 gave `trade:submit:live` on top of `trade:submit:paper`.
+Holding the new permission does not, by itself, let anything trade — see (3).
+
+**(3) The runner refuses a live deployment unconditionally, before touching
+anything else.** `run_deployment_cycle`'s enumeration query widens from
+`mode == 'paper'` to `mode IN ('paper', 'live')` — a live deployment is
+enumerated like any other `ACTIVE` row, for the audit trail this decision
+cares about (see (4)) — but `_run_deployment_isolated` checks `mode == 'live'`
+immediately after re-confirming the deployment is still `ACTIVE`, before the
+emergency-stop check, before touching `market_data_bars`, before loading a
+broker, before consulting `settings.trading_mode` or
+`settings.live_trading_enabled` at all. It writes exactly one row —
+`StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED`, with an
+`error_detail` naming the actual reason (no per-trade human, not "disabled by
+config") — and returns. This is the load-bearing safety property of this
+phase: the refusal is not contingent on any setting staying at its default,
+so it cannot be defeated by flipping `LIVE_TRADING_ENABLED=true` for an
+unrelated reason (e.g. to let a human place one interactive live trade via
+the existing D058 path) and having deployments start firing unattended as a
+side effect. Proven by test with `TRADING_MODE=live` and
+`LIVE_TRADING_ENABLED=true` both set on the settings object passed to the
+cycle — still `SKIPPED_LIVE_TRADING_DISABLED`, still zero orders, still zero
+bars read for that deployment's symbols.
+
+**(4) The live deployment is still visible, deliberately.** An alternative
+design would filter live deployments out of the enumeration query entirely,
+so the runner is structurally blind to them. Rejected: a `live` deployment
+that a cycle never even looks at is indistinguishable, from the outside, from
+one nobody remembered exists — silence that this project's own
+"'no robust strategy found' is a valid, auditable result, never silence"
+posture (D076) argues against. Enumerating it and writing an explicit skip
+every cycle means an operator who lists a live deployment's runs sees an
+honest, continuous record: "the system saw this and correctly refused,"
+every single cycle, forever, until a future phase changes that on purpose.
+
+**(5) No migration for `strategy_deployments.mode`** — it was already
+`VARCHAR(8)`, wide enough for `"live"`. **One migration (`0025`) for the new
+`StrategyDeploymentRunStatus` label** — it is a native Postgres enum, so
+Postgres must know the label before the ORM can write it. Same technique as
+migration 0014: `op.execute("COMMIT")` before `ALTER TYPE ... ADD VALUE IF
+NOT EXISTS`, and a downgrade that rebuilds the type from scratch after
+refusing if any row already uses the new label (no `DROP VALUE` exists in
+Postgres, and silently rewriting a persisted run outcome to allow a
+downgrade would destroy exactly the audit record this decision protects).
+
+**(6) No frontend change.** `CreateDeploymentForm.tsx` still only ever POSTs
+`mode: "paper"` and its copy still says so; `DeploymentList.tsx` already
+rendered `mode` as a raw string, so a `live` row (created via the API
+directly) would display correctly if one existed, but the web app gives no
+way to create one. This is a deliberate, separate scope decision from (1)–(4):
+the API-level plumbing is real and tested because a future live-execution
+phase needs it to already exist and be correct; exposing "create a live
+deployment" as a button in this UI, while it still can never actually trade,
+would invite exactly the confusion (1)–(4) exist to prevent. Same
+"no frontend surface this phase" precedent as D079.
+
+Alternatives considered:
+- *Reuse D058's `confirm=true` + `trade:submit:live` machinery inside the
+  runner.* Rejected outright — `confirm` is a per-request field an
+  interactive HTTP caller sets; a scheduled cycle has no caller and no
+  request to carry it. Threading a stored "pre-confirmed" flag through would
+  not be "reusing the existing gate," it would be building a new one that
+  looks like the old one while removing the one property (a human, right
+  now) that makes the old one safe.
+- *Gate live execution on `LIVE_TRADING_ENABLED` alone, like the interactive
+  path.* Rejected — that setting is a legitimate way to enable a human
+  clicking "confirm" on one order at a time; reusing it to also arm every
+  `ACTIVE` live deployment's unattended runner would make one config flag do
+  two very different jobs, one of which (arming an automated live-trading
+  loop) is far more consequential than the other and deserves its own,
+  separately-designed control.
+- *Don't build Phase 64 at all yet; wait until a real live-execution design
+  is ready.* Rejected — the roadmap explicitly scopes this phase as
+  scaffolding-only, and the permission split, the symmetric broker-kind
+  validation, and the honest audit trail in (4) are real, useful, safe
+  groundwork regardless of when (or whether) a future phase adds actual
+  unattended live execution on top.
+
+Files: `db/models.py` (`StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED`,
+docstring updates), migration `0025_deployment_run_live_skip.py`,
+`auth/permissions.py` (`STRATEGY_APPROVE_LIVE_DEPLOYMENT`),
+`api/schemas_deployments.py` (`mode` literal widened),
+`deployments/service.py` (`create_deployment`'s mode/broker-kind checks,
+the `mode=mode` fix), `api/routes/deployments.py` (the in-handler live-approval
+check), `deployments/runner.py` (the unconditional live-mode skip branch,
+enumeration query, docstrings). Tests: `tests/deployments/test_service.py`
+(+4: live create succeeds pending-approval, live-on-paper-broker and
+paper-on-live-broker guardrails, bogus-mode rejection), `tests/deployments/test_runner.py`
+(+1: the unconditional-skip proof with a nominally-live-enabled settings
+object), `tests/api/test_deployments.py` (+3: missing-live-permission 403,
+successful live approval with the permission, the broker-kind guardrail pair
+via HTTP; one existing test's stale 422 expectation updated to match the
+now-legal `"live"` literal). `tests/deployments/conftest.py` gains an opt-in
+LIVE broker in `deployment_world`.
+
+Verification (2026-09-11, isolated Postgres/Redis, freshly migrated from
+empty; `alembic downgrade -1` → `upgrade head` round-trips clean for
+migration `0025`):
+
+- **1078 backend tests** (1071 → 1078, +7: 3 in `tests/deployments/test_service.py`,
+  1 in `tests/deployments/test_runner.py`, 3 in `tests/api/test_deployments.py`;
+  one pre-existing `test_deployments.py` assertion updated to match the now-legal
+  `"live"` literal); `ruff check apps tests migrations` clean; `mypy apps`
+  clean, **140 source files** (unchanged from D081 — no new source file this
+  phase); `bash scripts/secret_scan.sh` clean; full run 19m29s, exit 0.
+  Migration `0025` round-trips clean.
+- Frontend unchanged — no frontend file was touched; `mode` already rendered
+  as a raw string.
+
+Status: Implemented and verified as above.

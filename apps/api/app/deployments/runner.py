@@ -34,8 +34,15 @@ WHAT MAKES IT SAFE
   and a stopped cycle writes `SKIPPED_EMERGENCY_STOP` and places nothing.
   `submit_trade_and_record` also re-checks it inside the Risk Engine, so
   this is belt and braces.
-- **`mode='paper'` only.** The runner asserts it and would refuse any other
-  value; live deployment is Phase 64.
+- **`mode='live'` never places an order.** A live deployment is enumerated
+  by the cycle like any other ACTIVE one, but is resolved straight to
+  `SKIPPED_LIVE_TRADING_DISABLED` before touching market data, the broker,
+  or the risk engine (Phase 64, D082) - unconditionally, regardless of
+  `TRADING_MODE` / `LIVE_TRADING_ENABLED`. An unattended scheduler has no
+  per-trade human to supply the in-the-moment confirmation
+  docs/TRADING_SAFETY.md requires for every live trade; a real live
+  execution path is a future, separately-approved phase, not a config flag
+  here.
 - **`require_stop_price=False`**, the same `RiskLimits` a backtest of this
   definition uses (D035): a strategy's exit rule IS its stop, re-evaluated
   every cycle, and demanding a stop price here would force fabricating one.
@@ -234,7 +241,9 @@ async def _run_one_deployment(
     """The work for one ACTIVE deployment, inside a transaction the caller
     owns. `run` already exists and is flushed; this resolves its counters
     and status."""
-    assert deployment.mode == "paper"  # nosec - enforced at creation, re-asserted here
+    # A `live` deployment never reaches here - `_run_deployment_isolated`
+    # resolves it to SKIPPED_LIVE_TRADING_DISABLED first.
+    assert deployment.mode == "paper"  # nosec - enforced upstream, re-asserted here
 
     version = (
         await session.execute(
@@ -458,7 +467,7 @@ async def run_deployment_cycle(
                     await session.execute(
                         select(StrategyDeployment.id).where(
                             StrategyDeployment.status == StrategyDeploymentStatus.ACTIVE,
-                            StrategyDeployment.mode == "paper",
+                            StrategyDeployment.mode.in_(("paper", "live")),
                         )
                     )
                 )
@@ -519,9 +528,6 @@ async def _run_deployment_isolated(
                 detail=f"deployment is {deployment.status.value}",
             )
 
-        emergency = await is_emergency_stop_active(
-            session, settings_default=settings.emergency_stop_active
-        )
         run = StrategyDeploymentRun(
             id=uuid.uuid4(),
             deployment_id=deployment_id,
@@ -531,6 +537,30 @@ async def _run_deployment_isolated(
         session.add(run)
         await session.flush()
 
+        # Live mode: refuse unconditionally, before anything else this cycle
+        # touches - see StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
+        # (Phase 64, D082). No settings are consulted; this cannot be turned
+        # on by TRADING_MODE / LIVE_TRADING_ENABLED, only by a future,
+        # separately-approved runner change.
+        if deployment.mode == "live":
+            run.status = StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
+            run.error_detail = (
+                "automated live execution is not supported: this scheduler has no "
+                "per-trade human to supply the in-the-moment confirmation "
+                "docs/TRADING_SAFETY.md requires for every live trade."
+            )
+            run.completed_at = clock()
+            await session.commit()
+            return DeploymentRunOutcome(
+                deployment_id=deployment_id,
+                run_id=run.id,
+                status=run.status,
+                detail=run.error_detail,
+            )
+
+        emergency = await is_emergency_stop_active(
+            session, settings_default=settings.emergency_stop_active
+        )
         if emergency:
             run.status = StrategyDeploymentRunStatus.SKIPPED_EMERGENCY_STOP
             run.completed_at = clock()

@@ -1865,7 +1865,7 @@ append-only: re-evaluating a symbol adds a row.
 Response (200, `SignalEvaluationResponse`) — the same item shape as the
 batch above.
 
-## `POST /strategies/{strategy_id}/versions/{version_id}/deployments` — put a version on the paper-trading runner
+## `POST /strategies/{strategy_id}/versions/{version_id}/deployments` — put a version on the scheduled deployment runner
 
 Requires `strategy:deploy` (D081 — a **new** permission, not
 `strategy:backtest` / `strategy:signal`). Creates a `StrategyDeployment`
@@ -1875,13 +1875,16 @@ approved, and the scheduled runner is itself off unless an operator has set
 
 Request: `{"broker_id": "…", "symbols": ["AAPL.US", "MSFT.US"], "bar_interval": "1d", "mode": "paper"}`
 — `symbols` 1–50, normalized (trim, upper-case, de-duped); `broker_id` must
-be an existing **paper** broker (there is no broker-list endpoint).
-`bar_interval` defaults `"1d"`, `mode` defaults `"paper"`.
+be an existing broker whose **kind matches `mode`** (`paper` needs a PAPER
+broker, `live` needs a LIVE broker — there is no broker-list endpoint).
+`bar_interval` defaults `"1d"`, `mode` defaults `"paper"` and also accepts
+`"live"` (Phase 64, D082) — **but a `live` deployment can never actually
+trade**; see `POST .../approve` and the runner's behavior below.
 
 409 (plain-string `detail`), before any row is created:
-`VERSION_NOT_VALIDATED`, `NO_SUCH_BROKER`, `NOT_A_PAPER_BROKER`,
-`TOO_MANY_SYMBOLS`. 422 for `mode` other than `"paper"` (Phase 64 adds
-`live`) or an empty symbol list.
+`VERSION_NOT_VALIDATED`, `NO_SUCH_BROKER`, `NOT_A_PAPER_BROKER` /
+`NOT_A_LIVE_BROKER`, `TOO_MANY_SYMBOLS`. 422 for a `mode` that is neither
+`"paper"` nor `"live"`, or an empty symbol list.
 
 Response (201, `StrategyDeploymentResponse`): `{"id": "…",
 "strategy_version_id": "…", "broker_id": "…", "mode": "paper", "status":
@@ -1905,10 +1908,22 @@ Response (200, `StrategyDeploymentResponse`).
 
 Requires **`strategy:approve_deployment`** — a **separate, stricter**
 permission than `strategy:deploy`; a caller holding only `strategy:deploy`
-gets a 403 here, so an organization can require a second person.
+gets a 403 here, so an organization can require a second person. Approving a
+**`mode="live"`** deployment additionally requires
+**`strategy:approve_live_deployment`** (Phase 64, D082) — a caller with only
+`strategy:approve_deployment` gets a 403 naming the missing permission.
+Holding it approves the row (`pending_approval` → `active`); it does **not**
+let the row trade — see the runner note below.
 `pending_approval` → `active`, recording `approved_by_user_id` /
 `approved_at`. Optional body `{"note": "…"}`. 409 (`NOT_PENDING_APPROVAL: …`)
 from any other state. Response (200, `StrategyDeploymentResponse`).
+
+**A `live` deployment, once `active`, still never trades.** Every runner
+cycle for it resolves straight to a `strategy_deployment_runs` row with
+`status="skipped_live_trading_disabled"` — no market data read, no broker
+call, no risk engine — regardless of `TRADING_MODE` / `LIVE_TRADING_ENABLED`.
+Real live execution is out of scope for this phase; see `docs/DECISIONS.md`
+D082.
 
 ## `POST /deployments/{deployment_id}/pause` — active → paused
 
@@ -1939,8 +1954,9 @@ Response (200, `ListDeploymentRunsResponse`): `{"items": [{"id": "…",
 "orders_submitted": 1, "orders_filled": 1, "error_detail": null,
 "created_at": "…"}], "limit": 50, "offset": 0}`, newest first. `status` is
 `succeeded` / `failed` / `skipped_not_active` / `skipped_emergency_stop` /
-`skipped_market_closed` / `skipped_lock_held` — a skipped cycle is an
-honest answer, never an error.
+`skipped_market_closed` / `skipped_lock_held` / `skipped_live_trading_disabled`
+(Phase 64, D082 — every cycle of a `mode="live"` deployment) — a skipped
+cycle is an honest answer, never an error.
 
 ## `GET /deployments/{deployment_id}/signals` — the deployment's signal trail
 

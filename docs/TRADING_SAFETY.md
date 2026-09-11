@@ -159,11 +159,22 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
      (`strategy:approve_deployment`, distinct from `strategy:deploy`), which
      records who approved and when. There is no code path that produces an
      `active` deployment without that action.
-  2. **Opt-in and paper-only.** `STRATEGY_RUNNER_ENABLED` defaults `false`
-     — the same fail-closed default as the snapshot scheduler, the
-     reconciler and live trading; off, the loop never starts. Every
-     deployment is `mode='paper'` and the runner asserts it per cycle;
-     `live` is Phase 64, behind the existing triple gate.
+  2. **Opt-in, and `live` places nothing.** `STRATEGY_RUNNER_ENABLED`
+     defaults `false` — the same fail-closed default as the snapshot
+     scheduler, the reconciler and live trading; off, the loop never starts.
+     A `mode='paper'` deployment behaves as described below. A
+     `mode='live'` deployment (Phase 64, D082) can be created and approved
+     (behind a further, separate `strategy:approve_live_deployment`
+     permission), but every cycle for it resolves straight to
+     `skipped_live_trading_disabled` **before touching market data, the
+     broker, or the risk engine, and without consulting `TRADING_MODE` /
+     `LIVE_TRADING_ENABLED` at all** — proven by test with those settings
+     nominally wide open. An unattended scheduler has no per-trade human to
+     supply the in-the-moment confirmation this document requires for every
+     live trade, so this phase does not attempt to fake one; a real
+     unattended-execution path is a future phase the user must separately
+     design and approve. `live_broker.py` / `execution/broker.py` are
+     unchanged - the runner never calls them.
   3. **Same posture as the paper trade path, not a parallel one.** Each
      actionable signal goes through `submit_trade_and_record` — the one
      sanctioned RISK → PORTFOLIO → BROKER path — against the normal paper

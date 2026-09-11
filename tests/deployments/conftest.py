@@ -90,11 +90,19 @@ async def deployment_world(
     seed: dict[str, list[int]] | None = None,
     definition: dict | None = None,
     starting_cash: Decimal = Decimal(100_000),
+    with_live_broker: bool = False,
 ):
     """A paper broker, a validated version, and any seeded bars - torn down
-    child-first because of the ON DELETE RESTRICT FKs."""
+    child-first because of the ON DELETE RESTRICT FKs.
+
+    `with_live_broker=True` (Phase 64, D082) additionally creates a LIVE
+    broker and returns its id as `live_broker_id`, for the live-mode
+    deployment tests. It carries no `BrokerAccount` - a live deployment's
+    runner cycle never reaches the point of needing one (it resolves to
+    `SKIPPED_LIVE_TRADING_DISABLED` first)."""
     prefix = f"DEP{uuid.uuid4().hex[:6].upper()}"
     broker_id = uuid.uuid4()
+    live_broker_id = uuid.uuid4() if with_live_broker else None
     strategy_id = uuid.uuid4()
     version_id = uuid.uuid4()
     seed = seed or {}
@@ -102,6 +110,15 @@ async def deployment_world(
 
     session.add(Broker(id=broker_id, name=prefix, kind=BrokerKind.PAPER, provider="paper-sim"))
     session.add(BrokerAccount(broker_id=broker_id, cash=starting_cash))
+    if live_broker_id is not None:
+        session.add(
+            Broker(
+                id=live_broker_id,
+                name=f"{prefix}L",
+                kind=BrokerKind.LIVE,
+                provider="longbridge",
+            )
+        )
     session.add(
         Strategy(id=strategy_id, name=prefix, owner_user_id=None, status=StrategyStatus.ACTIVE)
     )
@@ -124,6 +141,7 @@ async def deployment_world(
     try:
         yield {
             "broker_id": broker_id,
+            "live_broker_id": live_broker_id,
             "strategy_id": strategy_id,
             "version_id": version_id,
             "symbols": mapping,
@@ -164,4 +182,6 @@ async def deployment_world(
         await session.execute(delete(StrategyVersion).where(StrategyVersion.id == version_id))
         await session.execute(delete(Strategy).where(Strategy.id == strategy_id))
         await session.execute(delete(Broker).where(Broker.id == broker_id))
+        if live_broker_id is not None:
+            await session.execute(delete(Broker).where(Broker.id == live_broker_id))
         await session.commit()
