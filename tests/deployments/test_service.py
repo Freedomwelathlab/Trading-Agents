@@ -53,10 +53,41 @@ async def test_create_normalizes_and_dedupes_symbols_and_starts_pending_approval
 
 
 @pytest.mark.asyncio
-async def test_create_rejects_a_non_paper_mode() -> None:
+async def test_create_rejects_a_mode_that_is_neither_paper_nor_live() -> None:
     async with db_session() as session, deployment_world(session) as w:
         with pytest.raises(DeploymentError, match="UNSUPPORTED_MODE"):
-            await _new(session, w, mode="live")
+            await _new(session, w, mode="paper_and_a_bit_live")
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_live_mode_against_a_live_broker_still_pending_approval() -> None:
+    """Phase 64, D082: a live deployment is real data, not yet real trading -
+    it lands PENDING_APPROVAL exactly like a paper one."""
+    async with (
+        db_session() as session,
+        deployment_world(session, with_live_broker=True) as w,
+    ):
+        dep = await _new(session, w, broker_id=w["live_broker_id"], mode="live")
+        await session.commit()
+        assert dep.status is StrategyDeploymentStatus.PENDING_APPROVAL
+        assert dep.mode == "live"
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_live_mode_deployment_against_a_paper_broker() -> None:
+    async with db_session() as session, deployment_world(session) as w:
+        with pytest.raises(DeploymentError, match="NOT_A_LIVE_BROKER"):
+            await _new(session, w, mode="live")  # w["broker_id"] is PAPER
+
+
+@pytest.mark.asyncio
+async def test_create_still_rejects_a_paper_mode_deployment_against_a_live_broker() -> None:
+    async with (
+        db_session() as session,
+        deployment_world(session, with_live_broker=True) as w,
+    ):
+        with pytest.raises(DeploymentError, match="NOT_A_PAPER_BROKER"):
+            await _new(session, w, broker_id=w["live_broker_id"])  # mode defaults to paper
 
 
 @pytest.mark.asyncio

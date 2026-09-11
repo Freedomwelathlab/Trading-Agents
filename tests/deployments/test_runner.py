@@ -22,7 +22,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from apps.api.app.core.config import get_settings
+from apps.api.app.core.config import TradingMode, get_settings
 from apps.api.app.db.base import get_session_factory
 from apps.api.app.db.models import (
     BrokerPosition,
@@ -51,14 +51,16 @@ _SF = get_session_factory()
 _SETTINGS = get_settings()
 
 
-async def _deploy(session, world, *, symbols, approved=True) -> uuid.UUID:
+async def _deploy(
+    session, world, *, symbols, approved=True, broker_id=None, mode="paper"
+) -> uuid.UUID:
     dep = await create_deployment(
         session,
         strategy_version_id=world["version_id"],
-        broker_id=world["broker_id"],
+        broker_id=broker_id if broker_id is not None else world["broker_id"],
         symbols=symbols,
         bar_interval="1d",
-        mode="paper",
+        mode=mode,
         requested_by_user_id=None,
     )
     if approved:
@@ -319,6 +321,56 @@ async def test_a_utc_weekend_no_ops_the_whole_cycle() -> None:
 
         orders = (
             (await session.execute(select(Order).where(Order.broker_id == w["broker_id"])))
+            .scalars()
+            .all()
+        )
+        assert orders == []
+
+
+@pytest.mark.asyncio
+async def test_a_live_deployment_is_always_skipped_even_with_live_trading_nominally_on() -> None:
+    """Phase 64, D082: the runner's refusal to place a live order is
+    unconditional - it does not consult TRADING_MODE / LIVE_TRADING_ENABLED
+    at all. Proven here by handing it settings where the triple gate would
+    otherwise be wide open, and asserting nothing changes: still skipped,
+    still zero orders, still zero broker/market-data access for this
+    deployment."""
+    live_settings = _SETTINGS.model_copy(
+        update={"trading_mode": TradingMode.LIVE, "live_trading_enabled": True}
+    )
+    async with (
+        db_session() as session,
+        deployment_world(session, seed={"g": BUY_CLOSES}, with_live_broker=True) as w,
+    ):
+        good = w["symbols"]["g"]
+        dep_id = await _deploy(
+            session, w, symbols=[good], broker_id=w["live_broker_id"], mode="live"
+        )
+
+        result = await run_deployment_cycle(_SF, settings=live_settings)
+        outcome = _mine(result, dep_id)
+        assert outcome is not None
+        assert outcome.status is StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
+        assert outcome.orders_submitted == 0
+        assert outcome.symbols_evaluated == 0  # never even read a bar for this symbol
+
+        run = (
+            await session.execute(
+                select(StrategyDeploymentRun).where(StrategyDeploymentRun.id == outcome.run_id)
+            )
+        ).scalar_one()
+        assert run.status is StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
+        assert run.error_detail and "per-trade human" in run.error_detail
+
+        signals = (
+            await session.execute(
+                select(SignalEvaluation).where(SignalEvaluation.deployment_run_id == run.id)
+            )
+        ).scalars().all()
+        assert signals == []  # no signal evaluated either - the skip is first, full stop
+
+        orders = (
+            (await session.execute(select(Order).where(Order.broker_id == w["live_broker_id"])))
             .scalars()
             .all()
         )

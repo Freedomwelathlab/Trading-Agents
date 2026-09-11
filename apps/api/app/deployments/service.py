@@ -70,16 +70,23 @@ async def create_deployment(
     is a separate action.
 
     Rejects, before any row is written:
-    - a non-`paper` mode (Phase 64 adds `live` behind the existing gate);
+    - a mode that is neither `paper` nor `live` (Phase 64, D082);
     - a strategy version that is not `VALIDATED` (the rules must be frozen
       and structurally sound before anything trades them);
-    - a broker id that does not exist;
+    - a broker id that does not exist, or one whose kind does not match the
+      requested mode (a `paper` deployment needs a `PAPER` broker, a `live`
+      deployment needs a `LIVE` broker - never mixed);
     - an empty or over-cap symbol list.
+
+    A `live` mode row is real and approvable, but the runner never places a
+    live order for it (`StrategyDeploymentRunStatus.
+    SKIPPED_LIVE_TRADING_DISABLED`) - this function's job is only to keep
+    the data honest (a live deployment names a live broker), not to gate
+    execution; that gate lives in the runner, unconditionally.
     """
-    if mode != "paper":
+    if mode not in ("paper", "live"):
         raise DeploymentError(
-            "UNSUPPORTED_MODE: mode must be 'paper'. Live deployment is not enabled "
-            "(it arrives in Phase 64, behind TRADING_MODE=live and LIVE_TRADING_ENABLED)."
+            f"UNSUPPORTED_MODE: mode must be 'paper' or 'live', got {mode!r}."
         )
 
     version = (
@@ -100,10 +107,13 @@ async def create_deployment(
     ).scalar_one_or_none()
     if broker is None:
         raise DeploymentError(f"NO_SUCH_BROKER: no broker {broker_id}.")
-    if broker.kind is not BrokerKind.PAPER:
+    required_kind = BrokerKind.PAPER if mode == "paper" else BrokerKind.LIVE
+    if broker.kind is not required_kind:
+        error_code = "NOT_A_PAPER_BROKER" if mode == "paper" else "NOT_A_LIVE_BROKER"
         raise DeploymentError(
-            f"NOT_A_PAPER_BROKER: broker {broker_id} is kind '{broker.kind.value}'. A "
-            f"paper deployment must trade a paper broker (spec §51 keeps the two apart)."
+            f"{error_code}: broker {broker_id} is kind '{broker.kind.value}'. A "
+            f"{mode} deployment must trade a {required_kind.value} broker (spec §51 "
+            f"keeps the two apart)."
         )
 
     normalized = _normalize_symbols(symbols)
@@ -118,7 +128,7 @@ async def create_deployment(
         id=uuid.uuid4(),
         strategy_version_id=strategy_version_id,
         broker_id=broker_id,
-        mode="paper",
+        mode=mode,
         status=StrategyDeploymentStatus.PENDING_APPROVAL,
         symbols=normalized,
         bar_interval=bar_interval,
@@ -138,7 +148,12 @@ async def approve_deployment(
     deployment: StrategyDeployment, *, approved_by_user_id: uuid.UUID | None
 ) -> StrategyDeployment:
     """The mandatory human gate. `PENDING_APPROVAL` -> `ACTIVE`, recording
-    who approved and when. Any other starting state is a 409."""
+    who approved and when. Any other starting state is a 409.
+
+    This function does not itself distinguish `paper` from `live` - the
+    route layer requires the caller to also hold
+    `STRATEGY_APPROVE_LIVE_DEPLOYMENT` before calling this for a `live`
+    deployment (Phase 64, D082)."""
     if deployment.status is not StrategyDeploymentStatus.PENDING_APPROVAL:
         raise DeploymentError(
             f"NOT_PENDING_APPROVAL: deployment is {deployment.status.value}; only a "

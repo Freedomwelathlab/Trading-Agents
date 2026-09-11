@@ -107,10 +107,57 @@ async def deploy_only_user(session):
 
 
 @contextlib.asynccontextmanager
+async def live_approver_user(session):
+    """Phase 64, D082: can approve a LIVE deployment - holds
+    STRATEGY_APPROVE_LIVE_DEPLOYMENT in addition to everything `deploy_user`
+    has."""
+    async with _role_user(
+        session,
+        permissions=[
+            Permission.STRATEGY_MANAGE.value,
+            Permission.STRATEGY_DEPLOY.value,
+            Permission.STRATEGY_APPROVE_DEPLOYMENT.value,
+            Permission.STRATEGY_APPROVE_LIVE_DEPLOYMENT.value,
+        ],
+        label="liveapprover",
+    ) as pair:
+        yield pair
+
+
+@contextlib.asynccontextmanager
 async def paper_broker(session):
     broker_id = uuid.uuid4()
     session.add(
         Broker(id=broker_id, name="pb", kind=BrokerKind.PAPER, provider="paper-sim")
+    )
+    await session.commit()
+    try:
+        yield broker_id
+    finally:
+        await session.rollback()
+        dep_ids = select(StrategyDeployment.id).where(
+            StrategyDeployment.broker_id == broker_id
+        )
+        await session.execute(
+            delete(StrategyDeploymentRun).where(
+                StrategyDeploymentRun.deployment_id.in_(dep_ids)
+            )
+        )
+        await session.execute(
+            delete(StrategyDeployment).where(StrategyDeployment.broker_id == broker_id)
+        )
+        await session.execute(delete(Broker).where(Broker.id == broker_id))
+        await session.commit()
+
+
+@contextlib.asynccontextmanager
+async def live_broker(session):
+    """Phase 64, D082: a LIVE broker, for the live-mode deployment tests.
+    No `BrokerAccount` - a live deployment's runner cycle never gets far
+    enough to need one."""
+    broker_id = uuid.uuid4()
+    session.add(
+        Broker(id=broker_id, name="lb", kind=BrokerKind.LIVE, provider="longbridge")
     )
     await session.commit()
     try:
@@ -272,12 +319,18 @@ async def test_create_guardrails_are_409s() -> None:
             )
             url = f"/strategies/{strategy_id}/versions/{version_id}/deployments"
 
-            live_mode = await client.post(
+            # "live" is a legal mode now (Phase 64, D082) - a nonsense mode
+            # is still rejected at the schema layer, before any row exists.
+            bogus_mode = await client.post(
                 url,
                 headers=_h(token),
-                json={"broker_id": str(broker_id), "symbols": ["X.US"], "mode": "live"},
+                json={"broker_id": str(broker_id), "symbols": ["X.US"], "mode": "paused"},
             )
-            assert live_mode.status_code == 422  # Literal["paper"] rejects it at the schema
+            assert bogus_mode.status_code == 422  # Literal["paper", "live"] rejects it
+
+            # A *paper* broker still can't take a live-mode deployment - see
+            # test_a_live_mode_deployment_rejects_a_paper_broker_and_vice_versa
+            # for the full pairing of that guardrail.
 
             unknown_broker = await client.post(
                 url,
@@ -346,3 +399,102 @@ async def test_another_users_deployment_is_403_and_an_unknown_id_is_404() -> Non
                         f"/deployments/{uuid.uuid4()}", headers=_h(owner_token)
                     )
                 ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_live_deployment_needs_the_separate_live_approval_permission() -> None:
+    """Phase 64, D082: STRATEGY_APPROVE_DEPLOYMENT alone approves paper;
+    a live deployment additionally needs STRATEGY_APPROVE_LIVE_DEPLOYMENT."""
+    async with (
+        db_session() as session,
+        deploy_user(session) as (_uid, email),
+        live_broker(session) as broker_id,
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            strategy_id, version_id = await _validated_strategy(
+                client, token, definition=SMA2_DEFINITION
+            )
+            created = await client.post(
+                f"/strategies/{strategy_id}/versions/{version_id}/deployments",
+                headers=_h(token),
+                json={"broker_id": str(broker_id), "symbols": ["GOOD.US"], "mode": "live"},
+            )
+            assert created.status_code == 201, created.text
+            body = created.json()
+            assert body["status"] == "pending_approval"
+            assert body["mode"] == "live"
+            deployment_id = body["id"]
+
+            # deploy_user holds STRATEGY_APPROVE_DEPLOYMENT but not the live one.
+            denied = await client.post(
+                f"/deployments/{deployment_id}/approve", headers=_h(token), json={}
+            )
+            assert denied.status_code == 403
+            assert "strategy:approve_live_deployment" in denied.text
+
+            got = await client.get(f"/deployments/{deployment_id}", headers=_h(token))
+            assert got.json()["status"] == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_the_live_approver_permission_activates_a_live_deployment() -> None:
+    async with (
+        db_session() as session,
+        live_approver_user(session) as (_uid, email),
+        live_broker(session) as broker_id,
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            strategy_id, version_id = await _validated_strategy(
+                client, token, definition=SMA2_DEFINITION
+            )
+            created = await client.post(
+                f"/strategies/{strategy_id}/versions/{version_id}/deployments",
+                headers=_h(token),
+                json={"broker_id": str(broker_id), "symbols": ["GOOD.US"], "mode": "live"},
+            )
+            deployment_id = created.json()["id"]
+
+            approved = await client.post(
+                f"/deployments/{deployment_id}/approve", headers=_h(token), json={}
+            )
+            assert approved.status_code == 200, approved.text
+            assert approved.json()["status"] == "active"
+            assert approved.json()["mode"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_a_live_mode_deployment_rejects_a_paper_broker_and_vice_versa() -> None:
+    async with (
+        db_session() as session,
+        deploy_user(session) as (_uid, email),
+        paper_broker(session) as paper_broker_id,
+        live_broker(session) as live_broker_id,
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            strategy_id, version_id = await _validated_strategy(
+                client, token, definition=SMA2_DEFINITION
+            )
+            url = f"/strategies/{strategy_id}/versions/{version_id}/deployments"
+
+            live_on_paper = await client.post(
+                url,
+                headers=_h(token),
+                json={
+                    "broker_id": str(paper_broker_id),
+                    "symbols": ["X.US"],
+                    "mode": "live",
+                },
+            )
+            assert live_on_paper.status_code == 409
+            assert "NOT_A_LIVE_BROKER" in live_on_paper.text
+
+            paper_on_live = await client.post(
+                url,
+                headers=_h(token),
+                json={"broker_id": str(live_broker_id), "symbols": ["X.US"]},
+            )
+            assert paper_on_live.status_code == 409
+            assert "NOT_A_PAPER_BROKER" in paper_on_live.text
