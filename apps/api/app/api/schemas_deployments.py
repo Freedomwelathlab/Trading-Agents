@@ -115,3 +115,55 @@ class ListDeploymentSignalsResponse(BaseModel):
     items: list[DeploymentSignalResponse]
     limit: int
     offset: int
+
+
+class RoundTripResponse(BaseModel):
+    """One closed position built from this deployment's own real fills -
+    see `deployments/monitoring.py::RoundTrip`."""
+
+    symbol: str
+    quantity: Decimal
+    entry_price: Decimal
+    entered_at: datetime
+    exit_price: Decimal
+    exited_at: datetime
+    realized_pnl: Decimal
+    return_pct: Decimal
+
+
+class DeploymentActualPerformanceResponse(BaseModel):
+    """What this deployment's own orders actually did. `win_rate_pct` and
+    `avg_return_pct` are `null` - never a fabricated 0% or 100% - when
+    `num_round_trips` is 0."""
+
+    round_trips: list[RoundTripResponse]
+    open_positions: dict[str, Decimal]
+    num_round_trips: int
+    num_winning: int
+    win_rate_pct: Decimal | None
+    total_realized_pnl: Decimal
+    avg_return_pct: Decimal | None
+
+
+class DeploymentExpectedPerformanceResponse(BaseModel):
+    """What the strategy version's own latest succeeded backtest reported.
+    `status == "no_reference_backtest"` means every field below it is
+    `null` - there is no partial or estimated fallback."""
+
+    status: Literal["available", "no_reference_backtest"]
+    reference_backtest_run_id: uuid.UUID | None
+    symbol: str | None
+    total_return_pct: Decimal | None
+    max_drawdown_pct: Decimal | None
+    win_rate_pct: Decimal | None
+    num_trades: int | None
+
+
+class DeploymentMonitoringResponse(BaseModel):
+    """Actual vs. expected performance for one deployment - read-only,
+    never blended together (Phase 65, D083)."""
+
+    deployment_id: uuid.UUID
+    as_of: datetime
+    actual: DeploymentActualPerformanceResponse
+    expected: DeploymentExpectedPerformanceResponse

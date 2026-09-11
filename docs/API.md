@@ -1970,5 +1970,42 @@ through `strategy_deployment_runs`, newest first. Response (200,
 "limit": 50, "offset": 0}` — the Phase-61 evaluation shape minus the fields
 a deployment context makes redundant.
 
+## `GET /deployments/{deployment_id}/monitoring` — actual vs. expected performance
+
+Requires `strategy:deploy`, 404/403 by ownership. Read-only — places no
+orders, writes nothing. Response (200, `DeploymentMonitoringResponse`):
+`{"deployment_id": "…", "as_of": "…", "actual": { … }, "expected": { … }}`.
+
+`actual` (`DeploymentActualPerformanceResponse`) is built strictly from THIS
+deployment's own `FILLED` orders and their real fills — never the whole
+broker account, never the proposal's estimated price. Shape:
+`{"round_trips": [{"symbol": "AAPL.US", "quantity": "10.00000000",
+"entry_price": "100.00000000", "entered_at": "…", "exit_price":
+"110.00000000", "exited_at": "…", "realized_pnl": "100.00000000",
+"return_pct": "10.0000"}], "open_positions": {"AAPL.US": "10.00000000"},
+"num_round_trips": 1, "num_winning": 1, "win_rate_pct": "100.0000",
+"total_realized_pnl": "100.00000000", "avg_return_pct": "10.0000"}`.
+`win_rate_pct` and `avg_return_pct` are `null` — never a fabricated 0% or
+100% — when `num_round_trips` is 0; `total_realized_pnl` is `0` with zero
+round trips (a true sum, not a rate).
+
+`expected` (`DeploymentExpectedPerformanceResponse`) reads the strategy
+version's own latest succeeded backtest — the SAME run
+`_latest_succeeded_backtest` picks for the Phase 59 leaderboard, reused
+verbatim (D072). Two `status` values:
+- `"no_reference_backtest"` — this version has never had a direct
+  (non-walk-forward-window) succeeded backtest run. Every other field is
+  `null`.
+- `"available"` — `{"status": "available", "reference_backtest_run_id":
+  "…", "symbol": "AAPL.US", "total_return_pct": "18.5000",
+  "max_drawdown_pct": "6.2000", "win_rate_pct": "55.0000", "num_trades":
+  12}`, copied verbatim from that `BacktestRun` row.
+
+Known scope limit: a deployment can trade several symbols, but the
+reference backtest covers exactly one (`expected.symbol`) — read `expected`
+as "what the version's headline backtest showed for that one symbol," not
+as a per-symbol comparison for every symbol this deployment trades. See
+`docs/DECISIONS.md` D083.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

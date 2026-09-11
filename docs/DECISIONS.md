@@ -8671,3 +8671,134 @@ migration `0025`):
   as a raw string.
 
 Status: Implemented and verified as above.
+
+---
+
+**D083 — Phase 65: strategy monitoring — actual (real fills) vs. expected (real backtest), read-only, never blended**
+
+Reason: Phases 63/64 (D081/D082) gave a strategy a way to run unattended and
+an honest audit trail of every cycle, but no answer to the question an
+operator of a running deployment actually asks: "is this doing what the
+backtest said it would?" This phase answers it without placing a single
+order or writing a single row — a pure read that joins two things this
+codebase already computes honestly (this deployment's own real fills, and
+the strategy version's own real backtest) and reports them side by side,
+never combined into one number that would misrepresent either.
+
+**(1) "Actual" is scoped to THIS deployment's own orders, never the whole
+broker account.** `build_deployment_monitoring` joins `orders` to
+`strategy_deployment_runs` and filters to `deployment_id ==
+deployment.id` — a broker account can hold positions and orders from other
+sources (a human trading the same paper account directly, a different
+deployment sharing it), and reporting off the whole account would silently
+attribute someone else's trade to this strategy's track record. Only
+`FILLED` orders whose `deployment_run_id` traces back to a run of THIS
+deployment ever enter the calculation.
+
+**(2) Round trips are built from the FILL's price/time, never
+`Order.estimated_price`.** The estimate is what the proposal was priced at
+when the Risk Engine evaluated it (the latest bar's close); the fill is
+what the paper broker actually executed at — the same distinction
+`execution/reconciliation.py` draws for the live path ("a fill is written
+only from the broker's own answer"). `_build_round_trips` walks
+`(Order, Fill)` pairs — already filtered to `status == FILLED` and ordered
+by `submitted_at` ascending by the caller — maintaining one open lot per
+symbol from a BUY fill's quantity/price/time, and closing it on the next
+SELL fill in the same symbol: `realized_pnl = (exit_price - entry_price) *
+quantity`, `return_pct = (exit_price - entry_price) / entry_price * 100`.
+
+**(3) A BUY-while-open or a SELL-while-flat is skipped, never merged.** This
+runner's own long-or-flat discipline (`want_buy`/`want_sell` in
+`deployments/runner.py`) means neither should ever appear in a real
+deployment's order history, but `_build_round_trips` does not assume that
+held: if either happens anyway, the offending order is skipped rather than
+raising, and it is never averaged into an existing open lot — this system
+does not fabricate a cost basis it did not explicitly choose to compute.
+
+**(4) The reference backtest is `_latest_succeeded_backtest`, imported and
+reused VERBATIM from `strategies/scoring.py`** — the exact function the
+Phase 59 leaderboard uses to define "this version's headline backtest" (the
+D072 cross-module private-helper-reuse precedent `deployments/runner.py`
+already set). Writing a second, monitoring-specific query — even one that
+tried to be smarter about picking a per-symbol run — would create two
+competing definitions of "this strategy's backtest" in the same codebase,
+and a reader comparing this screen to the leaderboard would have no way to
+know they disagreed. `expected.status` is `"no_reference_backtest"` (every
+other field `null`) when that function returns `None`, or `"available"`
+with `reference_backtest_run_id`/`symbol`/`total_return_pct`/
+`max_drawdown_pct`/`win_rate_pct`/`num_trades` copied verbatim from the
+`BacktestRun` row otherwise.
+
+**A known, deliberate scope limit, called out rather than glossed over**: a
+deployment can trade several symbols, but `_latest_succeeded_backtest`
+returns ONE run over ONE symbol. `expected.symbol` names exactly which
+symbol the comparison describes; a multi-symbol deployment's `expected` is
+not a per-symbol comparison for every symbol it trades, only "what the
+version's headline backtest showed for that one symbol." A per-symbol
+reference-backtest lookup is future work, not silently pretended to already
+exist by omitting the field.
+
+**(5) A rate is `None`, never a fabricated number, at zero round trips.**
+`win_rate_pct` and `avg_return_pct` are `None` — not `0%` (reads as "every
+trade lost") and not `100%` (reads the opposite way) — when
+`num_round_trips == 0`, computed instead only when there is at least one
+completed round trip, as `Decimal` arithmetic quantized to four decimal
+places with `ROUND_HALF_UP` (the same precision and rounding
+`strategies/scoring.py::_quantize` uses, so two percentages from different
+modules round identically). `total_realized_pnl` stays `0` with zero round
+trips because it is a true sum over an empty set, not a rate — the honest
+statement is "no realized P&L yet," not a withheld sentinel.
+
+**(6) No DB writes, no migration.** `apps/api/app/deployments/monitoring.py`
+is a new module with four frozen dataclasses (`RoundTrip`,
+`DeploymentActualPerformance`, `DeploymentExpectedPerformance`,
+`DeploymentMonitoringResult`) and two functions
+(`_build_round_trips`, `build_deployment_monitoring`) — no new table, no new
+column, nothing appended to any append-only audit trail, because this phase
+observes, it does not decide or record anything. The route
+(`GET /deployments/{id}/monitoring`) sits on the existing
+`deployments_router`, gated by the same `strategy:deploy` permission and
+`_load_owned_deployment` ownership check as `.../runs` and `.../signals` —
+no new permission, because reading a deployment's own performance is no
+more privileged than reading its run history.
+
+Alternatives considered:
+- *Compute "actual" from the whole broker account's positions/trades.*
+  Rejected — see (1). A shared paper account would make one deployment's
+  monitoring page show another deployment's (or a human's) trades as its
+  own track record.
+- *A new, monitoring-specific backtest lookup that could pick the "best"
+  or "most relevant" run per symbol.* Rejected — see (4). Consistency with
+  the one existing definition of "this version's backtest" is worth more
+  than a theoretically more precise per-symbol number computed a different
+  way in a second place.
+- *Report `0%` for `win_rate_pct` at zero round trips, matching some
+  dashboards' convention of treating an empty rate as zero.* Rejected — see
+  (5); this codebase's standing "sentinel, not a guess" rule
+  (`docs/TRADING_SAFETY.md`) applies to a missing statistic exactly as it
+  does to missing market data.
+- *Blend `actual` and `expected` into one combined score or delta field.*
+  Rejected — the phase's own goal is to keep them "never blended" so a
+  reader always knows which number came from real fills and which came from
+  a backtest; a derived delta can be computed by whoever reads the response,
+  from two numbers whose provenance stays separately labeled.
+
+Files: `apps/api/app/deployments/monitoring.py` (new — `RoundTrip`,
+`_build_round_trips`, `DeploymentActualPerformance`,
+`DeploymentExpectedPerformance`, `DeploymentMonitoringResult`,
+`build_deployment_monitoring`), `apps/api/app/api/schemas_deployments.py`
+(`RoundTripResponse`, `DeploymentActualPerformanceResponse`,
+`DeploymentExpectedPerformanceResponse`, `DeploymentMonitoringResponse`),
+`apps/api/app/api/routes/deployments.py`
+(`GET /deployments/{deployment_id}/monitoring`, docstring update). Tests:
+`tests/deployments/test_monitoring.py` (new — unit tests of
+`_build_round_trips` plus integration tests of `build_deployment_monitoring`
+against real Postgres, reusing `deployment_world`/`run_deployment_cycle`
+from `tests/deployments/conftest.py` and `tests/deployments/test_runner.py`'s
+buy-then-sell pattern), `tests/api/test_deployments.py` (+1: the monitoring
+route's 200 shape plus a 403 for another user's deployment folded into the
+existing ownership test).
+
+Verification: [orchestrator fills test counts, ruff/mypy/secret_scan status, full run time]
+
+Status: Implemented and verified as above.

@@ -4,6 +4,36 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 65: strategy monitoring (2026-09-11, D083) — read-only actual vs.
+  expected performance for one `StrategyDeployment`. **Places no orders,
+  writes nothing** — a pure read joining two already-honest sources: this
+  deployment's own real fills, and its strategy version's own latest real
+  backtest.
+  **(1) `actual` is scoped to THIS deployment's own orders** — joined
+  `orders` → `strategy_deployment_runs` filtered to `deployment_id`, never
+  the whole broker account (which can hold another deployment's or a
+  human's trades).
+  **(2) Round trips use the FILL's price/time, never
+  `Order.estimated_price`** — `_build_round_trips` walks `(Order, Fill)`
+  pairs maintaining one open lot per symbol from a BUY fill, closing it on
+  the next SELL fill in that symbol; a BUY-while-open or SELL-while-flat
+  (should never happen given this runner's long/flat discipline) is
+  skipped, never merged into an existing lot.
+  **(3) The reference backtest is `_latest_succeeded_backtest`, reused
+  verbatim from `strategies/scoring.py`** (D072 precedent) — the same run
+  the Phase 59 leaderboard calls this version's headline backtest.
+  `expected.status` is `"no_reference_backtest"` (all other fields `null`)
+  or `"available"` with the run's numbers copied through. Known scope
+  limit: a deployment can trade several symbols but the reference backtest
+  covers exactly one (`expected.symbol` names it) — not glossed over.
+  **(4) `win_rate_pct`/`avg_return_pct` are `null`, never a fabricated 0%
+  or 100%, at zero round trips**; `total_realized_pnl` is `0` (a true sum,
+  not a rate).
+  New route `GET /deployments/{id}/monitoring` on the existing
+  `deployments_router`, same `strategy:deploy` permission and ownership
+  check as `.../runs`/`.../signals` — no new permission, no migration.
+  **[orchestrator fills test counts]**; `ruff`, `mypy apps`, `secret_scan`
+  clean.
 - Phase 64: broker abstraction + controlled live execution — SCAFFOLDING
   ONLY (2026-09-11, D082) — `mode` widens to `"paper" | "live"` at the
   schema and service layer, symmetrically validated (a `live` deployment
