@@ -133,6 +133,19 @@ made every reconciler cycle silently skip whenever a snapshot was in
 flight, which is a failure that would look exactly like "the reconciler
 works fine, there was just nothing to do"."""
 
+DEPLOYMENT_RUNNER_LOCK_OBJID = 1685090937
+"""Object key for the STRATEGY DEPLOYMENT RUNNER (Phase 63): the ASCII
+bytes ``b"dpry"`` read big-endian (0x64707279).
+
+The third background job, taking the SAME classid namespace and its own
+objid for the same reason the reconciler does: a deployment cycle, a
+snapshot cycle and a reconciliation cycle are unrelated work and must be
+able to run concurrently, while two deployment cycles in two workers must
+not both place the same strategy's orders. This one matters most of the
+three - two workers duplicating a snapshot is a cosmetic double row, two
+workers each running an ACTIVE deployment means two real (paper) orders
+where the strategy asked for one."""
+
 
 class SnapshotCycleLockDecision(str, Enum):  # noqa: UP042 (str mixin for log/JSON interop)
     """Why a cycle was allowed to do work, or was not. Typed and exhaustive

@@ -8336,3 +8336,182 @@ round-trips clean):
 
 Status: Implemented and verified as above.
 
+
+---
+
+**D081 — Phase 63: paper-trading execution — a validated strategy on a scheduled runner, behind a mandatory human-approval gate**
+
+Reason: the master spec's §25/§52 — a validated strategy is not only something
+to backtest and check signals on; it is something you put to work. Phase 61
+(D078) turned a strategy into a present-tense verdict for a symbol; this phase
+acts on that verdict on a timer. It is the FIRST order-placement path in the
+codebase with no HTTP request behind the specific order and no human in the
+loop for that specific order — every earlier path (`POST /brokers/{id}/trades`,
+the agent-trade endpoint, a backtest replay) had a person or a request per
+order. Built by one agent (backend: models + migration `0024` + state machine +
+runner + routes + tests) and one agent (frontend: page + proxies + components +
+tests); one migration, no collision.
+
+**(1) The mandatory human gate is a column, not a convention.**
+`strategy_deployments.status` starts every row at `pending_approval`. The
+runner's enumeration query is `WHERE status = 'active'` — a `pending_approval`
+row is invisible to it, not merely skipped. The only transition into `active`
+is the explicit `POST /deployments/{id}/approve` action, which records
+`approved_by_user_id` / `approved_at`. The state machine
+(`deployments/service.py`) is `pending_approval → active ⇆ paused`, and any
+non-terminal state → `stopped` (terminal); every transition is a
+separately-authorized route action and there is no code path that constructs an
+`active` deployment directly.
+
+**(2) Approval is split onto its OWN stricter permission.** Creating, pausing,
+resuming, stopping, listing and reading a deployment need `strategy:deploy`.
+Approving one needs `strategy:approve_deployment` — a caller holding only
+`strategy:deploy` gets a 403 on `/approve`. The two come apart deliberately: an
+organisation can let a quant author and wire up a deployment while requiring a
+second person to authorise it going live, which is exactly the "second set of
+eyes before automation trades" §25 asks for. Neither carries an ADMIN override;
+ownership is still re-derived per request (deployment → version → strategy →
+owner), unchanged from D071.
+
+**(3) `STRATEGY_RUNNER_ENABLED` defaults false, like every other background
+loop.** The snapshot scheduler, the reconciler, live trading and the emergency
+stop all fail closed the same way. This one is if anything more consequential —
+it places real (paper) orders on a timer with no per-order human — so opt-in is
+deliberate. Off, the lifespan never starts the task and no deployment is ever
+evaluated; a `pending_approval` / `active` row just sits there.
+`STRATEGY_RUNNER_INTERVAL_SECONDS` defaults 300 (strategies here evaluate on
+daily bars — a shorter interval buys nothing but load); a zero or negative
+value fails app startup.
+
+**(4) The runner is a headless backtest replay loop, reusing the sanctioned
+pieces and inventing nothing.** Per cycle, per `active` deployment, per symbol:
+read the latest bars from the persisted store (`MarketDataStore.get_latest_bars`,
+Phase 53 — never a live vendor call, exactly as Phase 61);
+`evaluate_current_signal(bars, definition)` — the SAME evaluator
+`POST .../signals` uses, so a deployment's action can never disagree with what
+the signal route would have said for that bar; if the signal is actionable
+given the current position (BUY while flat, SELL while long — the strategy is
+long/flat like the backtest executor), size it with `_desired_quantity` /
+`_warmup_bar_count` from `engine_v2` (the D072 cross-module-reuse precedent
+walk-forward and universe-scan already set) and submit it through
+`oms.persistence.submit_trade_and_record` — the one sanctioned RISK → PORTFOLIO
+→ BROKER path, unchanged; then persist a real Phase-61 `SignalEvaluation` per
+symbol linked to the run. `load_market_risk_inputs` (Phase 62, D079) composes
+in on the trade path exactly as `routes/trades.py` does it.
+
+**(5) The single risk-engine resize retry is the exact policy
+`backtesting/engine.py::_attempt_trade` applies.** If a submission is REJECTED
+solely because of position size and the risk engine reported a
+`max_quantity_allowed`, the runner retries once at that quantity — so an
+`all_in` deployment sizes into the 10%-of-equity per-trade cap rather than
+never trading. A portfolio REJECT is not retried, for the same reason
+`_attempt_trade` does not retry one. The engine itself never resizes.
+
+**(6) `require_stop_price=False` (D035): the strategy's exit rule IS its stop.**
+A deployment runs under the same `RiskLimits` a backtest of that definition
+uses. The exit rule is re-evaluated every cycle; demanding a separate stop
+price here would force fabricating one. Everything else in the limits is the
+production trade-path value.
+
+**(7) Close-of-bar execution.** The `TradeProposal.estimated_price` and the risk
+engine's `now` are both the evaluated bar's timestamp, so the market-data
+staleness check measures the trade against the bar it was actually decided on —
+the same framing the backtest uses — rather than rejecting every daily-bar
+trade as stale.
+
+**(8) The run row always resolves, never stranded (the D072 posture).** One
+transaction per deployment. The `strategy_deployment_runs` row is written and
+committed first (provisional `failed`), the work runs, the row resolves to
+`succeeded` / `failed`; a broad outer `except` rolls back and re-opens a fresh
+session to mark it `failed` with the error; one deployment's failure is
+returned, not raised, so the rest of the cycle still runs. Run statuses:
+`succeeded` / `failed` / `skipped_not_active` / `skipped_emergency_stop` /
+`skipped_market_closed` / `skipped_lock_held` — "the cycle ran and placed
+nothing because no rule fired" is never indistinguishable from "the cycle did
+not run".
+
+**(9) The global emergency stop halts every cycle**, checked before any order; a
+stopped cycle writes `skipped_emergency_stop` and places nothing.
+`submit_trade_and_record` re-checks it inside the Risk Engine — belt and
+braces. A UTC-weekend gate (`MarketHoursGate`, D042) no-ops the whole cycle
+before any deployment is enumerated. Cross-worker exclusion is the same
+Postgres advisory lock the snapshot scheduler and reconciler use, on this job's
+own third objid (`DEPLOYMENT_RUNNER_LOCK_OBJID`) — two workers each running an
+`active` deployment would mean two real paper orders where the strategy asked
+for one.
+
+**(10) An unpriceable held position FAILS the cycle, visibly.** Before
+evaluating, the runner marks every held symbol from its latest ingested bar. A
+held symbol with no bar cannot be valued and this system does not fabricate a
+price (`docs/TRADING_SAFETY.md`) — that deployment's cycle fails with an
+`error_detail` naming the symbol, so an operator notices, rather than the
+account being silently mismarked.
+
+**(11) `mode='paper'` only.** `CreateDeploymentRequest.mode` is
+`Literal["paper"]`; anything else is a 422 before a row exists. The runner
+asserts it and re-asserts it per cycle. The column exists now so Phase 64's
+`live` (behind the existing `TRADING_MODE=live` / `LIVE_TRADING_ENABLED` /
+live-credential triple gate) needs no migration, and so a reader sees the
+distinction was always intended.
+
+**(12) Migration `0024`.** `strategy_deployments` (version / broker
+`ON DELETE RESTRICT` — the exact rules a paper position was opened under, and
+the account it was opened in, must not vanish from the audit trail;
+`requested_by_user_id` / `approved_by_user_id` `SET NULL`) and
+`strategy_deployment_runs` (`deployment_id` `CASCADE`). Two existing tables gain
+a nullable `deployment_run_id` FK, both `ON DELETE SET NULL`: `orders` (an order
+a runner placed is attributable to the cycle that placed it — the `Order`
+docstring already anticipated a non-human order path) and `signal_evaluations`
+(the runner persists a real Phase-61 row per symbol per cycle; the FK is what
+separates a deployment's signal trail from an ad-hoc `POST .../signals` call,
+whose column stays NULL). Two new enum types; downgrade drops the FK columns,
+then the two tables, then the two enums. Round-trips clean.
+
+Alternatives rejected:
+
+- **Auto-unwinding open positions when a deployment is stopped.** Rejected — a
+  stopped deployment's paper positions stay in the broker account exactly as
+  they are. Closing them is a separate, deliberate act, not a side effect of
+  switching off the automation; conflating the two would make "I stopped the
+  runner" silently place sell orders.
+- **Per-order human approval on top of the deployment-level gate.** Rejected —
+  the approval gate is at the deployment: a human authorises "this validated
+  version may trade these symbols on this account on a timer", once. A per-cycle
+  prompt would make a scheduled runner pointless. The deployment-level gate plus
+  the emergency stop plus pause / stop is the control surface.
+- **A cross-user approval workflow** (requester ≠ approver enforced, a request
+  queue). Rejected for this phase — the permission split already lets an org
+  require a second role; modelling an approval-request object is scope for later
+  if it is wanted.
+- **`live` mode.** Deferred to Phase 64 — building the paper runner is not
+  enabling live automation, the same standing rule Phases 43 / 49 followed.
+- **A `SideNav` entry.** Rejected, consistent with Phases 55–62 — deployments
+  live under a strategy and are reached by URL / from the strategy page, like
+  backtests, scans and signals.
+- **Recomputing the verdict in the runner.** Rejected — it reuses
+  `evaluate_current_signal` so a deployment's action can never disagree with
+  `POST .../signals` over identical bars, the same reasoning D078 (1) gave.
+
+Scope discipline: `signals/engine.py`, `backtesting/*`, `oms/*`, `risk/*`,
+`portfolio_manager/*` untouched — the runner imports what it needs and lives in
+a new `apps/api/app/deployments/` package; `main.py` gains the lifespan wiring
+and three `include_router` lines; `core/config.py` gains four settings + one
+validator; `portfolio/cycle_lock.py` gains one objid constant. Frontend adds
+one page, eight proxy routes, four components and two test files — no new
+dependency, `SideNav` untouched.
+
+Verification (2026-09-10, isolated Postgres/Redis, freshly migrated from empty;
+`alembic downgrade -1` → `upgrade head` round-trips clean):
+
+- **1071 backend tests** (1050 → 1071, +21: 9 in `tests/deployments/test_runner.py`,
+  7 in `tests/deployments/test_service.py`, 5 in `tests/api/test_deployments.py`);
+  `ruff check apps tests migrations` clean; `mypy apps` clean, **140 source
+  files** (up from 135); `bash scripts/secret_scan.sh` clean; full run 7m11s,
+  exit 0. Migration `0024` round-trips clean.
+- **292 frontend tests across 36 files** (273 / 34 → 292 / 36; +19 across
+  `test/CreateDeploymentForm.test.tsx` and `test/DeploymentList.test.tsx`),
+  `npm run build` clean with the new routes in the manifest. No new dependency.
+  (Same slow-machine frontend flake as D077 — run with `--maxWorkers=2
+  --testTimeout=20000`.)
+
+Status: Implemented and verified as above.

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     func,
     text,
@@ -472,6 +473,16 @@ class Order(Base):
     unknown - deliberately NOT defaulted to `submitted_at`, since 'we have
     not looked yet' and 'we looked and it was still open' must stay
     distinguishable."""
+
+    deployment_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategy_deployment_runs.id", ondelete="SET NULL")
+    )
+    """Phase 63 (migration 0024). Set when a `StrategyDeployment` runner
+    cycle placed this order - the exact `strategy_deployment_runs` row, so
+    an automated order is attributable to the cycle that produced it. Null
+    for every human-submitted order and every pre-Phase-63 row (the `Order`
+    docstring already anticipated an order-creation path with no
+    authenticated human behind it)."""
 
 
 class Fill(Base):
@@ -1673,6 +1684,147 @@ class SignalEvaluation(Base):
     insufficient_data: Mapped[bool] = mapped_column(Boolean, nullable=False)
     indicator_values: Mapped[dict] = mapped_column(JSONB, nullable=False)
     explanation: Mapped[str] = mapped_column(String(1000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deployment_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategy_deployment_runs.id", ondelete="SET NULL")
+    )
+    """Phase 63 (migration 0024). Set when a `StrategyDeployment` runner
+    cycle produced this evaluation; null for an ad-hoc `POST .../signals`
+    call. This is what separates a deployed strategy's own signal trail
+    from a user poking the endpoint by hand."""
+
+
+class StrategyDeploymentStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy Enum interop)
+    """Lifecycle of a validated `StrategyVersion` put on the paper-trading
+    runner (Phase 63, migration 0024).
+
+    `PENDING_APPROVAL` is where every deployment starts and where the runner
+    ignores it. Only an explicit, separately-permissioned approval action
+    moves it to `ACTIVE` - the mandatory human gate spec §25/§52 and
+    docs/TRADING_SAFETY.md require before a strategy trades, even in paper
+    mode. There is deliberately no transition that produces `ACTIVE` without
+    a person taking it.
+
+    `ACTIVE` <-> `PAUSED` is the reversible operational switch (an operator
+    stepping a strategy out of the rotation without ending it). `STOPPED` is
+    terminal: a stopped deployment is history, and re-running the strategy
+    means creating a new deployment that goes through approval again.
+    """
+
+    PENDING_APPROVAL = "pending_approval"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    STOPPED = "stopped"
+
+
+class StrategyDeploymentRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy Enum interop)
+    """Why one runner cycle for one deployment did or did not act (Phase 63).
+
+    Exhaustive and typed for the same reason `ScheduledSnapshotStatus` and
+    `ReconciliationStatus` are: "the cycle ran and placed no orders because
+    no rule fired" must never be indistinguishable from "the cycle was
+    skipped" or "the cycle failed halfway".
+    """
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED_NOT_ACTIVE = "skipped_not_active"
+    SKIPPED_EMERGENCY_STOP = "skipped_emergency_stop"
+    SKIPPED_MARKET_CLOSED = "skipped_market_closed"
+    SKIPPED_LOCK_HELD = "skipped_lock_held"
+
+
+class StrategyDeployment(Base):
+    """A validated `StrategyVersion` running on the scheduled paper-trading
+    runner (Phase 63, migration 0024).
+
+    This is the first row in the system that authorizes an order to be
+    placed with no HTTP request behind that specific order. What makes that
+    safe is entirely in the state machine: a row is created
+    `PENDING_APPROVAL`, the runner only ever acts on `ACTIVE`, and the only
+    way to reach `ACTIVE` is a deliberate approval action by a human, whose
+    id and timestamp are recorded here. See `StrategyDeploymentStatus`.
+
+    `strategy_version_id` / `broker_id` are `ON DELETE RESTRICT`: the exact
+    rules a (paper) position was opened under, and the account it was opened
+    in, must not be able to disappear from underneath the audit trail - the
+    same reasoning every persisted result since migration 0018 uses.
+    `requested_by_user_id` / `approved_by_user_id` are `ON DELETE SET NULL`.
+
+    `mode` is `paper` for every Phase-63 row; the API rejects any other
+    value until Phase 64 wires `live` behind the existing triple gate.
+    """
+
+    __tablename__ = "strategy_deployments"
+    __table_args__ = (
+        Index("ix_strategy_deployments_status", "status"),
+        Index("ix_strategy_deployments_version", "strategy_version_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    broker_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False
+    )
+    mode: Mapped[str] = mapped_column(String(8), nullable=False, default="paper")
+    status: Mapped[StrategyDeploymentStatus] = mapped_column(
+        _pg_enum(StrategyDeploymentStatus, "strategydeploymentstatus"), nullable=False
+    )
+    symbols: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False)
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1d")
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_reason: Mapped[str | None] = mapped_column(String(500))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class StrategyDeploymentRun(Base):
+    """Append-only audit of one runner cycle for one deployment (Phase 63,
+    migration 0024).
+
+    A cycle that placed no orders because no rule fired, a cycle skipped
+    because the deployment was paused or the global emergency stop was on,
+    and a cycle that failed halfway each write a row here - a missing row
+    is never the only evidence a cycle happened. `ON DELETE CASCADE` to the
+    deployment: a run has no standalone meaning, unlike a result whose
+    inputs must be pinned.
+    """
+
+    __tablename__ = "strategy_deployment_runs"
+    __table_args__ = (
+        Index("ix_strategy_deployment_runs_deployment", "deployment_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    deployment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_deployments.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[StrategyDeploymentRunStatus] = mapped_column(
+        _pg_enum(StrategyDeploymentRunStatus, "strategydeploymentrunstatus"), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    symbols_evaluated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    signals_actionable: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orders_submitted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orders_filled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
