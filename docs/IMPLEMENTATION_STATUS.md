@@ -4,6 +4,48 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 63: paper-trading execution (2026-09-10, D081) — puts a validated
+  `StrategyVersion` on a scheduled PAPER-trading runner, behind a mandatory
+  human-approval gate. The first order-placement path with no HTTP request
+  and no human in the loop for the specific order. Built by 2 agents
+  (backend: models + migration `0024` + state machine + runner + routes;
+  frontend: page + 8 proxy routes + 4 components).
+  **(1) The gate is a column, not a convention** — a deployment is created
+  `pending_approval`; the runner's enumeration is `WHERE status = 'active'`;
+  the only way to `active` is the explicit `POST /deployments/{id}/approve`,
+  which is gated by a **separate, stricter** permission
+  `strategy:approve_deployment` (a `strategy:deploy`-only caller gets 403).
+  State machine: `pending_approval → active ⇆ paused`, any non-terminal →
+  `stopped` (terminal).
+  **(2) `STRATEGY_RUNNER_ENABLED` defaults false** — same fail-closed
+  posture as the snapshot scheduler, the reconciler, live trading and the
+  emergency stop. `mode='paper'` only (Phase 64 adds `live`).
+  **(3) The runner is a headless backtest replay loop** — reuses
+  `evaluate_current_signal` (Phase 61) so a deployment can never disagree
+  with `POST .../signals`, `_desired_quantity` / `_warmup_bar_count`
+  (engine_v2, the D072 cross-module precedent), the single risk-engine
+  resize retry `backtesting/engine.py::_attempt_trade` also does,
+  `submit_trade_and_record` (the one sanctioned path), and
+  `load_market_risk_inputs` (Phase 62). `require_stop_price=False` (D035 —
+  the exit rule IS the stop). Close-of-bar execution (`now` = the bar's ts).
+  **(4) Fail-closed, always audited** — every cycle writes an append-only
+  `strategy_deployment_runs` row that always resolves to a terminal status
+  (the D072 posture); the global emergency stop halts every cycle
+  (`skipped_emergency_stop`); a UTC-weekend gate no-ops it; a third
+  advisory-lock objid gives cross-worker exclusion; an unpriceable held
+  position FAILS the cycle visibly (no fabricated mark).
+  **(5) Migration `0024`** — `strategy_deployments` + `strategy_deployment_runs`
+  (version/broker `RESTRICT`); `orders` / `signal_evaluations` each gain a
+  nullable `deployment_run_id` `SET NULL` FK. Round-trips clean.
+  **1071 backend tests** (1050→1071, +21: 9 runner, 7 service, 5 API);
+  `ruff`, `mypy apps` (140 files, up from 135), `secret_scan` clean.
+  **292 frontend tests / 36 files** (273/34 → 292/36; +19 across
+  `CreateDeploymentForm.test.tsx` and `DeploymentList.test.tsx`),
+  `npm run build` clean. No new dependency, no `SideNav` entry (deployments
+  live under a strategy, reached by URL).
+  Not built (deliberately): auto-unwinding positions on stop, per-order
+  human approval beyond the deployment gate, a cross-user approval
+  workflow, live mode.
 - Phase 62: risk / position-sizing v2 (2026-09-10, D079) — adds the two
   market-risk constraints D029 deferred for want of a price series, now
   that Phase 53's `market_data_bars` supplies one. Built by 2 agents

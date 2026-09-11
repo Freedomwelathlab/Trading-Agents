@@ -1865,5 +1865,94 @@ append-only: re-evaluating a symbol adds a row.
 Response (200, `SignalEvaluationResponse`) — the same item shape as the
 batch above.
 
+## `POST /strategies/{strategy_id}/versions/{version_id}/deployments` — put a version on the paper-trading runner
+
+Requires `strategy:deploy` (D081 — a **new** permission, not
+`strategy:backtest` / `strategy:signal`). Creates a `StrategyDeployment`
+**`pending_approval`** — nothing is evaluated or traded until it is
+approved, and the scheduled runner is itself off unless an operator has set
+`STRATEGY_RUNNER_ENABLED`. Ownership re-derived per request.
+
+Request: `{"broker_id": "…", "symbols": ["AAPL.US", "MSFT.US"], "bar_interval": "1d", "mode": "paper"}`
+— `symbols` 1–50, normalized (trim, upper-case, de-duped); `broker_id` must
+be an existing **paper** broker (there is no broker-list endpoint).
+`bar_interval` defaults `"1d"`, `mode` defaults `"paper"`.
+
+409 (plain-string `detail`), before any row is created:
+`VERSION_NOT_VALIDATED`, `NO_SUCH_BROKER`, `NOT_A_PAPER_BROKER`,
+`TOO_MANY_SYMBOLS`. 422 for `mode` other than `"paper"` (Phase 64 adds
+`live`) or an empty symbol list.
+
+Response (201, `StrategyDeploymentResponse`): `{"id": "…",
+"strategy_version_id": "…", "broker_id": "…", "mode": "paper", "status":
+"pending_approval", "symbols": [...], "bar_interval": "1d",
+"requested_by_user_id": "…", "approved_by_user_id": null, "approved_at":
+null, "paused_reason": null, "stopped_at": null, "last_evaluated_at": null,
+"created_at": "…", "updated_at": "…"}`.
+
+## `GET /strategies/{strategy_id}/versions/{version_id}/deployments` — list a version's deployments
+
+`limit`/`offset` envelope. Response (200, `ListDeploymentsResponse`):
+`{"items": [ /* StrategyDeploymentResponse */ ], "limit": 50, "offset": 0}`,
+newest `created_at` first (`id` tiebreak).
+
+## `GET /deployments/{deployment_id}`
+
+404/403 by ownership (re-derived: deployment → version → strategy → owner).
+Response (200, `StrategyDeploymentResponse`).
+
+## `POST /deployments/{deployment_id}/approve` — the mandatory human gate
+
+Requires **`strategy:approve_deployment`** — a **separate, stricter**
+permission than `strategy:deploy`; a caller holding only `strategy:deploy`
+gets a 403 here, so an organization can require a second person.
+`pending_approval` → `active`, recording `approved_by_user_id` /
+`approved_at`. Optional body `{"note": "…"}`. 409 (`NOT_PENDING_APPROVAL: …`)
+from any other state. Response (200, `StrategyDeploymentResponse`).
+
+## `POST /deployments/{deployment_id}/pause` — active → paused
+
+Requires `strategy:deploy`. Optional body `{"reason": "…"}`. The runner then
+skips the deployment (a `skipped_not_active` run row) until it is resumed.
+409 (`NOT_ACTIVE: …`) unless `active`. Response (200,
+`StrategyDeploymentResponse`).
+
+## `POST /deployments/{deployment_id}/resume` — paused → active
+
+Requires `strategy:deploy`. No body. Does not re-run approval. 409
+(`NOT_PAUSED: …`) unless `paused`. Response (200,
+`StrategyDeploymentResponse`).
+
+## `POST /deployments/{deployment_id}/stop` — any non-terminal state → stopped
+
+Requires `strategy:deploy`. No body. Terminal — re-running the strategy
+means a new deployment through approval again. Deliberately does **not**
+close open paper positions. 409 (`ALREADY_STOPPED: …`) if already stopped.
+Response (200, `StrategyDeploymentResponse`).
+
+## `GET /deployments/{deployment_id}/runs` — the deployment's cycle history
+
+Requires `strategy:deploy`, 404/403 by ownership. `limit`/`offset` envelope.
+Response (200, `ListDeploymentRunsResponse`): `{"items": [{"id": "…",
+"deployment_id": "…", "status": "succeeded", "started_at": "…",
+"completed_at": "…", "symbols_evaluated": 2, "signals_actionable": 1,
+"orders_submitted": 1, "orders_filled": 1, "error_detail": null,
+"created_at": "…"}], "limit": 50, "offset": 0}`, newest first. `status` is
+`succeeded` / `failed` / `skipped_not_active` / `skipped_emergency_stop` /
+`skipped_market_closed` / `skipped_lock_held` — a skipped cycle is an
+honest answer, never an error.
+
+## `GET /deployments/{deployment_id}/signals` — the deployment's signal trail
+
+Requires `strategy:deploy`, 404/403 by ownership. `limit`/`offset` envelope.
+Every `SignalEvaluation` any of this deployment's runs produced, joined
+through `strategy_deployment_runs`, newest first. Response (200,
+`ListDeploymentSignalsResponse`): `{"items": [{"id": "…",
+"deployment_run_id": "…", "symbol": "AAPL.US", "as_of_bar_date":
+"2026-06-30", "latest_close": "108.000000", "signal": "buy",
+"insufficient_data": false, "explanation": "…", "created_at": "…"}],
+"limit": 50, "offset": 0}` — the Phase-61 evaluation shape minus the fields
+a deployment context makes redundant.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

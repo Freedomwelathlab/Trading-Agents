@@ -147,6 +147,35 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
   **this system** blocked the trade and it never reached a broker at all.
   Never read the two as interchangeable.
 
+- `apps/api/app/deployments/runner.py` — the strategy-deployment runner
+  (Phase 63, D081). The first path that places an order with no HTTP
+  request and no human in the loop for that specific order. What makes it
+  safe:
+  1. **A per-strategy trading approval is now enforced, as a state
+     machine.** A `strategy_deployments` row is created `pending_approval`;
+     the runner's enumeration is `WHERE status = 'active'`; the only
+     transition to `active` is an explicit `POST /deployments/{id}/approve`
+     gated by a **separate, stricter** permission
+     (`strategy:approve_deployment`, distinct from `strategy:deploy`), which
+     records who approved and when. There is no code path that produces an
+     `active` deployment without that action.
+  2. **Opt-in and paper-only.** `STRATEGY_RUNNER_ENABLED` defaults `false`
+     — the same fail-closed default as the snapshot scheduler, the
+     reconciler and live trading; off, the loop never starts. Every
+     deployment is `mode='paper'` and the runner asserts it per cycle;
+     `live` is Phase 64, behind the existing triple gate.
+  3. **Same posture as the paper trade path, not a parallel one.** Each
+     actionable signal goes through `submit_trade_and_record` — the one
+     sanctioned RISK → PORTFOLIO → BROKER path — against the normal paper
+     `RiskLimits` (`require_stop_price=False` per D035: the strategy's exit
+     rule is its stop). The **global emergency stop is checked every cycle**
+     before any order and halts it (`skipped_emergency_stop`); a UTC-weekend
+     gate no-ops it; a per-cycle append-only `strategy_deployment_runs` row
+     always resolves to a terminal status; a held position with no bar to
+     mark against **fails the cycle visibly** rather than fabricating a
+     price. It never invents a fill: a fill is written only by
+     `submit_trade_and_record` from the broker's own answer.
+
 **Standing rule, unchanged by Phases 43 and 49:** building the live path is
 not enabling it. `LIVE_TRADING_ENABLED` stays `false` in every default and
 every test. Flipping it still requires explicit user approval given in

@@ -10,6 +10,15 @@ from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
 from apps.api.app.api.routes.backtests import router as backtests_router
 from apps.api.app.api.routes.brokers import router as brokers_router
+from apps.api.app.api.routes.deployments import (
+    _approve_router as deployments_approve_router,
+)
+from apps.api.app.api.routes.deployments import (
+    deployments_router,
+)
+from apps.api.app.api.routes.deployments import (
+    router as deployments_strategy_router,
+)
 from apps.api.app.api.routes.emergency_stop import router as emergency_stop_router
 from apps.api.app.api.routes.emergency_stop import status_router as emergency_stop_status_router
 from apps.api.app.api.routes.health import router as health_router
@@ -53,6 +62,10 @@ from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
 from apps.api.app.core.request_id import RequestIDMiddleware
 from apps.api.app.db.base import get_engine, get_session_factory
+from apps.api.app.deployments.runner import (
+    StrategyDeploymentRunner,
+    build_deployment_runner_cycle_lock,
+)
 from apps.api.app.execution.live_broker import build_live_broker_adapter
 from apps.api.app.execution.reconciliation import (
     LiveOrderReconciler,
@@ -194,6 +207,27 @@ async def lifespan(app: FastAPI):
         reconciler.start()
         app.state.live_order_reconciler = reconciler
 
+    # Phase 63 (D081): the strategy-deployment runner - the third in-process
+    # loop, a sibling of the two above, on its own advisory-lock objid and
+    # its own interval. Not constructed unless STRATEGY_RUNNER_ENABLED, and
+    # even then it does nothing until a deployment exists AND has been
+    # explicitly approved by a person. It places PAPER orders only.
+    app.state.strategy_deployment_runner = None
+    if settings.strategy_runner_enabled:
+        deployment_runner = StrategyDeploymentRunner(
+            get_session_factory(),
+            settings=settings,
+            interval_seconds=settings.strategy_runner_interval_seconds,
+            cycle_lock=build_deployment_runner_cycle_lock(
+                enabled=settings.strategy_runner_cycle_lock_enabled
+            ),
+            market_hours_gate=MarketHoursGate(
+                enabled=settings.strategy_runner_market_hours_gate_enabled
+            ),
+        )
+        deployment_runner.start()
+        app.state.strategy_deployment_runner = deployment_runner
+
     logger.info(
         "trading_os_startup",
         trading_mode=settings.trading_mode.value,
@@ -275,6 +309,12 @@ async def lifespan(app: FastAPI):
     # does not matter because they share nothing but the pool.
     if app.state.live_order_reconciler is not None:
         await app.state.live_order_reconciler.stop()
+
+    # Phase 63 (D081): the deployment runner is stopped the same way and for
+    # the same reason - `stop()` cancels and awaits its task, so no cycle is
+    # still mid-way through committing a paper order when this returns.
+    if app.state.strategy_deployment_runner is not None:
+        await app.state.strategy_deployment_runner.stop()
 
     # The engine created at import time in apps/api/app/db/base.py owns a
     # live asyncpg connection pool. Process exit reclaims those sockets
@@ -376,6 +416,14 @@ app.include_router(universe_scans_router)
 # is what Phase 63's paper-trading runner will act on.
 app.include_router(signals_router)
 app.include_router(signal_evaluations_router)
+# Phase 63 (D081): strategy deployments - a validated version put on the
+# scheduled paper-trading runner behind a mandatory human-approval gate.
+# Three routers: create/list under /strategies, lifecycle + reads under
+# /deployments, and the approval action on its own STRICTER permission
+# (strategy:approve_deployment) so an org can require a second person.
+app.include_router(deployments_strategy_router)
+app.include_router(deployments_router)
+app.include_router(deployments_approve_router)
 # Phase 41 (D054): liveness (`/health`, unchanged contract) and the new
 # readiness probe (`/health/ready`) moved out of this module into their own
 # router - see apps/api/app/api/routes/health.py for why the two are

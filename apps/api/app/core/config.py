@@ -298,6 +298,41 @@ class Settings(BaseSettings):
     workers each independently resolving the same order is N calls to a real
     venue's API and N racing UPDATEs against the same row."""
 
+    strategy_runner_enabled: bool = False
+    """Phase 63 (D081): opt-in switch for the scheduled strategy-deployment
+    runner - the in-process task that re-evaluates every ACTIVE
+    `StrategyDeployment` on an interval and submits PAPER trades through the
+    normal RISK -> PORTFOLIO -> BROKER path.
+
+    Defaults FALSE, the same fail-closed posture as every other background
+    loop (the snapshot scheduler, the reconciler, live trading, the
+    emergency stop) - and this one is if anything more consequential: it
+    places real paper orders on a timer with no per-order human. Turning it
+    on still does nothing until a deployment has been created AND explicitly
+    approved by a person."""
+
+    strategy_runner_interval_seconds: int = 300
+    """Seconds between deployment-runner cycles. 5 minutes by default -
+    strategies here evaluate on daily bars, so a shorter interval buys
+    nothing but load; a much longer one delays acting on a fresh bar. A
+    zero or negative value fails app startup (see the validator below)."""
+
+    strategy_runner_cycle_lock_enabled: bool = True
+    """Phase 63: each runner cycle takes a non-blocking Postgres advisory
+    lock on its OWN key (`DEPLOYMENT_RUNNER_LOCK_OBJID`, distinct from the
+    snapshot and reconciler keys) before doing any work, so under several
+    workers one worker runs the deployments per interval rather than all of
+    them each placing the strategy's order. Defaults TRUE - and it matters
+    most of the three background jobs, because two workers each running an
+    ACTIVE deployment means two real paper orders where the strategy asked
+    for one."""
+
+    strategy_runner_market_hours_gate_enabled: bool = True
+    """Phase 63: reuse `MarketHoursGate` (D042) - on a UTC weekend the whole
+    runner cycle no-ops before any deployment is enumerated. A weekend check
+    only, not a fabricated exchange calendar; disable to run the cycle every
+    interval regardless of day."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None
@@ -489,6 +524,12 @@ class Settings(BaseSettings):
                 "LIVE_ORDER_RECONCILER_INTERVAL_SECONDS must be positive. A zero or "
                 "negative interval would busy-loop the reconciliation cycle against a "
                 "real broker's API."
+            )
+        if self.strategy_runner_interval_seconds <= 0:
+            raise ValueError(
+                "STRATEGY_RUNNER_INTERVAL_SECONDS must be positive. A zero or negative "
+                "interval would busy-loop the deployment runner against the database and "
+                "the paper broker (Phase 63, D081)."
             )
         return self
 

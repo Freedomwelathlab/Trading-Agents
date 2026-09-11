@@ -114,3 +114,43 @@ class Permission(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
     and every actual order still goes through the deterministic Risk Engine
     and the trade-submission permissions.
     """
+    STRATEGY_DEPLOY = "strategy:deploy"
+    """Phase 63. Gates creating, listing, reading, pausing, resuming and
+    stopping a `StrategyDeployment` - a validated version put on the
+    scheduled paper-trading runner.
+
+    This is the first permission that can lead to an order being placed with
+    no HTTP request behind that specific order, so it is deliberately its
+    own capability, separate from every strategy permission above AND from
+    `trade:submit:paper`. Holding `strategy:signal` lets a caller ask what a
+    strategy says to do; holding this lets them arrange for the system to
+    ACT on that answer on a timer. Those are different levels of trust and a
+    role should be able to hold the first without the second.
+
+    It does NOT include approval. Moving a deployment from
+    `PENDING_APPROVAL` to `ACTIVE` - the point at which the runner will
+    start trading it - requires `STRATEGY_APPROVE_DEPLOYMENT` below, a
+    deliberately separate permission so an organization can require that the
+    person who approves a strategy for trading is not the same person who
+    deployed it. The code does not force approver != requester (that is a
+    policy choice a deployment-review workflow would layer on), but the
+    permission split is what makes that policy expressible.
+
+    Ownership is checked per request on top of this permission
+    (`_load_owned_strategy` / `_load_version` over the deployment's version),
+    the same two-part shape as every strategy permission since D071. No
+    ADMIN override.
+    """
+    STRATEGY_APPROVE_DEPLOYMENT = "strategy:approve_deployment"
+    """Phase 63. Gates ONLY the approval action that moves a
+    `StrategyDeployment` from `PENDING_APPROVAL` to `ACTIVE` - the mandatory
+    human gate spec §25/§52 and docs/TRADING_SAFETY.md require before a
+    strategy trades, even in paper mode.
+
+    Separate from `STRATEGY_DEPLOY` on purpose: approval is the single most
+    consequential action in the deployment lifecycle (it is what lets the
+    runner place orders), and separating it lets a role deploy-and-propose
+    without being able to green-light its own proposal. Ownership of the
+    underlying strategy is still checked. No ADMIN override - an operational
+    admin is not automatically a strategy-trading approver.
+    """
