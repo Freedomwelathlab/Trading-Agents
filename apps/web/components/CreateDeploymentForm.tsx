@@ -60,7 +60,16 @@ export type DeploymentRunStatus =
   | "skipped_not_active"
   | "skipped_emergency_stop"
   | "skipped_market_closed"
-  | "skipped_lock_held";
+  | "skipped_lock_held"
+  // A `live` cycle on a server not armed for unattended live execution —
+  // every default deployment (D082/D087). Present since Phase 64 on the
+  // backend; it was missing from this union until Phase 69.
+  | "skipped_live_trading_disabled"
+  // An ARMED live cycle that stopped itself on a capital circuit breaker
+  // and paused the deployment (Phase 69, D087). The opposite of the status
+  // above: that one means the robot never ran, this one means it was
+  // running on real money and halted.
+  | "skipped_live_risk_halt";
 
 export type StrategyDeploymentRunResponse = {
   id: string;

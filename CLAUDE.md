@@ -20,6 +20,7 @@ docs/MODEL_ROUTING.md        — model tier policy (forward-looking)
 docs/CONTEXT_POLICY.md       — what context to send where
 docs/AGENT_POLICY.md         — agent design rules (forward-looking)
 docs/TRADING_SAFETY.md       — NON-NEGOTIABLE safety rules, read this one fully
+docs/LIVE_AUTO_TRADING.md    — operator guide to arming unattended live execution (D087)
 docs/IMPLEMENTATION_STATUS.md — what's done, in progress, blocked, planned
 docs/DECISIONS.md            — why past decisions were made; don't re-litigate
 docs/API.md                  — actual implemented endpoints only
@@ -38,7 +39,11 @@ this applies to phase reports too.
 TRADING SAFETY (full detail in docs/TRADING_SAFETY.md):
 LLMs must never bypass the deterministic Risk Engine. LLMs must never
 directly execute unrestricted live trades. Never enable live trading without
-explicit user approval given in that moment. Never expose secrets — check
+explicit user approval given in that moment — building the path is not
+enabling it, and Phase 69 (D087) built an unattended live path while leaving
+`LIVE_TRADING_ENABLED` and `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` both
+`false` everywhere in this repo. Do not flip either, or write real live
+credentials, on the user's behalf; that is theirs to do in their own `.env`. Never expose secrets — check
 docs/TRADING_SAFETY.md's redaction note before logging anything
 credential-adjacent. Never fabricate market data, orders, fills, portfolio
 values, or broker responses — use NOT_CONFIGURED / DATA_UNAVAILABLE

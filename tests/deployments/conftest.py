@@ -97,9 +97,11 @@ async def deployment_world(
 
     `with_live_broker=True` (Phase 64, D082) additionally creates a LIVE
     broker and returns its id as `live_broker_id`, for the live-mode
-    deployment tests. It carries no `BrokerAccount` - a live deployment's
-    runner cycle never reaches the point of needing one (it resolves to
-    `SKIPPED_LIVE_TRADING_DISABLED` first)."""
+    deployment tests. It carries no `BrokerAccount`: an UNARMED live cycle
+    never needs one (it resolves to `SKIPPED_LIVE_TRADING_DISABLED` first),
+    and an ARMED one (Phase 69, D087) gets its book from the live broker
+    adapter rather than from a local `BrokerAccount` row - which is exactly
+    why `runner.py` never calls `save_paper_broker` for a live deployment."""
     prefix = f"DEP{uuid.uuid4().hex[:6].upper()}"
     broker_id = uuid.uuid4()
     live_broker_id = uuid.uuid4() if with_live_broker else None
@@ -157,20 +159,29 @@ async def deployment_world(
         await session.execute(
             delete(SignalEvaluation).where(SignalEvaluation.strategy_version_id == version_id)
         )
+        # Both brokers' orders, not just the paper one: since Phase 69
+        # (D087) an ARMED live deployment really does place orders against
+        # the live broker, so a teardown that only cleaned up the paper
+        # broker's rows would hit orders_broker_id_fkey on the way out.
+        broker_ids = [b for b in (broker_id, live_broker_id) if b is not None]
         await session.execute(
             delete(Fill).where(
-                Fill.order_id.in_(select(Order.id).where(Order.broker_id == broker_id))
+                Fill.order_id.in_(select(Order.id).where(Order.broker_id.in_(broker_ids)))
             )
         )
-        await session.execute(delete(Order).where(Order.broker_id == broker_id))
+        await session.execute(delete(Order).where(Order.broker_id.in_(broker_ids)))
         await session.execute(
             delete(StrategyDeploymentRun).where(StrategyDeploymentRun.id.in_(run_ids))
         )
         await session.execute(
             delete(StrategyDeployment).where(StrategyDeployment.id.in_(dep_ids))
         )
-        await session.execute(delete(BrokerPosition).where(BrokerPosition.broker_id == broker_id))
-        await session.execute(delete(BrokerAccount).where(BrokerAccount.broker_id == broker_id))
+        await session.execute(
+            delete(BrokerPosition).where(BrokerPosition.broker_id.in_(broker_ids))
+        )
+        await session.execute(
+            delete(BrokerAccount).where(BrokerAccount.broker_id.in_(broker_ids))
+        )
         await session.execute(
             delete(SignalEvaluation).where(SignalEvaluation.symbol.in_(list(mapping.values())))
         )

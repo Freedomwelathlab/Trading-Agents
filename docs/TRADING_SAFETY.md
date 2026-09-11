@@ -159,22 +159,33 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
      (`strategy:approve_deployment`, distinct from `strategy:deploy`), which
      records who approved and when. There is no code path that produces an
      `active` deployment without that action.
-  2. **Opt-in, and `live` places nothing.** `STRATEGY_RUNNER_ENABLED`
-     defaults `false` — the same fail-closed default as the snapshot
-     scheduler, the reconciler and live trading; off, the loop never starts.
-     A `mode='paper'` deployment behaves as described below. A
-     `mode='live'` deployment (Phase 64, D082) can be created and approved
-     (behind a further, separate `strategy:approve_live_deployment`
-     permission), but every cycle for it resolves straight to
-     `skipped_live_trading_disabled` **before touching market data, the
-     broker, or the risk engine, and without consulting `TRADING_MODE` /
-     `LIVE_TRADING_ENABLED` at all** — proven by test with those settings
-     nominally wide open. An unattended scheduler has no per-trade human to
-     supply the in-the-moment confirmation this document requires for every
-     live trade, so this phase does not attempt to fake one; a real
-     unattended-execution path is a future phase the user must separately
-     design and approve. `live_broker.py` / `execution/broker.py` are
-     unchanged - the runner never calls them.
+  2. **Opt-in, and `live` places nothing unless deliberately armed.**
+     `STRATEGY_RUNNER_ENABLED` defaults `false` — the same fail-closed
+     default as the snapshot scheduler, the reconciler and live trading;
+     off, the loop never starts. A `mode='paper'` deployment behaves as
+     described below.
+
+     A `mode='live'` deployment (Phase 64, D082) can be created and approved
+     behind a further, separate `strategy:approve_live_deployment`
+     permission. Phase 64 then refused every live cycle unconditionally.
+     **Phase 69 (D087) replaced that unconditional refusal with an explicit
+     switch** — see the dedicated section below. The refusal branch itself is
+     unchanged and is still what every default checkout gets.
+
+     *Why the rule at the top of this document was not weakened.* That rule
+     requires explicit user approval for live trading, given in the moment.
+     Phase 64 read it as "a scheduler can never satisfy this" and stopped
+     there. What the rule actually forbids is live trading that **nobody
+     deliberately authorized** — and a person setting
+     `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED=true`, alongside two other live
+     keys and two capital bounds they had to choose numbers for, in their own
+     environment, has authorized it about as explicitly as a configuration
+     can express. What that person cannot do is authorize it *per order*, so
+     D087 replaces the per-order human check with bounds that do not need one:
+     a capital ceiling, a per-trade cap, an open-position ceiling, and two
+     loss circuit breakers that stop the robot and hand control back to a
+     human. The approval is still explicit; it is given once, over a bounded
+     mandate, instead of once per trade.
   3. **Same posture as the paper trade path, not a parallel one.** Each
      actionable signal goes through `submit_trade_and_record` — the one
      sanctioned RISK → PORTFOLIO → BROKER path — against the normal paper
@@ -202,11 +213,102 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
      This feature never places or sizes a trade differently — it can only
      ever pause a deployment that is already running — so it does not touch
      this document's live-trading gate at all.
+  5. **Phase 69 (D087): unattended live execution, armed by one dedicated
+     switch and bounded by capital controls.** Operator-facing setup guide:
+     `docs/LIVE_AUTO_TRADING.md`. The full gate, in the order
+     `apps/api/app/deployments/live_guard.py::evaluate_live_arming` checks
+     it — ALL of these, or the cycle resolves to
+     `skipped_live_trading_disabled` having read zero rows and contacted
+     nothing:
 
-**Standing rule, unchanged by Phases 43 and 49:** building the live path is
-not enabling it. `LIVE_TRADING_ENABLED` stays `false` in every default and
-every test. Flipping it still requires explicit user approval given in
-that moment, per this document's confirmation section above.
+     1. `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED=true` — default `false`.
+     2. `TRADING_MODE=live` **and** `LIVE_TRADING_ENABLED=true`.
+     3. `STRATEGY_LIVE_TOTAL_CAPITAL` and `STRATEGY_LIVE_CAPITAL_PER_TRADE`
+        both set and positive, with per-trade ≤ total. There is deliberately
+        no "unlimited" value for either.
+     4. The `LONGPORT_LIVE_*` credential trio present, building a real
+        `LiveBrokerAdapter`. A missing one is never substituted with a paper
+        broker.
+     5. The deployment itself `active`, which required
+        `strategy:approve_live_deployment` (D082).
+
+     `Settings._enforce_live_auto_execution_is_fully_configured` re-checks
+     (1)–(3) at **startup**, so a half-configured robot fails to boot rather
+     than discovering its missing bounds at the moment of its first real
+     order.
+
+     **Why `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` is a third key and not a
+     reuse of the other two.** Those two arm the *interactive* live path
+     (D058), where a human types `confirm: true` per order. Someone enabling
+     them to place one live trade by hand must not thereby, silently, also
+     start an unsupervised robot. A dedicated test
+     (`test_a_live_deployment_is_still_skipped_with_interactive_live_trading_on`)
+     holds that line: both D058 keys on, robot switch off, still skipped,
+     still zero orders.
+
+     **Capital controls on an armed cycle** (no paper equivalent — a paper
+     deployment evaluates none of these). **All of them are scoped PER
+     DEPLOYMENT, not per account**: they are computed from one deployment's
+     own fills, because `Order.deployment_run_id` is the only clean
+     attribution this system has, and nothing traces a position a human
+     opened by hand or another deployment owns. N active live deployments
+     can therefore commit up to N × `STRATEGY_LIVE_TOTAL_CAPITAL`. An
+     account-wide ceiling is future work and is not silently implied by
+     these settings — see `docs/LIVE_AUTO_TRADING.md`.
+     - `STRATEGY_LIVE_TOTAL_CAPITAL` caps total deployed cost basis,
+       recomputed every cycle from this deployment's own real fills, never
+       from a remembered running total and never from the whole brokerage
+       account.
+     - `STRATEGY_LIVE_CAPITAL_PER_TRADE` caps one entry. Applied as a **cap
+       on** the strategy's own `position_sizing`, never as a replacement —
+       so raising it can never *increase* a conservative strategy's size.
+     - `STRATEGY_LIVE_MAX_OPEN_POSITIONS` (default 5) refuses new entries
+       when the book is full; exits stay allowed, so positions are never
+       trapped open.
+     - `STRATEGY_LIVE_MAX_DAILY_LOSS_PCT` (default 3) and
+       `STRATEGY_LIVE_MAX_TOTAL_LOSS_PCT` (default 10) are circuit breakers.
+       A breach writes `skipped_live_risk_halt` and **pauses** the deployment
+       via the existing `pause_deployment()`.
+     - Live cycles use D058's tighter `live_risk_*` money limits (5%/20%
+       against paper's 10%/50%).
+
+     **A halt never liquidates.** Auto-selling into the event that tripped
+     the breaker is how a bad hour becomes a realized loss at the worst
+     available price. The positions stay, the robot stops opening new ones,
+     and re-arming is a deliberate human action (resume the deployment).
+     Asserted by test.
+
+     **An unpriceable position halts the cycle but does not pause the
+     deployment.** If a held symbol has no ingested bar, the breakers cannot
+     be evaluated honestly, so the robot refuses to trade rather than marking
+     the position at cost or assuming no loss. That is an ingestion gap, not
+     a loss event, and pausing on it would disguise one as the other.
+
+     **The daily breaker is deliberately conservative.** It sums realized
+     P&L from round trips closed today with *all* current unrealized P&L, so
+     a multi-day open loss counts against it each day it persists. A strict
+     day-over-day measure would need a start-of-day equity snapshot this
+     system does not persist for live deployments. Given that choice, a
+     control whose job is stopping losses should fire early and say so,
+     rather than imply a precision it does not have.
+
+**Standing rule, unchanged by Phases 43, 49 and 69:** building the live path
+is not enabling it. `LIVE_TRADING_ENABLED` and, since Phase 69,
+`STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` both stay `false` in every default and
+every test. Phase 69 built a real unattended live execution path; it did not
+turn it on, and nothing in this repository turns it on. Arming it is an act
+the operator performs in their own environment, with their own credentials
+and their own capital numbers, per this document's confirmation section
+above.
+
+**One thing this document cannot give you.** Every control described above
+bounds how much the system can lose and how fast it can act. None of them
+makes a strategy profitable, and none of them is a view about whether
+running a particular strategy on real money is a good idea. A robot that is
+correctly bounded and reliably wrong will lose money steadily, within its
+limits, exactly as designed. The capital numbers an operator puts in
+`STRATEGY_LIVE_TOTAL_CAPITAL` should be money they can afford to lose
+entirely.
 
 ## Permission matrix
 

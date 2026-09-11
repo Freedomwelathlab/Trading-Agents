@@ -4,15 +4,56 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
-**Phases 53-68 (D070-D086), the Strategy Lab initiative, are now complete.**
-`LIVE_TRADING_ENABLED` stays `false` on every default and every test, and
-real, unattended live order placement remains structurally impossible
-(the deployment runner refuses every `live`-mode cycle unconditionally,
-before consulting `TRADING_MODE` or `LIVE_TRADING_ENABLED` at all — D082)
-pending a future, separately-approved phase that deliberately designs and
-the user explicitly authorizes an actual unattended-execution path. Nothing
-below claims the platform is "production ready" or "fully secure" beyond
-what each phase actually verified.
+**Phases 53-68 (D070-D086) completed the Strategy Lab initiative. Phase 69
+(D087) then built the unattended live execution path those phases had
+deliberately left out.**
+
+`LIVE_TRADING_ENABLED` and `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` both stay
+`false` on every default and every test in this repository. Phase 69 built
+the path; it did not turn it on, and nothing here turns it on — arming is an
+act the operator performs in their own environment, with their own
+credentials and their own capital numbers. On any default checkout a
+`live`-mode deployment still resolves every cycle to
+`skipped_live_trading_disabled` having read zero rows and contacted no
+broker, exactly as under D082.
+
+Nothing below claims the platform is "production ready" or "fully secure"
+beyond what each phase actually verified, and nothing below is a claim that
+any strategy makes money.
+
+- Phase 69: unattended live execution (2026-09-11, D087) — **supersedes the
+  operative half of D082**. A `mode='live'` deployment's scheduled runner can
+  now place real orders with real money, gated behind a THIRD dedicated
+  switch (`STRATEGY_LIVE_AUTO_EXECUTION_ENABLED`, default `false`) that is
+  deliberately separate from D058's `TRADING_MODE=live` /
+  `LIVE_TRADING_ENABLED` pair — so enabling the interactive live path to
+  place one confirmed order by hand does NOT also start an unsupervised
+  robot. D082's own test survives, rewritten, asserting exactly that. New
+  `deployments/live_guard.py` answers two questions in a fixed order: is the
+  robot armed (pure configuration, zero I/O, the cheap gate that protects
+  every default checkout), and do this deployment's real positions still fit
+  the operator's capital bounds. Bounds: `STRATEGY_LIVE_TOTAL_CAPITAL` and
+  `STRATEGY_LIVE_CAPITAL_PER_TRADE` (no defaults, no "unlimited" value, and
+  the app refuses to boot armed-without-them), an open-position ceiling, and
+  daily/total loss circuit breakers that write the new
+  `skipped_live_risk_halt` status and PAUSE the deployment through the
+  existing `pause_deployment()` — **never liquidating**, because auto-selling
+  into the event that tripped the breaker is how a bad hour becomes a
+  realized loss. The per-trade number is a CAP on the strategy's own sizing,
+  not an override, so raising it can never increase a conservative strategy's
+  position. Every figure is recomputed each cycle from this deployment's own
+  real fills, never a remembered total and never the whole brokerage account.
+  Live cycles use D058's tighter `live_risk_*` limits. Migration `0027` adds
+  the one new enum label. **A near-miss caught by an existing paper test:**
+  the first draft swapped the runner's risk-limit builder wholesale, which
+  would have re-enabled `require_stop_price` and made the Risk Engine reject
+  every automated entry, paper and live alike — see D087's closing note.
+  Verified 2026-09-11 on a fresh isolated Postgres/Redis at migration head
+  `0027`: **1215 backend tests** (1178 → 1215, +37), **312 frontend tests /
+  39 files** (311 → 312), `npm run build` clean, ruff clean, mypy clean
+  across **144 source files** (143 → 144), secret scan clean, full backend
+  run 9m11s exit 0. Both live switches `false` throughout; no live
+  credential handled and no live order placed at any point.
 
 - Phase 68: final hardening (2026-09-11, D086) — pure verification, no new
   API surface, no schema change, no user-facing capability; the last phase

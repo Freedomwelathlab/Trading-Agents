@@ -110,6 +110,100 @@ class Settings(BaseSettings):
     flag, the emergency stop, and the Portfolio Manager have all been
     satisfied."""
 
+    strategy_live_auto_execution_enabled: bool = False
+    """Phase 69 (docs/DECISIONS.md D087). THE key that arms unattended live
+    execution: a `mode='live'` deployment's scheduled runner places real
+    orders with real money, with no per-trade human confirmation.
+
+    Deliberately a THIRD key, separate from `trading_mode=live` and
+    `live_trading_enabled`, and this separation is the whole point. Those
+    two together arm the *interactive* live path (D058), where a human
+    supplies `confirm: true` per order. A person who enables them to place
+    one confirmed live trade by hand must not thereby, silently, also start
+    an unsupervised robot. Arming the robot is its own decision, taken on
+    its own switch.
+
+    This replaces Phase 64's (D082) unconditional refusal, which existed
+    because no such deliberate switch had yet been designed. D082's
+    reasoning was never "live automation is impossible" - it was "there is
+    no way to express that intent unambiguously, so refuse." This setting
+    is that expression. The refusal branch survives verbatim for every
+    configuration in which this is not explicitly, affirmatively on.
+
+    Default false, and it is fail-closed twice over: `_validate()` refuses
+    to start the app at all if this is true while any of the capital
+    controls below is unset, or while the two D058 keys are not also on."""
+
+    strategy_live_total_capital: Decimal | None = None
+    """Phase 69 (D087). The capital the unattended live runner may have
+    deployed, in `live_account_currency`. Not a starting balance and not a
+    suggestion: the runner refuses to open a new position that would carry
+    deployed cost basis past this number, recomputed from real fills every
+    cycle, never from a remembered figure.
+
+    **SCOPE: PER LIVE DEPLOYMENT, not per account.** This bound - and both
+    loss breakers below - are evaluated against one deployment's own
+    positions and its own P&L, because that is the only book this system
+    can attribute cleanly: `Order.deployment_run_id` traces an order to the
+    deployment that placed it, and nothing traces a position a human opened
+    by hand or another deployment owns. So N concurrently ACTIVE live
+    deployments can commit up to N times this number. Running one live
+    deployment is the configuration this bound describes exactly; running
+    several means doing that multiplication yourself. An account-wide
+    ceiling is real future work, not something this setting quietly
+    already does.
+
+    Deliberately NOT derived from the live account's actual balance. An
+    account may hold capital earmarked for something else entirely; this
+    setting is how an operator says how much of it the robot is allowed to
+    touch. `None` (the default) means the robot is unconfigured and will
+    not run - there is no "unlimited" value, by design."""
+
+    strategy_live_capital_per_trade: Decimal | None = None
+    """Phase 69 (D087). The most cost basis one unattended live entry may
+    commit, in `live_account_currency`.
+
+    Applied as a CAP on the strategy's own `position_sizing`, not as a
+    replacement for it: the runner sizes the position the strategy asked
+    for, then takes the smaller of that and this. A strategy that wants
+    less than this gets what it wants; a strategy that wants more is
+    trimmed. Overriding outright would let a change to this number silently
+    *increase* a conservative strategy's size, which is the wrong direction
+    for a control whose job is to bound exposure."""
+
+    strategy_live_max_open_positions: int = 5
+    """Phase 69 (D087). Hard ceiling on concurrent open positions held by
+    ONE live deployment (see the scope note on
+    `strategy_live_total_capital`). A breach REJECTS a new entry; it never
+    closes an existing one, and exits stay allowed so positions are never
+    trapped open (same posture as `portfolio_max_open_positions`)."""
+
+    strategy_live_max_daily_loss_pct: Decimal = Decimal("3")
+    """Phase 69 (D087). Circuit breaker: percentage points of
+    `strategy_live_total_capital` one live deployment may lose in one UTC
+    day (scope note on `strategy_live_total_capital`) before the runner
+    halts and PAUSES that deployment.
+
+    A pause, never a liquidation. Auto-liquidating into whatever is
+    happening on a day this breaker fires is how a bad hour becomes a
+    realized loss - the positions stay, the robot stops opening new ones,
+    and a human decides what to do. Re-arming is a human action (resume the
+    deployment), which is the point of a breaker."""
+
+    strategy_live_max_total_loss_pct: Decimal = Decimal("10")
+    """Phase 69 (D087). The slower sibling of the daily breaker: cumulative
+    net loss, as a percentage of `strategy_live_total_capital`, at which the
+    runner halts and pauses that deployment. Same pause-never-liquidate
+    posture, same human re-arm, same per-deployment scope.
+
+    Deliberately a TOTAL-LOSS limit, not a drawdown-from-peak limit, and
+    named for what it measures. A true drawdown breaker needs a stored
+    high-water mark of equity over time; this system persists no such
+    series for live deployments, and computing a peak from whatever history
+    happens to be queryable would produce a number that drifts as old rows
+    age out - a breaker whose threshold silently moves is worse than one
+    that measures something simpler and says so."""
+
     live_account_currency: str = "USD"
     """Which currency's cash balance on the live Longbridge account is
     treated as this account's cash. A live Longbridge account can hold
@@ -530,6 +624,72 @@ class Settings(BaseSettings):
                 "TRADING_MODE=live requires LIVE_TRADING_ENABLED=true. "
                 "Refusing to start in an inconsistent live-but-disabled state."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_live_auto_execution_is_fully_configured(self) -> "Settings":
+        """Phase 69 (D087). Fail closed at STARTUP, not at the first cycle.
+
+        An unattended robot that boots with half its capital controls unset
+        and discovers the gap only when it is about to place its first real
+        order is exactly the failure mode docs/TRADING_SAFETY.md's
+        fail-closed rule exists to prevent. If the robot is armed, every
+        bound it operates under must already be a real number, and the two
+        D058 keys must already be on - arming automation on top of a live
+        path that is itself disabled is incoherent.
+
+        Nothing here authorizes anything. It only refuses to start in a
+        configuration whose meaning is ambiguous.
+        """
+        if not self.strategy_live_auto_execution_enabled:
+            return self
+
+        if self.trading_mode is not TradingMode.LIVE or not self.live_trading_enabled:
+            raise ValueError(
+                "STRATEGY_LIVE_AUTO_EXECUTION_ENABLED=true requires TRADING_MODE=live "
+                "and LIVE_TRADING_ENABLED=true. Refusing to arm unattended live "
+                "execution on top of a live path that is not itself enabled."
+            )
+
+        missing = [
+            name
+            for name, value in (
+                ("STRATEGY_LIVE_TOTAL_CAPITAL", self.strategy_live_total_capital),
+                ("STRATEGY_LIVE_CAPITAL_PER_TRADE", self.strategy_live_capital_per_trade),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                f"STRATEGY_LIVE_AUTO_EXECUTION_ENABLED=true requires {' and '.join(missing)} "
+                "to be set. Refusing to run an unattended live robot with no capital bound; "
+                "there is deliberately no 'unlimited' default."
+            )
+
+        total = self.strategy_live_total_capital
+        per_trade = self.strategy_live_capital_per_trade
+        assert total is not None and per_trade is not None  # nosec - checked above
+        if total <= 0 or per_trade <= 0:
+            raise ValueError(
+                "STRATEGY_LIVE_TOTAL_CAPITAL and STRATEGY_LIVE_CAPITAL_PER_TRADE must "
+                "both be positive."
+            )
+        if per_trade > total:
+            raise ValueError(
+                f"STRATEGY_LIVE_CAPITAL_PER_TRADE ({per_trade}) exceeds "
+                f"STRATEGY_LIVE_TOTAL_CAPITAL ({total}). One trade cannot be allowed to "
+                "commit more than the robot's entire capital allowance."
+            )
+        if self.strategy_live_max_open_positions <= 0:
+            raise ValueError("STRATEGY_LIVE_MAX_OPEN_POSITIONS must be positive.")
+        if not (0 < self.strategy_live_max_daily_loss_pct <= 100):
+            raise ValueError(
+                "STRATEGY_LIVE_MAX_DAILY_LOSS_PCT must be in (0, 100]. A breaker set to "
+                "zero or a negative value would halt immediately; above 100 it could "
+                "never fire."
+            )
+        if not (0 < self.strategy_live_max_total_loss_pct <= 100):
+            raise ValueError("STRATEGY_LIVE_MAX_TOTAL_LOSS_PCT must be in (0, 100].")
         return self
 
     @model_validator(mode="after")

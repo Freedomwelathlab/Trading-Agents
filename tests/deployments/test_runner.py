@@ -334,13 +334,22 @@ async def test_a_utc_weekend_no_ops_the_whole_cycle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_live_deployment_is_always_skipped_even_with_live_trading_nominally_on() -> None:
-    """Phase 64, D082: the runner's refusal to place a live order is
-    unconditional - it does not consult TRADING_MODE / LIVE_TRADING_ENABLED
-    at all. Proven here by handing it settings where the triple gate would
-    otherwise be wide open, and asserting nothing changes: still skipped,
-    still zero orders, still zero broker/market-data access for this
-    deployment."""
+async def test_a_live_deployment_is_still_skipped_with_interactive_live_trading_on() -> None:
+    """Phase 69, D087 - the load-bearing separation this phase rests on.
+
+    Enabling the INTERACTIVE live path (TRADING_MODE=live +
+    LIVE_TRADING_ENABLED=true, the two keys a human flips to place one
+    confirmed live order by hand under D058) must NOT also arm the
+    unattended robot. Only STRATEGY_LIVE_AUTO_EXECUTION_ENABLED does that,
+    and it is false here (its default).
+
+    Originally written for Phase 64 (D082), where the refusal was
+    unconditional. D087 made it conditional on a switch this test
+    deliberately leaves off, so the assertions below are unchanged and the
+    guarantee they encode is the one that matters most: a person enabling
+    live trading for their own manual use does not thereby start an
+    unsupervised robot. Still skipped, still zero orders, still zero
+    broker and market-data access for this deployment."""
     live_settings = _SETTINGS.model_copy(
         update={"trading_mode": TradingMode.LIVE, "live_trading_enabled": True}
     )
@@ -366,7 +375,9 @@ async def test_a_live_deployment_is_always_skipped_even_with_live_trading_nomina
             )
         ).scalar_one()
         assert run.status is StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
-        assert run.error_detail and "per-trade human" in run.error_detail
+        assert run.error_detail and "STRATEGY_LIVE_AUTO_EXECUTION_ENABLED is false" in (
+            run.error_detail
+        )
 
         signals = (
             await session.execute(

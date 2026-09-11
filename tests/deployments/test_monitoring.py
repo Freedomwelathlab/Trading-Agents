@@ -118,10 +118,14 @@ def test_an_unclosed_buy_leaves_an_open_position_and_zero_round_trips() -> None:
     buy = _order(symbol="CCC", side=Side.BUY)
     pairs = [(buy, _fill(buy, quantity=Decimal(7), price=Decimal(50), at=NOW))]
 
-    round_trips, open_positions = _build_round_trips(pairs)
+    round_trips, open_lots = _build_round_trips(pairs)
 
     assert round_trips == []
-    assert open_positions == {"CCC": Decimal(7)}
+    assert set(open_lots) == {"CCC"}
+    # Since D087 the lot carries its real entry fill, not just a quantity.
+    assert open_lots["CCC"].quantity == Decimal(7)
+    assert open_lots["CCC"].entry_price == Decimal(50)
+    assert open_lots["CCC"].cost_basis == Decimal(350)
 
 
 def test_two_interleaved_symbols_do_not_cross_contaminate_lots() -> None:
@@ -155,11 +159,18 @@ def test_a_buy_while_already_open_is_skipped_not_merged() -> None:
         (buy2, _fill(buy2, quantity=Decimal(5), price=Decimal(200), at=NOW.replace(day=2))),
     ]
 
-    round_trips, open_positions = _build_round_trips(pairs)
+    round_trips, open_lots = _build_round_trips(pairs)
 
     assert round_trips == []
-    # The original lot survives untouched - never averaged with the second buy.
-    assert open_positions == {"AAA": Decimal(10)}
+    # The original lot survives untouched - never averaged with the second
+    # buy. Since D087 this is provable on the PRICE as well as the quantity:
+    # an averaged lot would read 15 @ 133.33, and the cost basis a live
+    # capital ceiling is measured against would be wrong in the direction
+    # that lets the robot commit more than it should.
+    assert set(open_lots) == {"AAA"}
+    assert open_lots["AAA"].quantity == Decimal(10)
+    assert open_lots["AAA"].entry_price == Decimal(100)
+    assert open_lots["AAA"].entered_at == NOW
 
 
 def test_a_sell_with_no_open_lot_is_skipped() -> None:

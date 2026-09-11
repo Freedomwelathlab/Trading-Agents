@@ -34,15 +34,28 @@ WHAT MAKES IT SAFE
   and a stopped cycle writes `SKIPPED_EMERGENCY_STOP` and places nothing.
   `submit_trade_and_record` also re-checks it inside the Risk Engine, so
   this is belt and braces.
-- **`mode='live'` never places an order.** A live deployment is enumerated
-  by the cycle like any other ACTIVE one, but is resolved straight to
-  `SKIPPED_LIVE_TRADING_DISABLED` before touching market data, the broker,
-  or the risk engine (Phase 64, D082) - unconditionally, regardless of
-  `TRADING_MODE` / `LIVE_TRADING_ENABLED`. An unattended scheduler has no
-  per-trade human to supply the in-the-moment confirmation
-  docs/TRADING_SAFETY.md requires for every live trade; a real live
-  execution path is a future, separately-approved phase, not a config flag
-  here.
+- **`mode='live'` places a real order only when explicitly armed** (Phase
+  69, D087). A live deployment is enumerated like any other ACTIVE one and
+  then meets `live_guard.evaluate_live_arming` BEFORE it touches market
+  data, the broker, or the risk engine. Unless
+  `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` is true AND `TRADING_MODE=live`
+  AND `LIVE_TRADING_ENABLED=true` AND both capital bounds are set AND the
+  live credential trio builds a real broker, the cycle resolves to
+  `SKIPPED_LIVE_TRADING_DISABLED` having read zero rows and contacted
+  nothing - which is every default checkout. This supersedes Phase 64's
+  (D082) unconditional refusal, whose reasoning was never "live automation
+  is impossible" but "no switch exists by which an operator can state that
+  intent unambiguously, so refuse." D087 built the switch; the refusal
+  branch is otherwise unchanged.
+- **An armed live cycle runs under capital controls with no paper
+  equivalent** (D087): a total-capital ceiling, a per-trade cap applied as
+  a CAP on the strategy's own sizing, an open-position ceiling, and daily
+  and total loss circuit breakers. A breached loss breaker writes
+  `SKIPPED_LIVE_RISK_HALT` and PAUSES the deployment through the existing
+  `pause_deployment` - it never liquidates, because auto-selling into the
+  event that tripped the breaker is how a bad hour becomes a realized loss.
+  Re-arming is a deliberate human action. Live cycles also use D058's
+  tighter `live_risk_*` money limits.
 - **`require_stop_price=False`**, the same `RiskLimits` a backtest of this
   definition uses (D035): a strategy's exit rule IS its stop, re-evaluated
   every cycle, and demanding a stop price here would force fabricating one.
@@ -65,9 +78,11 @@ WHAT MAKES IT SAFE
   Phase 65's `build_deployment_monitoring` verbatim) and writes an
   append-only `StrategyDriftCheck` row every time - never only when drift
   is found, the same `emergency_stop_events` "a no-op flip still writes a
-  row" philosophy. It never runs for a FAILED, a SKIPPED_*, or a live-mode
-  cycle - only a real SUCCEEDED trading cycle has real closed trades worth
-  judging. When drift is detected AND `strategy_drift_auto_pause_enabled`
+  row" philosophy. It never runs for a FAILED or a SKIPPED_* cycle - only a
+  real SUCCEEDED trading cycle has real closed trades worth judging. Since
+  D087 an armed live cycle can reach SUCCEEDED, so drift detection now
+  covers live deployments too, on exactly the same terms. When drift is
+  detected AND `strategy_drift_auto_pause_enabled`
   is on (default `false`), it pauses the deployment through the EXISTING
   `deployments/service.py::pause_deployment` - never a second
   implementation of pausing - recording `action_taken="paused"`; with
@@ -91,7 +106,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 from enum import Enum
 
 from sqlalchemy import select
@@ -117,7 +132,15 @@ from apps.api.app.db.models import (
     StrategyDriftCheck,
     StrategyVersion,
 )
+from apps.api.app.deployments.live_guard import (
+    evaluate_live_arming,
+    evaluate_live_capital,
+    live_entry_budget,
+)
 from apps.api.app.deployments.service import DeploymentError, pause_deployment
+from apps.api.app.execution.broker import BrokerAdapter
+from apps.api.app.execution.live_broker import build_live_broker_adapter
+from apps.api.app.execution.paper_broker import PaperBrokerAdapter
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
 from apps.api.app.marketdata.portfolio_risk import load_market_risk_inputs
 from apps.api.app.marketdata.store import MarketDataStore
@@ -130,7 +153,8 @@ from apps.api.app.portfolio.cycle_lock import (
 )
 from apps.api.app.portfolio.market_hours import MarketHoursGate
 from apps.api.app.portfolio_manager.manager import portfolio_state_from_positions
-from apps.api.app.risk.models import BlockReason, Side, TradeProposal
+from apps.api.app.risk.limits import build_risk_limits
+from apps.api.app.risk.models import BlockReason, RiskLimits, Side, TradeProposal
 from apps.api.app.safety.emergency_stop import is_emergency_stop_active
 from apps.api.app.signals.engine import evaluate_current_signal
 from apps.api.app.strategies.expressions import compute_indicator_series
@@ -248,6 +272,38 @@ async def _persist_signal_evaluation(
     )
 
 
+def _deployment_risk_limits(settings: Settings, *, live: bool) -> RiskLimits:
+    """The risk limits one deployment cycle trades under.
+
+    `live=False` returns EXACTLY what `strategy_backtests._risk_limits`
+    returns - the paper path's limits are byte-for-byte unchanged by Phase
+    69's live work, which is the property that keeps every pre-existing
+    paper test and every backtest comparison valid.
+
+    `live=True` takes D058's tighter `live_risk_*` money limits (5%/20%
+    against paper's 10%/50%) and then re-applies `require_stop_price=False`,
+    which is the one place this deliberately diverges from
+    `build_risk_limits`. That function serves the INTERACTIVE live route,
+    where a human names a stop price on the request; a deployed strategy has
+    no such field - its exit rule IS its exit. Demanding a stop here would
+    reject every single automated entry, and satisfying the demand would
+    mean fabricating a stop price with no grounding in the strategy, which
+    this codebase does not do (the same reasoning `_risk_limits`' own
+    docstring gives for the paper case).
+
+    Losing a stop-price check is not a loosening of live risk relative to
+    what already governs these cycles: the position-size, exposure, and
+    per-trade-risk limits a live deployment runs under are all STRICTLY
+    tighter than the paper limits it would otherwise have used, and Phase
+    69's capital ceiling, per-trade cap, and loss breakers apply on top and
+    have no paper equivalent at all.
+    """
+    base = build_risk_limits(settings, live=live)
+    if not live:
+        return _risk_limits(settings)
+    return base.model_copy(update={"require_stop_price": False})
+
+
 async def _run_one_deployment(
     session: AsyncSession,
     deployment: StrategyDeployment,
@@ -255,13 +311,23 @@ async def _run_one_deployment(
     *,
     settings: Settings,
     clock: Callable[[], datetime],
+    live_broker: BrokerAdapter | None = None,
 ) -> DeploymentRunOutcome:
     """The work for one ACTIVE deployment, inside a transaction the caller
     owns. `run` already exists and is flushed; this resolves its counters
-    and status."""
-    # A `live` deployment never reaches here - `_run_deployment_isolated`
-    # resolves it to SKIPPED_LIVE_TRADING_DISABLED first.
-    assert deployment.mode == "paper"  # nosec - enforced upstream, re-asserted here
+    and status.
+
+    `live_broker` is non-None if and only if this is a `live` deployment on
+    a system where `_run_deployment_isolated`'s arming gate passed. A `live`
+    deployment NEVER reaches here with `live_broker=None` - that
+    combination is refused upstream as SKIPPED_LIVE_TRADING_DISABLED - and
+    the assertion below re-states that invariant at the point where real
+    money would otherwise start moving.
+    """
+    is_live = deployment.mode == "live"
+    assert deployment.mode in ("paper", "live")  # nosec - validated at creation
+    assert not is_live or live_broker is not None  # nosec - arming gate enforced upstream
+    assert is_live or live_broker is None  # nosec - a paper deployment never gets a live broker
 
     version = (
         await session.execute(
@@ -273,11 +339,22 @@ async def _run_one_deployment(
     store = MarketDataStore(session)
     count = _warmup_bar_count(definition) + EVALUATION_BAR_BUFFER
 
-    broker = await load_paper_broker(
-        session,
-        deployment.broker_id,
-        default_starting_cash=settings.paper_broker_starting_cash,
-    )
+    # `paper_broker` stays separately typed (rather than being recovered
+    # from `broker` with a cast at save time) so the type checker, not a
+    # comment, is what guarantees a live adapter can never reach
+    # `save_paper_broker` and write a phantom local book for a real account.
+    broker: BrokerAdapter
+    paper_broker: PaperBrokerAdapter | None = None
+    if is_live:
+        assert live_broker is not None  # nosec - asserted above; re-narrowed for the type checker
+        broker = live_broker
+    else:
+        paper_broker = await load_paper_broker(
+            session,
+            deployment.broker_id,
+            default_starting_cash=settings.paper_broker_starting_cash,
+        )
+        broker = paper_broker
 
     # Marks for every held symbol, from the latest ingested bar. A held
     # symbol with no bar cannot be valued, and this system does not
@@ -306,7 +383,62 @@ async def _run_one_deployment(
             )
         marks[held_symbol] = priced[0]
 
-    risk_limits = _risk_limits(settings)
+    # Live capital circuit breakers (Phase 69, D087). Evaluated AFTER marks
+    # are loaded - they need them to value open positions - but before any
+    # signal is acted on, so a breached breaker stops this cycle before it
+    # can place an order rather than after. A paper deployment never
+    # evaluates these; its behaviour is unchanged by their existence.
+    entry_budget: Decimal | None = None
+    if is_live:
+        capital = await evaluate_live_capital(
+            session, deployment, marks=marks, settings=settings, clock=clock
+        )
+        if capital.halted:
+            run.status = StrategyDeploymentRunStatus.SKIPPED_LIVE_RISK_HALT
+            run.error_detail = capital.detail
+            run.completed_at = clock()
+            logger.error(
+                "strategy_deployment_live_capital_halt",
+                deployment_id=str(deployment.id),
+                run_id=str(run.id),
+                halt_status=capital.status.value,
+                realized_pnl_today=str(capital.realized_pnl_today),
+                unrealized_pnl=str(capital.unrealized_pnl),
+                realized_pnl_total=str(capital.realized_pnl_total),
+                deployed_cost_basis=str(capital.deployed_cost_basis),
+                pauses_deployment=capital.pauses_deployment,
+            )
+            if capital.pauses_deployment:
+                # Reuse the existing pause path verbatim (the same choice
+                # D084's drift auto-pause made) so a breaker-paused
+                # deployment is indistinguishable, in state and in the API,
+                # from one a human paused - and is resumed the same way.
+                try:
+                    await pause_deployment(
+                        deployment,
+                        reason=f"Phase 69 live capital circuit breaker (D087): {capital.detail}",
+                    )
+                except DeploymentError:
+                    # Already paused or stopped by something else this
+                    # cycle. The halt row above is still the honest record
+                    # of why THIS cycle placed no order.
+                    pass
+            return DeploymentRunOutcome(
+                deployment_id=deployment.id,
+                run_id=run.id,
+                status=run.status,
+                detail=run.error_detail,
+            )
+        if capital.open_position_count >= settings.strategy_live_max_open_positions:
+            # Not a halt and not a pause: a full book is a normal, expected
+            # state, not a loss event. New entries are refused this cycle;
+            # exits below are deliberately still allowed, since refusing to
+            # SELL because the book is full would trap positions open.
+            entry_budget = Decimal(0)
+        else:
+            entry_budget = live_entry_budget(capital, settings=settings)
+
+    risk_limits = _deployment_risk_limits(settings, live=is_live)
     portfolio_limits = _portfolio_limits(settings)
 
     evaluated = 0
@@ -351,6 +483,22 @@ async def _run_one_deployment(
                 equity=equity,
                 price=price,
             )
+            if entry_budget is not None:
+                # Phase 69 (D087): the operator's capital bounds applied as
+                # a CAP on what the strategy asked for, never as a floor and
+                # never as a replacement. A strategy sizing below the cap is
+                # left alone; one sizing above it is trimmed to the largest
+                # whole share count that fits the smaller of "capital left
+                # of the total allowance" and "capital per trade".
+                #
+                # Floored to whole shares against the REAL price this trade
+                # will use, the same ROUND_FLOOR discipline `_desired_
+                # quantity` applies - rounding up would commit more than the
+                # operator allowed, which is the one direction a cap must
+                # never fail in. A budget that floors to zero shares makes
+                # no trade; that is a real answer, not an error.
+                affordable = (entry_budget / price).to_integral_value(rounding=ROUND_FLOOR)
+                quantity = min(quantity, affordable)
             side = Side.BUY
         else:
             quantity = held
@@ -433,7 +581,14 @@ async def _run_one_deployment(
         if result.status is OMSStatus.FILLED:
             filled += 1
 
-    await save_paper_broker(session, deployment.broker_id, broker)
+    if paper_broker is not None:
+        # A live broker's authoritative state lives AT the broker and is
+        # re-fetched each cycle; there is no local snapshot to write back.
+        # Persisting one would create a paper-broker row shadowing a live
+        # broker id - a second, divergent book for the same account, which
+        # is exactly the inconsistency LiveBrokerAdapter's single-snapshot
+        # design exists to prevent (D058).
+        await save_paper_broker(session, deployment.broker_id, paper_broker)
 
     run.status = StrategyDeploymentRunStatus.SUCCEEDED
     run.symbols_evaluated = evaluated
@@ -627,25 +782,45 @@ async def _run_deployment_isolated(
         session.add(run)
         await session.flush()
 
-        # Live mode: refuse unconditionally, before anything else this cycle
-        # touches - see StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
-        # (Phase 64, D082). No settings are consulted; this cannot be turned
-        # on by TRADING_MODE / LIVE_TRADING_ENABLED, only by a future,
-        # separately-approved runner change.
+        # Live mode: the arming gate, before anything else this cycle
+        # touches - no market data, no broker, no risk engine (Phase 69,
+        # D087; supersedes Phase 64's unconditional refusal, D082).
+        #
+        # Checked here rather than inside `_run_one_deployment` so that a
+        # live deployment on an unarmed system reads exactly ZERO rows and
+        # contacts nothing, which is what makes "the robot is off" a
+        # structural property rather than a promise about later branches.
+        live_broker: BrokerAdapter | None = None
         if deployment.mode == "live":
-            run.status = StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
-            run.error_detail = (
-                "automated live execution is not supported: this scheduler has no "
-                "per-trade human to supply the in-the-moment confirmation "
-                "docs/TRADING_SAFETY.md requires for every live trade."
+            # The robot switch is checked BEFORE the adapter is built, not
+            # after. `build_live_broker_adapter` constructs a real vendor
+            # TradeContext when the D058 keys and credentials are present,
+            # and a system running only the interactive live path has all
+            # of those - so building first would spin up a broker
+            # connection every cycle, forever, for deployments that are
+            # about to be refused anyway.
+            adapter = (
+                build_live_broker_adapter(settings)
+                if settings.strategy_live_auto_execution_enabled
+                else None
             )
-            run.completed_at = clock()
-            await session.commit()
-            return DeploymentRunOutcome(
-                deployment_id=deployment_id,
-                run_id=run.id,
-                status=run.status,
-                detail=run.error_detail,
+            arming = evaluate_live_arming(settings, live_broker_available=adapter is not None)
+            if not arming.armed:
+                run.status = StrategyDeploymentRunStatus.SKIPPED_LIVE_TRADING_DISABLED
+                run.error_detail = arming.detail
+                run.completed_at = clock()
+                await session.commit()
+                return DeploymentRunOutcome(
+                    deployment_id=deployment_id,
+                    run_id=run.id,
+                    status=run.status,
+                    detail=run.error_detail,
+                )
+            live_broker = adapter
+            logger.warning(
+                "strategy_deployment_live_cycle_armed",
+                deployment_id=str(deployment_id),
+                run_id=str(run.id),
             )
 
         emergency = await is_emergency_stop_active(
@@ -664,7 +839,8 @@ async def _run_deployment_isolated(
 
         try:
             outcome = await _run_one_deployment(
-                session, deployment, run, settings=settings, clock=clock
+                session, deployment, run, settings=settings, clock=clock,
+                live_broker=live_broker,
             )
             if outcome.status is StrategyDeploymentRunStatus.SUCCEEDED:
                 # Phase 66 (D084): only after a real SUCCEEDED trading cycle
