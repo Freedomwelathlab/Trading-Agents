@@ -21,7 +21,10 @@ Update this after meaningful implementation work — not for every commit.
   permission — and NO database write of any kind: the caller reviews the
   draft and creates it for real through the existing `POST /strategies` +
   `POST .../versions/{id}/validate` path if they choose to.
-  [orchestrator fills test counts]
+  **1109 backend tests** (1097→1109, +12: 7 `test_strategy_research_assistant.py`,
+  5 `test_strategies.py`); `ruff`, `mypy apps` (143 files, up from 142),
+  `secret_scan` clean. **311 frontend tests / 39 files** (303/38→311/39,
+  +8), `npm run build` clean. No new dependency, no migration.
 
 - Phase 66: drift detection (2026-09-11, D084) — strategy-scoped auto-pause
   when a deployment's real, closed-trade performance drifts from its own

@@ -9110,8 +9110,28 @@ test_strategies.py` (+5: 400 `NOT_CONFIGURED` with no provider wired; 403
 without `strategy:manage`; a wired-in stub's valid-draft case is 200
 `is_valid: true` and writes no `Strategy` row; its invalid-draft case is
 still 200 `is_valid: false` with real errors and also writes no row; a
-provider error is 502 `AGENT_OUTPUT_INVALID`).
+provider error is 502 `AGENT_OUTPUT_INVALID`). Frontend (built by a second,
+parallel agent against this frozen JSON contract, entirely inside
+`apps/web/`): `apps/web/app/api/strategies/research/propose/route.ts` (new
+POST proxy), `apps/web/components/StrategyResearchAssistant.tsx` (new — the
+brief textarea, and all four rendered states: valid draft, invalid-but-
+parsed draft with its errors listed verbatim, calm `NOT_CONFIGURED`
+messaging, and a distinct 502/thrown-failure message), `apps/web/app/
+strategies/research/page.tsx` (new, mirrors `leaderboard/page.tsx`'s thin-
+wrapper shape), `apps/web/app/strategies/page.tsx` (a link to the new page),
+`apps/web/test/StrategyResearchAssistant.test.tsx` (new, 8 tests).
 
-Verification: [orchestrator fills test counts, ruff/mypy/secret_scan status, full run time]
+Verification (2026-09-11, isolated Postgres/Redis, freshly migrated from
+empty; no new migration this phase):
+
+- **1109 backend tests** (1097 → 1109, +12: 7 in `tests/agents/
+  test_strategy_research_assistant.py` (new file), +5 in `tests/api/
+  test_strategies.py`); `ruff check apps tests migrations` clean; `mypy
+  apps` clean, **143 source files** (up from 142); `bash
+  scripts/secret_scan.sh` clean; full run 19m40s, exit 0.
+- **311 frontend tests across 39 files** (303 / 38 → 311 / 39; +8 in
+  `test/StrategyResearchAssistant.test.tsx`), `npm run build` clean with
+  `/strategies/research` and `/api/strategies/research/propose` in the
+  manifest. No new dependency.
 
 Status: Implemented and verified as above.
