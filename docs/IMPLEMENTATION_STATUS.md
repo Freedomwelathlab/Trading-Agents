@@ -32,8 +32,10 @@ Update this after meaningful implementation work — not for every commit.
   New route `GET /deployments/{id}/monitoring` on the existing
   `deployments_router`, same `strategy:deploy` permission and ownership
   check as `.../runs`/`.../signals` — no new permission, no migration.
-  **[orchestrator fills test counts]**; `ruff`, `mypy apps`, `secret_scan`
-  clean.
+  **1089 backend tests** (1078→1089, +11: 10 in `test_monitoring.py`, 1 in
+  `test_deployments.py`); `ruff`, `mypy apps` (141 files, up from 140),
+  `secret_scan` clean. **296 frontend tests / 37 files** (292/36→296/37,
+  +4), `npm run build` clean. No new dependency.
 - Phase 64: broker abstraction + controlled live execution — SCAFFOLDING
   ONLY (2026-09-11, D082) — `mode` widens to `"paper" | "live"` at the
   schema and service layer, symmetrically validated (a `live` deployment

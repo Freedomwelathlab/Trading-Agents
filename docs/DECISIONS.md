@@ -8797,8 +8797,29 @@ against real Postgres, reusing `deployment_world`/`run_deployment_cycle`
 from `tests/deployments/conftest.py` and `tests/deployments/test_runner.py`'s
 buy-then-sell pattern), `tests/api/test_deployments.py` (+1: the monitoring
 route's 200 shape plus a 403 for another user's deployment folded into the
-existing ownership test).
+existing ownership test). Frontend (built by a second, parallel agent against
+this frozen JSON contract, entirely inside `apps/web/`):
+`apps/web/app/api/deployments/[deploymentId]/monitoring/route.ts` (new proxy,
+mirrors `.../runs`/`.../signals` exactly), `apps/web/components/
+DeploymentMonitoringPanel.tsx` (new — fetches its own data on first open,
+unlike the sibling run/signal tables, since `/monitoring` isn't part of
+`DeploymentList`'s shared `Promise.all` history call; renders the
+"Expected"/"Actual" blocks with `—` for null rates and the honest
+`no_reference_backtest` message), `apps/web/components/DeploymentList.tsx`
+(a third lazy-loaded `<details>` section, "Performance"), `apps/web/test/
+DeploymentMonitoringPanel.test.tsx` (new, 4 tests).
 
-Verification: [orchestrator fills test counts, ruff/mypy/secret_scan status, full run time]
+Verification (2026-09-11, isolated Postgres/Redis, freshly migrated from
+empty; no new migration this phase):
+
+- **1089 backend tests** (1078 → 1089, +11: 10 in
+  `tests/deployments/test_monitoring.py` [6 unit + 4 integration], +1 in
+  `tests/api/test_deployments.py`); `ruff check apps tests migrations`
+  clean; `mypy apps` clean, **141 source files** (up from 140);
+  `bash scripts/secret_scan.sh` clean; full run 27m36s, exit 0.
+- **296 frontend tests across 37 files** (292 / 36 → 296 / 37; +4 in
+  `test/DeploymentMonitoringPanel.test.tsx`), `npm run build` clean with
+  `/api/deployments/[deploymentId]/monitoring` in the manifest. No new
+  dependency.
 
 Status: Implemented and verified as above.
