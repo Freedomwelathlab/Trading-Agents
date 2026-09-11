@@ -8951,8 +8951,33 @@ with auto-pause off - the default - leaves it `ACTIVE` with
 `action_taken == "observed_only"`; too few round trips writes an
 `INSUFFICIENT_DATA` row with `action_taken == "none"` and never touches
 deployment status), `tests/api/test_deployments.py` (+1: the drift-checks
-route's 200 shape).
+route's 200 shape). Frontend (built by a second, parallel agent against this
+frozen JSON contract, entirely inside `apps/web/`):
+`apps/web/app/api/deployments/[deploymentId]/drift-checks/route.ts` (new
+proxy, mirrors `.../runs/route.ts`), `apps/web/components/
+DeploymentDriftTable.tsx` (new — prop-fed table like `DeploymentRunTable`;
+`—` for null win-rate fields, a visually distinct `"paused"` `action_taken`,
+full untruncated `detail` text, a plain empty-state message rather than an
+empty table shell), `apps/web/components/DeploymentList.tsx` (a fourth
+lazy-loaded `<details>` section, "Drift checks", with its own independent
+fetch-on-open — confirmed by test not to also trigger the runs/signals
+fetch), `apps/web/components/CreateDeploymentForm.tsx` (the shared
+`DriftCheckStatus`/`DriftCheckActionTaken`/`DriftCheckResponse`/
+`ListDriftChecksResponse` types, alongside the existing run/signal ones),
+`apps/web/test/DeploymentDriftTable.test.tsx` (new, 5 tests),
+`apps/web/test/DeploymentList.test.tsx` (+2).
 
-Verification: [orchestrator fills test counts, ruff/mypy/secret_scan status, full run time]
+Verification (2026-09-11, isolated Postgres/Redis, freshly migrated from
+empty; `alembic downgrade -1` → `upgrade head` round-trips clean for
+migration `0026`):
+
+- **1097 backend tests** (1089 → 1097, +8: 4 `test_drift.py`, 3
+  `test_runner.py`, 1 `test_deployments.py`); `ruff check apps tests
+  migrations` clean; `mypy apps` clean, **142 source files** (up from 141);
+  `bash scripts/secret_scan.sh` clean; full run 15m30s, exit 0.
+- **303 frontend tests across 38 files** (296 / 37 → 303 / 38; +7: 5 in
+  `test/DeploymentDriftTable.test.tsx`, 2 in `test/DeploymentList.test.tsx`),
+  `npm run build` clean with `/api/deployments/[deploymentId]/drift-checks`
+  in the manifest. No new dependency.
 
 Status: Implemented and verified as above.

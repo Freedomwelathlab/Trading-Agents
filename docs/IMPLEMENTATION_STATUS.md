@@ -22,8 +22,13 @@ Update this after meaningful implementation work — not for every commit.
   verbatim — `action_taken` records `"none"` / `"observed_only"` /
   `"paused"`. New route `GET /deployments/{id}/drift-checks`, same
   `strategy:deploy` permission and ownership check as the sibling list
-  routes — no new permission, no new scheduler. [orchestrator fills test
-  counts]
+  routes — no new permission, no new scheduler.
+  **1097 backend tests** (1089→1097, +8: 4 `test_drift.py`, 3
+  `test_runner.py`, 1 `test_deployments.py`); `ruff`, `mypy apps` (142
+  files, up from 141), `secret_scan` clean. Migration `0026` round-trips
+  clean. **303 frontend tests / 38 files** (296/37→303/38, +7: 5
+  `DeploymentDriftTable.test.tsx`, 2 `DeploymentList.test.tsx`), `npm run
+  build` clean. No new dependency.
 - Phase 65: strategy monitoring (2026-09-11, D083) — read-only actual vs.
   expected performance for one `StrategyDeployment`. **Places no orders,
   writes nothing** — a pure read joining two already-honest sources: this
