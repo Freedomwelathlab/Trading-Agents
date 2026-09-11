@@ -4,6 +4,31 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 66: drift detection (2026-09-11, D084) — strategy-scoped auto-pause
+  when a deployment's real, closed-trade performance drifts from its own
+  backtest expectation. Reuses Phase 65's `build_deployment_monitoring`
+  verbatim (`deployments/drift.py::evaluate_deployment_drift`) to compare
+  actual vs. reference-backtest win rate; `INSUFFICIENT_DATA` when no
+  reference backtest exists or too few round trips
+  (`strategy_drift_min_round_trips`, default 10); `DRIFT_DETECTED` when the
+  absolute win-rate deviation exceeds `strategy_drift_max_win_rate_deviation_pct`
+  (default 30 points, deliberately generous). Runs once per SUCCEEDED
+  runner cycle, in the SAME transaction (no new scheduler/lock) — never for
+  FAILED/SKIPPED_*/live-mode cycles. New append-only `strategy_drift_checks`
+  table (migration 0026) writes a row EVERY cycle, never only when drift is
+  found (`emergency_stop_events`' own audit philosophy). Auto-pause defaults
+  OFF (`strategy_drift_auto_pause_enabled=false`, fail-closed like every
+  other automation here); when on, calls the EXISTING `pause_deployment()`
+  verbatim — `action_taken` records `"none"` / `"observed_only"` /
+  `"paused"`. New route `GET /deployments/{id}/drift-checks`, same
+  `strategy:deploy` permission and ownership check as the sibling list
+  routes — no new permission, no new scheduler.
+  **1097 backend tests** (1089→1097, +8: 4 `test_drift.py`, 3
+  `test_runner.py`, 1 `test_deployments.py`); `ruff`, `mypy apps` (142
+  files, up from 141), `secret_scan` clean. Migration `0026` round-trips
+  clean. **303 frontend tests / 38 files** (296/37→303/38, +7: 5
+  `DeploymentDriftTable.test.tsx`, 2 `DeploymentList.test.tsx`), `npm run
+  build` clean. No new dependency.
 - Phase 65: strategy monitoring (2026-09-11, D083) — read-only actual vs.
   expected performance for one `StrategyDeployment`. **Places no orders,
   writes nothing** — a pure read joining two already-honest sources: this

@@ -22,12 +22,15 @@ import {
   type StrategyDeploymentResponse,
   type StrategyDeploymentRunResponse,
   type DeploymentSignalResponse,
+  type DriftCheckResponse,
   type ListDeploymentRunsResponse,
   type ListDeploymentSignalsResponse,
+  type ListDriftChecksResponse,
 } from "@/components/CreateDeploymentForm";
 import { DeploymentRunTable } from "@/components/DeploymentRunTable";
 import { DeploymentSignalTable } from "@/components/DeploymentSignalTable";
 import { DeploymentMonitoringPanel } from "@/components/DeploymentMonitoringPanel";
+import { DeploymentDriftTable } from "@/components/DeploymentDriftTable";
 
 const HISTORY_LIMIT = 50;
 
@@ -120,6 +123,11 @@ function DeploymentRow({
 
   const [performanceOpened, setPerformanceOpened] = useState(false);
 
+  const [driftLoaded, setDriftLoaded] = useState(false);
+  const [driftLoading, setDriftLoading] = useState(false);
+  const [driftError, setDriftError] = useState<string | null>(null);
+  const [driftChecks, setDriftChecks] = useState<DriftCheckResponse[]>([]);
+
   async function act(action: LifecycleAction) {
     setActionError(null);
     setPermissionHint(false);
@@ -197,6 +205,34 @@ function DeploymentRow({
       setHistoryError("DATA_UNAVAILABLE: could not reach the trading API");
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function loadDrift() {
+    if (driftLoaded || driftLoading) return;
+    setDriftLoading(true);
+    setDriftError(null);
+    try {
+      const res = await fetch(
+        `/api/deployments/${d.id}/drift-checks?limit=${HISTORY_LIMIT}&offset=0`,
+        { cache: "no-store" },
+      );
+      if (handleExpiredSession(res.status)) return;
+      const data = (await res.json().catch(() => null)) as
+        | (ListDriftChecksResponse & { detail?: unknown })
+        | null;
+      if (!res.ok) {
+        setDriftError(
+          formatDetail(data?.detail) ?? `Request failed (HTTP ${res.status})`,
+        );
+        return;
+      }
+      setDriftChecks(data?.items ?? []);
+      setDriftLoaded(true);
+    } catch {
+      setDriftError("DATA_UNAVAILABLE: could not reach the trading API");
+    } finally {
+      setDriftLoading(false);
     }
   }
 
@@ -378,6 +414,37 @@ function DeploymentRow({
             <div className="mt-3">
               {performanceOpened && (
                 <DeploymentMonitoringPanel deploymentId={d.id} />
+              )}
+            </div>
+          </details>
+        </td>
+      </tr>
+
+      <tr className={tbodyRowClass} data-testid={`deployment-drift-row-${d.id}`}>
+        <td className={`${tdClass} whitespace-normal`} colSpan={5}>
+          <details
+            data-testid={`deployment-drift-details-${d.id}`}
+            onToggle={(e) => {
+              if ((e.currentTarget as HTMLDetailsElement).open) void loadDrift();
+            }}
+          >
+            <summary
+              className={`${btnGhost} list-none [&::-webkit-details-marker]:hidden`}
+              data-testid={`deployment-drift-toggle-${d.id}`}
+            >
+              Drift checks
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              {driftLoading && !driftLoaded && (
+                <EmptyNote>Loading drift checks…</EmptyNote>
+              )}
+              {driftError && (
+                <Alert tone="error" testId={`deployment-drift-error-${d.id}`}>
+                  {driftError}
+                </Alert>
+              )}
+              {driftLoaded && !driftError && (
+                <DeploymentDriftTable driftChecks={driftChecks} />
               )}
             </div>
           </details>

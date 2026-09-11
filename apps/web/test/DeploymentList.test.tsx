@@ -230,4 +230,65 @@ describe("DeploymentList", () => {
     expect(calls()[0][0]).toBe("/api/deployments/dep-1/runs?limit=50&offset=0");
     expect(calls()[1][0]).toBe("/api/deployments/dep-1/signals?limit=50&offset=0");
   });
+
+  it("loads drift checks independently on expanding the Drift checks section", async () => {
+    mockOnce(200, {
+      items: [
+        {
+          id: "drift-1",
+          deployment_id: "dep-1",
+          status: "drift_detected",
+          actual_win_rate_pct: "20.0000",
+          expected_win_rate_pct: "55.0000",
+          win_rate_deviation_pct: "35.0000",
+          num_round_trips: 12,
+          action_taken: "paused",
+          detail:
+            "actual win rate 20.0000% deviates 35.0000pp from the reference backtest's 55.0000% (threshold 30pp)",
+          created_at: "2026-09-11T12:00:00Z",
+        },
+      ],
+      limit: 50,
+      offset: 0,
+    });
+
+    render(
+      <DeploymentList
+        deployments={[deployment({ status: "active" })]}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("deployment-drift-toggle-dep-1"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("drift-check-row")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("drift-status-drift-1")).toHaveTextContent(
+      "drift_detected",
+    );
+    expect(screen.getByTestId("drift-action-drift-1")).toHaveTextContent(
+      "paused",
+    );
+    expect(calls()[0][0]).toBe(
+      "/api/deployments/dep-1/drift-checks?limit=50&offset=0",
+    );
+    // Opening the Drift checks section alone must not also trigger the
+    // Runs/Signals Promise.all fetch — the two sections load independently.
+    expect(calls().length).toBe(1);
+  });
+
+  it("shows the empty-state message when a deployment has no drift checks yet", async () => {
+    mockOnce(200, { items: [], limit: 50, offset: 0 });
+    render(
+      <DeploymentList
+        deployments={[deployment({ status: "active" })]}
+        onChanged={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("deployment-drift-toggle-dep-1"));
+    await waitFor(() =>
+      expect(screen.getByText(/no drift checks yet/i)).toBeInTheDocument(),
+    );
+  });
 });

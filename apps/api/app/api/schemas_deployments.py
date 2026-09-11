@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from apps.api.app.db.models import (
+    DriftCheckStatus,
     SignalDirection,
     StrategyDeploymentRunStatus,
     StrategyDeploymentStatus,
@@ -167,3 +168,30 @@ class DeploymentMonitoringResponse(BaseModel):
     as_of: datetime
     actual: DeploymentActualPerformanceResponse
     expected: DeploymentExpectedPerformanceResponse
+
+
+class DriftCheckResponse(BaseModel):
+    """One append-only `StrategyDriftCheck` row (Phase 66, D084). Every
+    successful runner cycle writes one of these - `status ==
+    "insufficient_data"` and `status == "no_drift"` rows exist right beside
+    `status == "drift_detected"` ones, matching the emergency-stop table's
+    "a no-op flip still writes a row" audit philosophy. The three win-rate
+    fields are `null` together whenever `status == "insufficient_data"` -
+    never a fabricated number from too small a sample."""
+
+    id: uuid.UUID
+    deployment_id: uuid.UUID
+    status: DriftCheckStatus
+    actual_win_rate_pct: Decimal | None
+    expected_win_rate_pct: Decimal | None
+    win_rate_deviation_pct: Decimal | None
+    num_round_trips: int
+    action_taken: Literal["none", "observed_only", "paused"]
+    detail: str
+    created_at: datetime
+
+
+class ListDriftChecksResponse(BaseModel):
+    items: list[DriftCheckResponse]
+    limit: int
+    offset: int

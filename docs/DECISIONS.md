@@ -8823,3 +8823,161 @@ empty; no new migration this phase):
   dependency.
 
 Status: Implemented and verified as above.
+
+---
+
+**D084 — Phase 66: drift detection with strategy-scoped auto-pause, opt-in and always audited**
+
+Reason: Phase 65 (D083) gave an operator a read they could open and check by
+hand. This phase asks the same question automatically, once per successful
+runner cycle, and gives the codebase an honest, append-only memory of every
+answer it gave - "checked, found nothing wrong" as much as "checked, found
+drift" - plus a strictly opt-in way to act on a bad answer without a human
+opening the deployment first.
+
+**(1) The drift signal is win-rate deviation on closed round trips - the
+one number Phase 65 already computes honestly on both sides of the
+comparison.** `deployments/drift.py::evaluate_deployment_drift` calls
+`build_deployment_monitoring` (D083) VERBATIM and compares
+`actual.win_rate_pct` to `expected.win_rate_pct` - no second, competing
+computation of either number. A signal-distribution comparison (live
+signals vs. the backtest's own bar-by-bar signals over the same stretch)
+would be a richer drift measure, but the backtest engine
+(`backtesting/engine_v2.py`) does not persist a per-bar signal log, only a
+`BacktestRun` summary - building that persistence is out of scope for this
+phase and is named as a real, deliberate limitation, not glossed over.
+
+**(2) `INSUFFICIENT_DATA` is a first-class verdict, never a guessed
+`NO_DRIFT`.** Two conditions produce it: `expected.status !=
+"available"` (the strategy version has no reference backtest at all) or
+`actual.num_round_trips < strategy_drift_min_round_trips` (default 10 -
+judging drift from 2-3 round trips is judging it from noise). In either
+case `actual_win_rate_pct` / `expected_win_rate_pct` / `deviation` are all
+`None` in the result and in the persisted row - this codebase's standing
+"sentinel, not a guess" rule (docs/TRADING_SAFETY.md, and D058/D075's own
+applications of it) applied to a missing statistic instead of missing
+market data.
+
+**(3) `strategy_drift_max_win_rate_deviation_pct` defaults to 30 percentage
+points - deliberately generous.** A live paper-trading sample is smaller
+and noisier than the backtest it is compared against; a tight threshold
+would flag ordinary small-sample variance as drift and either auto-pause or
+loudly flag a deployment that is not actually broken. 30 points is chosen
+to catch a deployment that has genuinely diverged from its backtest
+(50%+ actual vs. 20% backtest, say) while tolerating the kind of swing a
+handful of trades can produce on its own.
+
+**(4) Auto-pause defaults OFF
+(`strategy_drift_auto_pause_enabled=false`) - the same fail-closed posture
+as every other piece of automation in this codebase** (the snapshot
+scheduler, the reconciler, the strategy runner itself, live trading). With
+it off, `DRIFT_DETECTED` still writes a row - `action_taken="observed_only"`
+- and the deployment keeps running exactly as before; an operator who
+agrees pauses it by hand through the existing `POST
+/deployments/{id}/pause`. With it on, `_check_and_record_drift`
+(`deployments/runner.py`) calls the EXISTING
+`deployments/service.py::pause_deployment` - never a reimplementation of
+pausing - with a reason that quotes the actual numbers
+(`action_taken="paused"`). Either way, this feature can only ever make a
+deployment MORE conservative: it never places or sizes a trade differently,
+so it does not touch docs/TRADING_SAFETY.md's live-trading gate at all.
+
+**(5) Every check writes a row, every time - `strategy_drift_checks`
+follows `emergency_stop_events`' own audit philosophy.** A `NO_DRIFT`
+cycle and an `INSUFFICIENT_DATA` cycle write a row exactly like a
+`DRIFT_DETECTED` one; a missing row must never be the only evidence a
+check happened, and "nothing was wrong this cycle" is itself a fact worth
+keeping. The new table is `strategy_deployment_runs`' sibling in shape
+(`deployment_id` FK, `ON DELETE CASCADE` matching that table's own FK
+behavior, an `(deployment_id, created_at)` index) - this is diagnostic
+history scoped to the deployment's own lifecycle, not a result whose
+inputs must be pinned independently of it.
+
+**(6) The check runs inside the SAME transaction as the trading cycle it
+evaluates, immediately after `_run_one_deployment` returns SUCCEEDED and
+before that transaction commits.** No new scheduler, no new advisory-lock
+key, no new cross-worker exclusion mechanism - it reuses the runner's own
+per-deployment lock and transaction boundary (Phase 63, D081) exactly.
+Either both the cycle's trading effects and its drift check persist, or (on
+a crash) neither does, matching `runner.py`'s existing all-or-nothing-per-
+deployment posture. It never runs for a FAILED, a SKIPPED_*, or a live-mode
+cycle (which never reaches SUCCEEDED at all) - only a real SUCCEEDED cycle
+has real closed trades worth judging.
+
+Alternatives considered:
+- *Run drift-checking on a separate schedule with its own interval and
+  advisory lock.* Rejected - see (6). The runner already produces exactly
+  one SUCCEEDED cycle per deployment per interval with its own lock and
+  transaction; a second scheduler checking the same deployments on a
+  different cadence would need to reconcile with the first for no real
+  benefit, and would let a drift check and the trading cycle it describes
+  land in different transactions, breaking the all-or-nothing guarantee.
+- *Default `strategy_drift_auto_pause_enabled` to `true`.* Rejected - see
+  (4). Every other piece of unattended automation in this codebase
+  (snapshot scheduler, reconciler, strategy runner, live trading) defaults
+  fail-closed; a drift feature that defaulted to acting on a deployment
+  without an operator's opt-in would be the one exception, for no reason
+  strong enough to justify breaking the pattern - even though the action it
+  would take (pausing) is a conservative one.
+- *Compare signal distributions instead of win rate.* Rejected/deferred -
+  see (1). The backtest engine does not persist per-bar signal data to
+  compare against; building that persistence is real, additional scope,
+  named here rather than silently gapped by pretending win-rate deviation
+  is a complete substitute for it.
+
+Files: `apps/api/app/core/config.py` (`strategy_drift_min_round_trips`,
+`strategy_drift_max_win_rate_deviation_pct`,
+`strategy_drift_auto_pause_enabled`, validator addition),
+`apps/api/app/deployments/drift.py` (new - `DriftCheckResult`,
+`evaluate_deployment_drift`), `apps/api/app/db/models.py`
+(`DriftCheckStatus`, `StrategyDriftCheck`), `migrations/versions/
+0026_strategy_drift_checks.py` (new table + `driftcheckstatus` enum),
+`apps/api/app/deployments/runner.py` (`_check_and_record_drift`, wired into
+`_run_deployment_isolated`'s success path, docstring update),
+`apps/api/app/api/routes/deployments.py`
+(`GET /deployments/{deployment_id}/drift-checks`, docstring update),
+`apps/api/app/api/schemas_deployments.py` (`DriftCheckResponse`,
+`ListDriftChecksResponse`). Docs: `docs/TRADING_SAFETY.md` (Phase 66
+sub-point under the Phase 63/64 `runner.py` bullet), `docs/API.md` (new
+section after `GET /deployments/{deployment_id}/monitoring`),
+`docs/IMPLEMENTATION_STATUS.md` (new top `## Completed` entry). Tests:
+`tests/deployments/test_drift.py` (new - `evaluate_deployment_drift` against
+real Postgres: too-few-round-trips and no-reference-backtest both →
+`INSUFFICIENT_DATA`; close win rates → `NO_DRIFT`; far-apart win rates
+beyond the configured threshold → `DRIFT_DETECTED`), `tests/deployments/
+test_runner.py` (+3: `DRIFT_DETECTED` with auto-pause on flips the
+deployment to `PAUSED` with `action_taken == "paused"`; the same scenario
+with auto-pause off - the default - leaves it `ACTIVE` with
+`action_taken == "observed_only"`; too few round trips writes an
+`INSUFFICIENT_DATA` row with `action_taken == "none"` and never touches
+deployment status), `tests/api/test_deployments.py` (+1: the drift-checks
+route's 200 shape). Frontend (built by a second, parallel agent against this
+frozen JSON contract, entirely inside `apps/web/`):
+`apps/web/app/api/deployments/[deploymentId]/drift-checks/route.ts` (new
+proxy, mirrors `.../runs/route.ts`), `apps/web/components/
+DeploymentDriftTable.tsx` (new — prop-fed table like `DeploymentRunTable`;
+`—` for null win-rate fields, a visually distinct `"paused"` `action_taken`,
+full untruncated `detail` text, a plain empty-state message rather than an
+empty table shell), `apps/web/components/DeploymentList.tsx` (a fourth
+lazy-loaded `<details>` section, "Drift checks", with its own independent
+fetch-on-open — confirmed by test not to also trigger the runs/signals
+fetch), `apps/web/components/CreateDeploymentForm.tsx` (the shared
+`DriftCheckStatus`/`DriftCheckActionTaken`/`DriftCheckResponse`/
+`ListDriftChecksResponse` types, alongside the existing run/signal ones),
+`apps/web/test/DeploymentDriftTable.test.tsx` (new, 5 tests),
+`apps/web/test/DeploymentList.test.tsx` (+2).
+
+Verification (2026-09-11, isolated Postgres/Redis, freshly migrated from
+empty; `alembic downgrade -1` → `upgrade head` round-trips clean for
+migration `0026`):
+
+- **1097 backend tests** (1089 → 1097, +8: 4 `test_drift.py`, 3
+  `test_runner.py`, 1 `test_deployments.py`); `ruff check apps tests
+  migrations` clean; `mypy apps` clean, **142 source files** (up from 141);
+  `bash scripts/secret_scan.sh` clean; full run 15m30s, exit 0.
+- **303 frontend tests across 38 files** (296 / 37 → 303 / 38; +7: 5 in
+  `test/DeploymentDriftTable.test.tsx`, 2 in `test/DeploymentList.test.tsx`),
+  `npm run build` clean with `/api/deployments/[deploymentId]/drift-checks`
+  in the manifest. No new dependency.
+
+Status: Implemented and verified as above.

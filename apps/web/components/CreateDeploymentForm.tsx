@@ -105,6 +105,42 @@ export type ListDeploymentSignalsResponse = {
   offset?: number;
 };
 
+/** `insufficient_data` means a successful cycle ran but didn't yet have
+ * enough closed round trips (or no reference backtest exists) to compare
+ * against — a real, honest answer, not an error. */
+export type DriftCheckStatus =
+  | "no_drift"
+  | "drift_detected"
+  | "insufficient_data";
+
+/** `paused` is the only value where the runner actually changed the
+ * deployment's state on its own; `none` and `observed_only` are purely
+ * informational. */
+export type DriftCheckActionTaken = "none" | "observed_only" | "paused";
+
+export type DriftCheckResponse = {
+  id: string;
+  deployment_id: string;
+  status: DriftCheckStatus;
+  /** Decimal-as-string; `null` for all three win-rate fields only when
+   * `status === "insufficient_data"`. */
+  actual_win_rate_pct: string | null;
+  expected_win_rate_pct: string | null;
+  win_rate_deviation_pct: string | null;
+  num_round_trips: number;
+  action_taken: DriftCheckActionTaken;
+  /** Always concrete, always the "why" — rendered verbatim, never
+   * truncated, regardless of `status`. */
+  detail: string;
+  created_at: string;
+};
+
+export type ListDriftChecksResponse = {
+  items?: DriftCheckResponse[];
+  limit?: number;
+  offset?: number;
+};
+
 /**
  * FastAPI returns a plain string `detail` for hand-raised `HTTPException`s
  * (a 409 guardrail — `VERSION_NOT_VALIDATED`, `NO_SUCH_BROKER`,

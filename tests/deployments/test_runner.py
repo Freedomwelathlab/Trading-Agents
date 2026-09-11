@@ -17,6 +17,7 @@ count.
 """
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -25,7 +26,10 @@ from sqlalchemy import select
 from apps.api.app.core.config import TradingMode, get_settings
 from apps.api.app.db.base import get_session_factory
 from apps.api.app.db.models import (
+    BacktestRun,
+    BacktestRunStatus,
     BrokerPosition,
+    DriftCheckStatus,
     Order,
     OrderStatus,
     SignalEvaluation,
@@ -33,7 +37,9 @@ from apps.api.app.db.models import (
     StrategyDeploymentRun,
     StrategyDeploymentRunStatus,
     StrategyDeploymentStatus,
+    StrategyDriftCheck,
 )
+from apps.api.app.deployments.monitoring import build_deployment_monitoring
 from apps.api.app.deployments.runner import DeploymentCycleStatus, run_deployment_cycle
 from apps.api.app.deployments.service import approve_deployment, create_deployment
 from apps.api.app.marketdata.store import MarketDataStore
@@ -46,6 +52,8 @@ from tests.deployments.conftest import (
     db_session,
     deployment_world,
 )
+
+_DRIFT_BACKTEST_NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
 _SF = get_session_factory()
 _SETTINGS = get_settings()
@@ -304,8 +312,6 @@ async def test_an_unpriceable_held_position_fails_the_cycle_visibly() -> None:
 
 @pytest.mark.asyncio
 async def test_a_utc_weekend_no_ops_the_whole_cycle() -> None:
-    from datetime import UTC, datetime
-
     saturday = datetime(2026, 2, 7, 12, 0, tzinfo=UTC)
     async with db_session() as session, deployment_world(session, seed={"g": BUY_CLOSES}) as w:
         await _deploy(session, w, symbols=[w["symbols"]["g"]])
@@ -375,3 +381,182 @@ async def test_a_live_deployment_is_always_skipped_even_with_live_trading_nomina
             .all()
         )
         assert orders == []
+
+
+# ------------------------------------------------------------------------
+# Phase 66 (D084): drift detection wired into the runner's success path
+# ------------------------------------------------------------------------
+
+
+def _drift_backtest_run(
+    *, version_id: uuid.UUID, symbol: str, win_rate_pct: Decimal
+) -> BacktestRun:
+    return BacktestRun(
+        id=uuid.uuid4(),
+        strategy_version_id=version_id,
+        requested_by_user_id=None,
+        symbol=symbol,
+        bar_interval="1d",
+        start_date=_DRIFT_BACKTEST_NOW.date(),
+        end_date=_DRIFT_BACKTEST_NOW.date(),
+        starting_cash=Decimal(100_000),
+        status=BacktestRunStatus.SUCCEEDED,
+        final_equity=Decimal(110_000),
+        total_return_pct=Decimal("10.0000"),
+        max_drawdown_pct=Decimal("5.0000"),
+        win_rate_pct=win_rate_pct,
+        num_trades=10,
+    )
+
+
+async def _latest_drift_check(session, deployment_id: uuid.UUID) -> StrategyDriftCheck:
+    return (
+        await session.execute(
+            select(StrategyDriftCheck)
+            .where(StrategyDriftCheck.deployment_id == deployment_id)
+            .order_by(StrategyDriftCheck.created_at.desc(), StrategyDriftCheck.id.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_drift_detected_with_auto_pause_enabled_pauses_the_deployment() -> None:
+    """A closed round trip (BUY then SELL) against a reference backtest with
+    a far-off win rate exceeds the default 30-point threshold. With
+    `strategy_drift_auto_pause_enabled=True`, the next SUCCEEDED cycle pauses
+    the deployment itself, through the existing `pause_deployment()`."""
+    drift_settings = _SETTINGS.model_copy(
+        update={"strategy_drift_min_round_trips": 1, "strategy_drift_auto_pause_enabled": True}
+    )
+    async with db_session() as session, deployment_world(session, seed={"g": BUY_CLOSES}) as w:
+        good = w["symbols"]["g"]
+        dep_id = await _deploy(session, w, symbols=[good])
+
+        first = await run_deployment_cycle(_SF, settings=drift_settings)
+        assert _mine(first, dep_id).orders_filled == 1
+
+        await MarketDataStore(session).upsert_bars(_weekday_bars(good, SELL_CLOSES))
+        await session.commit()
+        second = await run_deployment_cycle(_SF, settings=drift_settings)
+        assert _mine(second, dep_id).orders_filled == 1  # closes the round trip
+
+        deployment = await session.get(StrategyDeployment, dep_id)
+        monitoring = await build_deployment_monitoring(session, deployment)
+        actual_rate = monitoring.actual.win_rate_pct
+        assert actual_rate is not None
+        far_rate = Decimal(0) if actual_rate >= Decimal(50) else Decimal(100)
+        backtest_run = _drift_backtest_run(
+            version_id=w["version_id"], symbol=good, win_rate_pct=far_rate
+        )
+        session.add(backtest_run)
+        await session.commit()
+
+        try:
+            # A third, no-op cycle (already flat, no fresh signal) still runs
+            # the drift check on its SUCCEEDED path.
+            third = await run_deployment_cycle(_SF, settings=drift_settings)
+            outcome = _mine(third, dep_id)
+            assert outcome is not None
+            assert outcome.status is StrategyDeploymentRunStatus.SUCCEEDED
+
+            await session.refresh(deployment)
+            assert deployment.status is StrategyDeploymentStatus.PAUSED
+            assert deployment.paused_reason and "drift detected" in deployment.paused_reason
+
+            check = await _latest_drift_check(session, dep_id)
+            assert check.status is DriftCheckStatus.DRIFT_DETECTED
+            assert check.action_taken == "paused"
+            assert check.actual_win_rate_pct == actual_rate
+            assert check.expected_win_rate_pct == far_rate
+        finally:
+            await session.delete(backtest_run)
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_drift_detected_with_auto_pause_disabled_leaves_the_deployment_active() -> None:
+    """The same drift scenario as above, but with
+    `strategy_drift_auto_pause_enabled` left at its default (`False`): the
+    check is still recorded, but nothing about the deployment changes."""
+    drift_settings = _SETTINGS.model_copy(
+        update={"strategy_drift_min_round_trips": 1, "strategy_drift_auto_pause_enabled": False}
+    )
+    async with db_session() as session, deployment_world(session, seed={"g": BUY_CLOSES}) as w:
+        good = w["symbols"]["g"]
+        dep_id = await _deploy(session, w, symbols=[good])
+
+        first = await run_deployment_cycle(_SF, settings=drift_settings)
+        assert _mine(first, dep_id).orders_filled == 1
+
+        await MarketDataStore(session).upsert_bars(_weekday_bars(good, SELL_CLOSES))
+        await session.commit()
+        second = await run_deployment_cycle(_SF, settings=drift_settings)
+        assert _mine(second, dep_id).orders_filled == 1
+
+        deployment = await session.get(StrategyDeployment, dep_id)
+        monitoring = await build_deployment_monitoring(session, deployment)
+        actual_rate = monitoring.actual.win_rate_pct
+        assert actual_rate is not None
+        far_rate = Decimal(0) if actual_rate >= Decimal(50) else Decimal(100)
+        backtest_run = _drift_backtest_run(
+            version_id=w["version_id"], symbol=good, win_rate_pct=far_rate
+        )
+        session.add(backtest_run)
+        await session.commit()
+
+        try:
+            third = await run_deployment_cycle(_SF, settings=drift_settings)
+            outcome = _mine(third, dep_id)
+            assert outcome is not None
+            assert outcome.status is StrategyDeploymentRunStatus.SUCCEEDED
+
+            await session.refresh(deployment)
+            assert deployment.status is StrategyDeploymentStatus.ACTIVE
+            assert deployment.paused_reason is None
+
+            check = await _latest_drift_check(session, dep_id)
+            assert check.status is DriftCheckStatus.DRIFT_DETECTED
+            assert check.action_taken == "observed_only"
+        finally:
+            await session.delete(backtest_run)
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_too_few_round_trips_writes_insufficient_data_and_never_touches_status() -> None:
+    """A deployment that has only ever bought (never sold) has zero closed
+    round trips - below the default `strategy_drift_min_round_trips=10` -
+    even though a reference backtest DOES exist (isolating this from the
+    separate "no reference backtest" reason for `INSUFFICIENT_DATA`, which
+    `tests/deployments/test_drift.py` covers directly). The cycle still
+    writes a drift-check row (`action_taken == "none"`), and the
+    deployment's own status is untouched."""
+    async with db_session() as session, deployment_world(session, seed={"g": BUY_CLOSES}) as w:
+        good = w["symbols"]["g"]
+        dep_id = await _deploy(session, w, symbols=[good])
+        backtest_run = _drift_backtest_run(
+            version_id=w["version_id"], symbol=good, win_rate_pct=Decimal("60.0000")
+        )
+        session.add(backtest_run)
+        await session.commit()
+
+        try:
+            result = await run_deployment_cycle(_SF, settings=_SETTINGS)
+            outcome = _mine(result, dep_id)
+            assert outcome is not None
+            assert outcome.status is StrategyDeploymentRunStatus.SUCCEEDED
+
+            check = await _latest_drift_check(session, dep_id)
+            assert check.status is DriftCheckStatus.INSUFFICIENT_DATA
+            assert check.action_taken == "none"
+            assert check.actual_win_rate_pct is None
+            assert check.expected_win_rate_pct is None
+            assert check.num_round_trips == 0
+
+            deployment = await session.get(StrategyDeployment, dep_id)
+            assert deployment.status is StrategyDeploymentStatus.ACTIVE
+            assert deployment.paused_reason is None
+        finally:
+            await session.delete(backtest_run)
+            await session.commit()
