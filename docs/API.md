@@ -2038,5 +2038,45 @@ implementation of pausing). Auto-pause can only ever make a deployment MORE
 conservative; it never places or sizes a trade differently. See
 `docs/DECISIONS.md` D084.
 
+## `POST /strategies/research/propose` — AI-drafted strategy idea from a research brief
+
+Requires `strategy:manage` (Phase 67, D085) — reused, not a new permission:
+proposing a draft is strictly weaker than the permission already required to
+save one. Request: `{"brief": "a mean-reversion idea using RSI"}` (1–500
+chars).
+
+400 (`NOT_CONFIGURED: no LLM provider is wired (see docs/DECISIONS.md
+D018).`) when no LLM provider is wired — same string convention as
+`POST /brokers/{id}/agent-trades`. 502 (`AGENT_OUTPUT_INVALID: …`) when the
+provider responded but not with parseable/well-typed JSON — mirrors
+`POST /brokers/{id}/agent-trades`'s own `AgentOutputError` handling.
+
+Response (200, `ProposeStrategyResponse`):
+```json
+{
+  "name": "RSI mean reversion",
+  "definition": {
+    "indicators": [{"id": "rsi_14", "type": "rsi", "period": 14}],
+    "entry_rule": {"op": "crosses_below", "left": "rsi_14", "right": "close"},
+    "exit_rule": {"op": "crosses_above", "left": "rsi_14", "right": "close"},
+    "position_sizing": {"type": "fixed_fraction", "fraction": 0.5}
+  },
+  "rationale": "Buys when RSI turns up from oversold, exits on the reverse cross.",
+  "is_valid": true,
+  "validation_errors": []
+}
+```
+`is_valid: false` with a non-empty `validation_errors` (the SAME itemized
+strings `POST .../versions/{id}/validate` would report, from
+`validate_definition` called verbatim) is a normal 200, not an error — the
+LLM's draft can be structurally wrong the same way a human's can. Never a
+performance claim, a backtest result, or a win rate: this agent has run
+neither and the system prompt forbids stating either. This route performs
+NO database write of any kind — no `Strategy` or `StrategyVersion` row is
+ever created here; the caller reviews the draft and creates it for real
+through `POST /strategies` + `POST .../versions/{id}/validate` if they
+choose to, at which point `validate_definition` runs again, for real,
+against the row that will actually be used. See `docs/DECISIONS.md` D085.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

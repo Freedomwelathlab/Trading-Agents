@@ -1,9 +1,17 @@
 # Agent Policy
 
-Two agents exist: `TraderAgent` (D018), a single-responsibility trade-idea
-drafter, and `TechnicalAnalyst` (D019), a single-responsibility read-only
-analyst — neither is the full parallel-analyst/research-debate stack
-below. This remains the policy every future agent is designed against.
+Agents in this codebase: `TraderAgent` (D018), a single-responsibility
+trade-idea drafter; `TechnicalAnalyst` (D019), `FundamentalAnalyst` (D059),
+and `NewsAnalyst` (D059), single-responsibility read-only analysts; and
+`StrategyResearchAssistant` (D085), a single-responsibility strategy-draft
+proposer — none of these is the full parallel-analyst/research-debate stack
+below. Like every analyst, `StrategyResearchAssistant` has no order or
+trade-submission path at all: its entire output is a proposed
+`StrategyDefinition` draft plus a rationale, both structurally validated
+against the same closed vocabulary a human-authored strategy must pass
+(`apps/api/app/strategies/validation.py::validate_definition`) before being
+handed back — never persisted, never a claim of backtested merit. This
+remains the policy every future agent is designed against.
 
 ## Rules
 

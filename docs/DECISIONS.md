@@ -8981,3 +8981,157 @@ migration `0026`):
   in the manifest. No new dependency.
 
 Status: Implemented and verified as above.
+
+---
+
+**D085 — Phase 67: AI strategy research assistant — advisory draft proposal, structurally re-validated, never persisted**
+
+Reason: the Strategy Lab so far requires a person to already know the exact
+closed-vocabulary shape of `apps/api/app/strategies/models.py` before they
+can write anything down. This phase adds a fifth agent,
+`StrategyResearchAssistant`, that turns a short natural-language research
+brief ("a mean-reversion idea using RSI") into a candidate
+`StrategyDefinition` draft plus a plain-English rationale — advisory input a
+person reviews, edits, or discards, exactly the same relationship
+`TechnicalAnalyst`'s commentary has to a trade a person or `TraderAgent`
+might act on.
+
+**(1) No order or execution path at all — one step further removed from a
+trade than any existing agent.** `StrategyProposal` carries no
+side/quantity/price/stop field (same as `TechnicalRead`), and
+`propose()` never opens a database session, calls a broker, or touches the
+Risk Engine. But it is stricter than that: even `TraderAgent`'s output can
+become a real order once the Risk Engine approves it, while this agent's
+output can only ever become a `StrategyVersion` DRAFT row — which itself
+does nothing until a human validates it, deploys it, and the existing
+paper-trading runner (Phase 63, D081) executes it behind its own mandatory
+approval gate. Three separate human decisions (save the draft, validate it,
+approve its deployment) and two deterministic gates (`validate_definition`,
+the Risk Engine via the runner's own trade path) sit between this agent's
+output and a single order.
+
+**(2) `validate_definition` is reused VERBATIM — never re-specified as a
+separate LLM-side check.** The closed vocabulary in
+`apps/api/app/strategies/models.py` is the actual safety boundary on this
+platform: `apps/api/app/strategies/validation.py`'s own docstring is explicit
+that a strategy definition must never become a vector for code execution.
+The system prompt states that vocabulary in full (every `IndicatorType`,
+every `RuleOperator` with the crossing-vs-instantaneous distinction from that
+enum's own docstring, every `PositionSizingType` and its
+`REQUIRED_SIZING_KEYS` parameter, built into the prompt programmatically from
+those same constants so the prompt cannot silently drift from the
+vocabulary it describes) so the model has the best chance of a draft that
+validates on the first try — but the prompt is advice to the model, not a
+contract this code trusts. Every proposed `definition`, however well the
+model followed instructions, is run through the identical
+`validate_definition` a human-authored strategy must pass before this agent
+hands anything back. This agent must be structurally unable to return
+something that looks like a valid `StrategyDefinition` but isn't.
+
+**(3) An invalid draft is a normal, expected result — never an exception,
+never a 4xx/5xx at the route.** `validate_definition`'s own docstring already
+establishes that an empty `{}` is a legal draft to store but not a valid
+definition; the same posture extends here. `StrategyProposal.validation_errors`
+carries whatever `validate_definition` returns (empty means valid), and
+`propose()` does not raise over a non-empty list — raising would turn an
+ordinary "the model's draft has these three problems" into an agent outage,
+when a human-authored draft with the same three problems is simply told
+`422 {"errors": [...]}"` at `POST .../versions/{id}/validate`. The route
+answers the equivalent case with `200 {"is_valid": false, "validation_errors":
+[...]}"` for the same reason: this is a normal, informative outcome, not a
+failure of the request. `AnalystOutputError` is reserved for a strictly
+different failure class — the response could not even be parsed into the
+expected `{name, definition, rationale}` shape (unparseable JSON, or a
+response missing one of those three fields entirely) — which is a
+provider/format failure, matching `TechnicalAnalyst`'s identical
+try/except shape and every other analyst sharing that same exception type.
+
+**(4) Nothing is persisted by this endpoint — zero database writes.**
+`POST /strategies/research/propose` requests no `AsyncSession` dependency at
+all, so there is nothing for it to commit. A `Strategy` and its `StrategyVersion`
+are created, exactly as before, only through the existing
+`POST /strategies` + `POST .../versions/{id}/validate` path — at which point
+`validate_definition` runs again, for real, against the row that will
+actually be used. Showing a draft and saving one are deliberately two
+different, human-gated acts, continuing the "no code path skips a
+deliberate human action" thread D071 and D081 already established for this
+initiative: nothing about a plausible-sounding LLM idea should be able to
+become a persisted, runnable strategy without a person choosing to put it
+there.
+
+**(5) No new permission — `strategy:manage` reused verbatim.** Proposing a
+draft for review is a strictly weaker capability than the permission a
+caller already needs to save what it proposes (create a `Strategy`); a
+separate permission would gate nothing a caller who already holds
+`strategy:manage` doesn't already have the stronger ability to do anyway.
+
+Alternatives considered:
+- *Auto-create the `Strategy`/`StrategyVersion` row when the proposed draft
+  validates.* Rejected — see (4). A human must still deliberately choose to
+  save an idea they were only shown; validating cleanly is not the same
+  thing as a person wanting it saved, and doing so automatically would be
+  the first code path in this whole initiative that skips a deliberate
+  human action between "the system produced something plausible" and "a
+  runnable row exists."
+- *Let the LLM free-write JSON with no closed-vocabulary system prompt and
+  rely on `validate_definition` alone to catch problems.* Rejected/inferior,
+  not unsafe — see (2). `validate_definition` alone is still a complete
+  safety boundary (it is the SAME function either way), so this alternative
+  would not have been a security gap. It is worse practically: a
+  well-specified prompt materially reduces how often a caller gets back an
+  invalid draft and has to re-ask, but the vocabulary reminder is a quality
+  optimization, not the safety mechanism — that distinction is the reason
+  (2) states the prompt is "advice to the model, not a contract this code
+  trusts" rather than treating a good prompt as sufficient on its own.
+- *A new, narrower permission for research proposals only.* Rejected — see
+  (5). It would gate a capability strictly weaker than one every eligible
+  caller already holds, adding a second permission to check for no access
+  control it actually changes.
+
+Files: `apps/api/app/agents/strategy_research_assistant.py` (new —
+`StrategyProposal`, `StrategyResearchAssistant`,
+`build_strategy_research_assistant`; reuses `AnalystOutputError` from
+`apps/api/app/agents/technical_analyst.py` verbatim, per that module's own
+"shared across the whole analyst layer" docstring), `apps/api/app/main.py`
+(`app.state.strategy_research_assistant` wiring + readiness-log entry,
+alongside the existing `technical_analyst` lines), `apps/api/app/api/
+dependencies.py` (`get_strategy_research_assistant`), `apps/api/app/api/
+routes/strategies.py` (`POST /strategies/research/propose`),
+`apps/api/app/api/schemas_strategies.py` (`ProposeStrategyRequest`,
+`ProposeStrategyResponse`). No new migration — no schema change this phase.
+Docs: `docs/AGENT_POLICY.md` (agent list updated), `docs/API.md` (new
+section), `docs/IMPLEMENTATION_STATUS.md` (new top `## Completed` entry).
+Tests: `tests/agents/test_strategy_research_assistant.py` (new — a
+vocabulary-valid draft → empty `validation_errors`; a vocabulary-violating
+draft → real itemized errors, no raise; non-JSON response → `AnalystOutputError`;
+JSON missing a required top-level field → `AnalystOutputError`;
+`build_strategy_research_assistant(None) is None`), `tests/api/
+test_strategies.py` (+5: 400 `NOT_CONFIGURED` with no provider wired; 403
+without `strategy:manage`; a wired-in stub's valid-draft case is 200
+`is_valid: true` and writes no `Strategy` row; its invalid-draft case is
+still 200 `is_valid: false` with real errors and also writes no row; a
+provider error is 502 `AGENT_OUTPUT_INVALID`). Frontend (built by a second,
+parallel agent against this frozen JSON contract, entirely inside
+`apps/web/`): `apps/web/app/api/strategies/research/propose/route.ts` (new
+POST proxy), `apps/web/components/StrategyResearchAssistant.tsx` (new — the
+brief textarea, and all four rendered states: valid draft, invalid-but-
+parsed draft with its errors listed verbatim, calm `NOT_CONFIGURED`
+messaging, and a distinct 502/thrown-failure message), `apps/web/app/
+strategies/research/page.tsx` (new, mirrors `leaderboard/page.tsx`'s thin-
+wrapper shape), `apps/web/app/strategies/page.tsx` (a link to the new page),
+`apps/web/test/StrategyResearchAssistant.test.tsx` (new, 8 tests).
+
+Verification (2026-09-11, isolated Postgres/Redis, freshly migrated from
+empty; no new migration this phase):
+
+- **1109 backend tests** (1097 → 1109, +12: 7 in `tests/agents/
+  test_strategy_research_assistant.py` (new file), +5 in `tests/api/
+  test_strategies.py`); `ruff check apps tests migrations` clean; `mypy
+  apps` clean, **143 source files** (up from 142); `bash
+  scripts/secret_scan.sh` clean; full run 19m40s, exit 0.
+- **311 frontend tests across 39 files** (303 / 38 → 311 / 39; +8 in
+  `test/StrategyResearchAssistant.test.tsx`), `npm run build` clean with
+  `/strategies/research` and `/api/strategies/research/propose` in the
+  manifest. No new dependency.
+
+Status: Implemented and verified as above.

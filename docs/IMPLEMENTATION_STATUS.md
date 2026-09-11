@@ -4,6 +4,28 @@ Update this after meaningful implementation work — not for every commit.
 
 ## Completed
 
+- Phase 67: AI strategy research assistant (2026-09-11, D085) — advisory-only
+  agent (`apps/api/app/agents/strategy_research_assistant.py::
+  StrategyResearchAssistant`) that proposes a candidate `StrategyDefinition`
+  draft plus a plain-English rationale from a short natural-language brief
+  (e.g. "a mean-reversion idea using RSI"). No order/trade-submission path at
+  all, same as every analyst (spec §62, `docs/AGENT_POLICY.md`). Every
+  proposed definition is run through the SAME structural validator a
+  manually-authored strategy must pass
+  (`apps/api/app/strategies/validation.py::validate_definition`, called
+  verbatim) — an invalid draft is a normal 200 result with itemized
+  `validation_errors`, never a fabricated pass and never an exception; only
+  an unparseable/malformed LLM response raises `AnalystOutputError` (502 at
+  the route). New route `POST /strategies/research/propose`, same
+  `strategy:manage` permission as every other `/strategies` route — no new
+  permission — and NO database write of any kind: the caller reviews the
+  draft and creates it for real through the existing `POST /strategies` +
+  `POST .../versions/{id}/validate` path if they choose to.
+  **1109 backend tests** (1097→1109, +12: 7 `test_strategy_research_assistant.py`,
+  5 `test_strategies.py`); `ruff`, `mypy apps` (143 files, up from 142),
+  `secret_scan` clean. **311 frontend tests / 39 files** (303/38→311/39,
+  +8), `npm run build` clean. No new dependency, no migration.
+
 - Phase 66: drift detection (2026-09-11, D084) — strategy-scoped auto-pause
   when a deployment's real, closed-trade performance drifts from its own
   backtest expectation. Reuses Phase 65's `build_deployment_monitoring`

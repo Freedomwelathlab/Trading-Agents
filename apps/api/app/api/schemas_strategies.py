@@ -151,6 +151,34 @@ class StrategyDetailResponse(BaseModel):
     versions: list[StrategyVersionSummary]
 
 
+class ProposeStrategyRequest(BaseModel):
+    """The one input to `POST /strategies/research/propose` (Phase 67,
+    D085): a short research goal in the caller's own words, e.g. "a
+    mean-reversion idea using RSI". Bounded 1-500 chars for the same reason
+    every free-text field on this platform is bounded - an unbounded prompt
+    is an unbounded cost with no benefit past a couple of sentences of
+    intent."""
+
+    brief: str = Field(min_length=1, max_length=500)
+
+
+class ProposeStrategyResponse(BaseModel):
+    """The agent's draft, plus the SAME structural verdict a manually
+    authored strategy gets from `POST .../versions/{id}/validate`
+    (`apps/api/app/strategies/validation.py::validate_definition`, called
+    verbatim). `is_valid: false` with a real `validation_errors` list is a
+    normal, expected response - not an error - exactly like this agent's own
+    `StrategyProposal.is_valid`/`validation_errors`. Nothing behind this
+    response is persisted: no `Strategy` or `StrategyVersion` row is created
+    by this endpoint, whatever `is_valid` says."""
+
+    name: str
+    definition: dict
+    rationale: str
+    is_valid: bool
+    validation_errors: list[str]
+
+
 class ListStrategiesResponse(BaseModel):
     """Paginated listing envelope - `{items, limit, offset}`, the same
     shape as `ListUsersResponse` / `ListRolesResponse` / the portfolio
