@@ -405,6 +405,11 @@ async def test_another_users_deployment_is_403_and_an_unknown_id_is_404() -> Non
                         f"/deployments/{deployment_id}/monitoring", headers=_h(other_token)
                     )
                 ).status_code == 403
+                assert (
+                    await client.get(
+                        f"/deployments/{deployment_id}/drift-checks", headers=_h(other_token)
+                    )
+                ).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -457,6 +462,42 @@ async def test_get_deployment_monitoring_returns_actual_and_expected_shape() -> 
             assert expected["max_drawdown_pct"] is None
             assert expected["win_rate_pct"] is None
             assert expected["num_trades"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_deployment_drift_checks_returns_the_expected_list_shape() -> None:
+    """Phase 66 (D084): a fresh deployment the runner has never cycled has
+    no drift-check rows yet - an honest empty list, not an error. Ownership
+    is exactly the sibling ownership test's 403 (already covered above);
+    this test is the 200 list-shape counterpart."""
+    async with (
+        db_session() as session,
+        deploy_user(session) as (_uid, email),
+        paper_broker(session) as broker_id,
+    ):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            strategy_id, version_id = await _validated_strategy(
+                client, token, definition=SMA2_DEFINITION
+            )
+            created = await client.post(
+                f"/strategies/{strategy_id}/versions/{version_id}/deployments",
+                headers=_h(token),
+                json={"broker_id": str(broker_id), "symbols": ["GOOD.US"]},
+            )
+            deployment_id = created.json()["id"]
+            await client.post(
+                f"/deployments/{deployment_id}/approve", headers=_h(token), json={}
+            )
+
+            resp = await client.get(
+                f"/deployments/{deployment_id}/drift-checks", headers=_h(token)
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["items"] == []
+            assert body["limit"] == 50
+            assert body["offset"] == 0
 
 
 @pytest.mark.asyncio

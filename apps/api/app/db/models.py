@@ -1843,3 +1843,68 @@ class StrategyDeploymentRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class DriftCheckStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy Enum interop)
+    """The verdict of one drift check for one deployment cycle (Phase 66,
+    D084). Exhaustive and typed for the same reason
+    `StrategyDeploymentRunStatus` is: "the check ran and found nothing wrong"
+    must never be indistinguishable from "the check could not be run at
+    all" - those are different facts and this codebase does not fabricate
+    a verdict to paper over the difference.
+    """
+
+    NO_DRIFT = "no_drift"
+    DRIFT_DETECTED = "drift_detected"
+    INSUFFICIENT_DATA = "insufficient_data"
+    """Either side of the comparison is missing real numbers: no reference
+    backtest exists for the strategy version, or this deployment has not
+    yet closed enough round trips (`strategy_drift_min_round_trips`) to
+    judge. Never rendered as `NO_DRIFT` - that would claim evidence this
+    system does not have."""
+
+
+class StrategyDriftCheck(Base):
+    """Append-only audit of one drift check for one deployment, written
+    every successful runner cycle (Phase 66, D084, migration 0026) - the
+    same "a no-op flip still writes a row" philosophy
+    `emergency_stop_events` follows, applied to drift instead of the kill
+    switch. A cycle that found `NO_DRIFT`, one that could not judge yet
+    (`INSUFFICIENT_DATA`), and one that found `DRIFT_DETECTED` each write a
+    row here; a missing row is never the only evidence a check happened.
+
+    `ON DELETE CASCADE` to the deployment, matching
+    `strategy_deployment_runs.deployment_id` exactly - this is diagnostic
+    history scoped to the deployment's own lifecycle, with no standalone
+    meaning once the deployment itself is gone (unlike a `BacktestRun`,
+    whose inputs must stay pinned).
+
+    `action_taken` records what this check actually did, independent of
+    `status`: `"none"` for `NO_DRIFT`/`INSUFFICIENT_DATA`,
+    `"observed_only"` for `DRIFT_DETECTED` while
+    `strategy_drift_auto_pause_enabled` is off (the default), `"paused"`
+    for `DRIFT_DETECTED` with auto-pause on. See `deployments/drift.py` for
+    why win-rate deviation is the signal and why auto-pause defaults off.
+    """
+
+    __tablename__ = "strategy_drift_checks"
+    __table_args__ = (
+        Index("ix_strategy_drift_checks_deployment", "deployment_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    deployment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_deployments.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[DriftCheckStatus] = mapped_column(
+        _pg_enum(DriftCheckStatus, "driftcheckstatus"), nullable=False
+    )
+    actual_win_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    expected_win_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    win_rate_deviation_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    num_round_trips: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    action_taken: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

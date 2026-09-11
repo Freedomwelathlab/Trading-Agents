@@ -186,6 +186,22 @@ responses. Missing or unreachable data renders as `NOT CONFIGURED` or
      mark against **fails the cycle visibly** rather than fabricating a
      price. It never invents a fill: a fill is written only by
      `submit_trade_and_record` from the broker's own answer.
+  4. **Phase 66 (D084): drift detection runs after every SUCCEEDED cycle,
+     always audited, and can only ever make a deployment MORE conservative.**
+     `apps/api/app/deployments/drift.py::evaluate_deployment_drift` compares
+     this deployment's real win rate (via Phase 65's
+     `build_deployment_monitoring`, reused verbatim) to its reference
+     backtest's, and `apps/api/app/deployments/runner.py::_check_and_record_drift`
+     writes an append-only `strategy_drift_checks` row every single time —
+     never only when drift is found — matching `emergency_stop_events`' own
+     "a no-op flip still writes a row" audit philosophy. Auto-pause defaults
+     OFF (`strategy_drift_auto_pause_enabled=false`): with it off, a
+     detected drift is recorded as `action_taken="observed_only"` and the
+     deployment keeps running unchanged; only with it explicitly on does the
+     system call the EXISTING `pause_deployment()` service function itself.
+     This feature never places or sizes a trade differently — it can only
+     ever pause a deployment that is already running — so it does not touch
+     this document's live-trading gate at all.
 
 **Standing rule, unchanged by Phases 43 and 49:** building the live path is
 not enabling it. `LIVE_TRADING_ENABLED` stays `false` in every default and

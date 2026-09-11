@@ -8,9 +8,10 @@ Two routers, the same split the signal and universe-scan surfaces use:
   is always OF one.
 - `deployments_router` (`/deployments/...`) - read one deployment, run its
   lifecycle actions (approve / pause / resume / stop), list its runs and
-  the signals its runs produced, and (Phase 65, D083) report its actual vs.
-  expected performance. A deployment has its own id and a caller holding it
-  should not need to know the version path.
+  the signals its runs produced, (Phase 65, D083) report its actual vs.
+  expected performance, and (Phase 66, D084) list its append-only drift
+  checks. A deployment has its own id and a caller holding it should not
+  need to know the version path.
 
 Authorization is two-part, unchanged from D071:
 - the router-level permission (`STRATEGY_DEPLOY` for everything except
@@ -42,9 +43,11 @@ from apps.api.app.api.schemas_deployments import (
     DeploymentExpectedPerformanceResponse,
     DeploymentMonitoringResponse,
     DeploymentSignalResponse,
+    DriftCheckResponse,
     ListDeploymentRunsResponse,
     ListDeploymentSignalsResponse,
     ListDeploymentsResponse,
+    ListDriftChecksResponse,
     PauseDeploymentRequest,
     RoundTripResponse,
     StrategyDeploymentResponse,
@@ -59,6 +62,7 @@ from apps.api.app.db.models import (
     Strategy,
     StrategyDeployment,
     StrategyDeploymentRun,
+    StrategyDriftCheck,
     StrategyVersion,
     User,
 )
@@ -477,4 +481,58 @@ async def get_deployment_monitoring(
             win_rate_pct=result.expected.win_rate_pct,
             num_trades=result.expected.num_trades,
         ),
+    )
+
+
+def _drift_check_response(row: StrategyDriftCheck) -> DriftCheckResponse:
+    return DriftCheckResponse(
+        id=row.id,
+        deployment_id=row.deployment_id,
+        status=row.status,
+        actual_win_rate_pct=row.actual_win_rate_pct,
+        expected_win_rate_pct=row.expected_win_rate_pct,
+        win_rate_deviation_pct=row.win_rate_deviation_pct,
+        num_round_trips=row.num_round_trips,
+        action_taken=row.action_taken,  # type: ignore[arg-type]
+        detail=row.detail,
+        created_at=row.created_at,
+    )
+
+
+@deployments_router.get(
+    "/{deployment_id}/drift-checks", response_model=ListDriftChecksResponse
+)
+async def list_deployment_drift_checks(
+    deployment_id: uuid.UUID,
+    limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ListDriftChecksResponse:
+    """Phase 66 (D084) - every drift check any of this deployment's
+    SUCCEEDED runner cycles produced, newest first. Read-only: exactly as
+    privileged as reading run history, same `strategy:deploy` permission and
+    ownership check as `.../runs`/`.../signals`/`.../monitoring`, no new
+    permission. A `status == "insufficient_data"` or `"no_drift"` row is not
+    an error - it is the honest audit trail this feature keeps every cycle,
+    matching the emergency-stop table's "a no-op flip still writes a row"
+    philosophy."""
+    await _load_owned_deployment(session, deployment_id, current_user)
+    rows = (
+        (
+            await session.execute(
+                select(StrategyDriftCheck)
+                .where(StrategyDriftCheck.deployment_id == deployment_id)
+                .order_by(
+                    StrategyDriftCheck.created_at.desc(), StrategyDriftCheck.id.desc()
+                )
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return ListDriftChecksResponse(
+        items=[_drift_check_response(r) for r in rows], limit=limit, offset=offset
     )

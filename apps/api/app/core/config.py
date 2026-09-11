@@ -2,7 +2,7 @@ from decimal import Decimal
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # apps/api/app/portfolio/models.py is pure Pydantic/enum - no config, no DB,
@@ -333,6 +333,40 @@ class Settings(BaseSettings):
     only, not a fabricated exchange calendar; disable to run the cycle every
     interval regardless of day."""
 
+    strategy_drift_min_round_trips: int = 10
+    """Phase 66 (D084): a deployment's own closed round trips must reach
+    this count before `evaluate_deployment_drift` will render a verdict at
+    all - below it, the result is `INSUFFICIENT_DATA`, never a fabricated
+    `NO_DRIFT`/`DRIFT_DETECTED` computed from a handful of trades. A win
+    rate over 2-3 round trips is noise, not evidence; judging drift from it
+    would risk auto-pausing (or falsely clearing) a deployment on a coin
+    flip. Must be positive (see the validator below) - a zero or negative
+    threshold would let the very first round trip decide the verdict."""
+
+    strategy_drift_max_win_rate_deviation_pct: Decimal = Field(default=Decimal("30"), gt=0)
+    """Phase 66 (D084): how many percentage points a deployment's actual win
+    rate may diverge (absolute value) from its reference backtest's
+    `win_rate_pct` before `evaluate_deployment_drift` calls it drift. 30
+    points is deliberately generous - this compares a live, still-small
+    paper-trading sample against a backtest computed over far more trades,
+    and a tight threshold would flag ordinary small-sample noise as drift,
+    pausing a deployment that is not actually broken. `gt=0`: a
+    zero-or-negative deviation ceiling would call every non-identical win
+    rate drift, which is not a meaningful signal."""
+
+    strategy_drift_auto_pause_enabled: bool = False
+    """Phase 66 (D084): opt-in switch for automatically pausing a deployment
+    when `evaluate_deployment_drift` returns `DRIFT_DETECTED`. Defaults
+    FALSE - the same fail-closed posture as every other automation in this
+    codebase (the snapshot scheduler, the reconciler, the strategy runner
+    itself, live trading). Drift is still detected and recorded in
+    `strategy_drift_checks` every cycle regardless of this setting; when it
+    is `False`, the audit row simply reads `action_taken="observed_only"`
+    and an operator who agrees pauses the deployment by hand
+    (`POST /deployments/{id}/pause`) rather than the system doing it for
+    them. This mirrors docs/TRADING_SAFETY.md's standing pattern of
+    auditing before acting."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None
@@ -530,6 +564,13 @@ class Settings(BaseSettings):
                 "STRATEGY_RUNNER_INTERVAL_SECONDS must be positive. A zero or negative "
                 "interval would busy-loop the deployment runner against the database and "
                 "the paper broker (Phase 63, D081)."
+            )
+        if self.strategy_drift_min_round_trips <= 0:
+            raise ValueError(
+                "STRATEGY_DRIFT_MIN_ROUND_TRIPS must be positive (Phase 66, D084). A zero "
+                "or negative threshold would let evaluate_deployment_drift render a "
+                "NO_DRIFT/DRIFT_DETECTED verdict from a tiny, noisy sample of round trips "
+                "instead of the honest INSUFFICIENT_DATA."
             )
         return self
 

@@ -2007,5 +2007,36 @@ as "what the version's headline backtest showed for that one symbol," not
 as a per-symbol comparison for every symbol this deployment trades. See
 `docs/DECISIONS.md` D083.
 
+## `GET /deployments/{deployment_id}/drift-checks` — the deployment's drift-check audit trail
+
+Requires `strategy:deploy`, 404/403 by ownership — exactly as privileged as
+`.../runs`/`.../signals`/`.../monitoring`, no new permission. `limit`/`offset`
+envelope. Response (200, `ListDriftChecksResponse`): `{"items": [{"id": "…",
+"deployment_id": "…", "status": "drift_detected", "actual_win_rate_pct":
+"20.0000", "expected_win_rate_pct": "60.0000", "win_rate_deviation_pct":
+"40.0000", "num_round_trips": 12, "action_taken": "observed_only", "detail":
+"actual win rate 20.0000% deviates 40.0000% from the reference backtest's
+60.0000%, exceeding the configured maximum of 30%.", "created_at": "…"}],
+"limit": 50, "offset": 0}`, newest first.
+
+Written once per SUCCEEDED runner cycle (Phase 66, D084) — never for a
+FAILED, a SKIPPED_*, or a live-mode cycle. `status` is `no_drift` /
+`drift_detected` / `insufficient_data`; the three win-rate fields are `null`
+together when `status == "insufficient_data"` (no reference backtest yet,
+or fewer closed round trips than `STRATEGY_DRIFT_MIN_ROUND_TRIPS`) — never a
+fabricated number from too small a sample. Every cycle writes a row
+regardless of the verdict, matching the emergency-stop table's "a no-op
+flip still writes a row" audit philosophy — a `no_drift` row is not an
+absence of data, it is the recorded fact that this cycle checked and found
+nothing wrong.
+
+`action_taken` is `"none"` (`no_drift` / `insufficient_data`),
+`"observed_only"` (`drift_detected` while `STRATEGY_DRIFT_AUTO_PAUSE_ENABLED`
+is off — the default), or `"paused"` (`drift_detected` with auto-pause on,
+via the existing `pause_deployment()` service function — never a second
+implementation of pausing). Auto-pause can only ever make a deployment MORE
+conservative; it never places or sizes a trade differently. See
+`docs/DECISIONS.md` D084.
+
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.

@@ -59,6 +59,21 @@ WHAT MAKES IT SAFE
   stranded row.
 - **Cross-worker exclusion** via the same Postgres advisory lock the
   snapshot scheduler and reconciler use, on this job's own objid.
+- **Drift detection runs after every SUCCEEDED cycle, in the same
+  transaction (Phase 66, D084).** `_check_and_record_drift` calls
+  `deployments/drift.py::evaluate_deployment_drift` (which itself reuses
+  Phase 65's `build_deployment_monitoring` verbatim) and writes an
+  append-only `StrategyDriftCheck` row every time - never only when drift
+  is found, the same `emergency_stop_events` "a no-op flip still writes a
+  row" philosophy. It never runs for a FAILED, a SKIPPED_*, or a live-mode
+  cycle - only a real SUCCEEDED trading cycle has real closed trades worth
+  judging. When drift is detected AND `strategy_drift_auto_pause_enabled`
+  is on (default `false`), it pauses the deployment through the EXISTING
+  `deployments/service.py::pause_deployment` - never a second
+  implementation of pausing - recording `action_taken="paused"`; with
+  auto-pause off, the row reads `action_taken="observed_only"` and nothing
+  about the deployment changes. This can only ever make a deployment MORE
+  conservative (pause it) - it never places or sizes a trade differently.
 
 DEFAULT: DISABLED
 -----------------
@@ -91,6 +106,7 @@ from apps.api.app.backtesting.engine_v2 import _desired_quantity, _warmup_bar_co
 from apps.api.app.core.config import Settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.models import (
+    DriftCheckStatus,
     Order,
     SignalDirection,
     SignalEvaluation,
@@ -98,8 +114,10 @@ from apps.api.app.db.models import (
     StrategyDeploymentRun,
     StrategyDeploymentRunStatus,
     StrategyDeploymentStatus,
+    StrategyDriftCheck,
     StrategyVersion,
 )
+from apps.api.app.deployments.service import DeploymentError, pause_deployment
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
 from apps.api.app.marketdata.portfolio_risk import load_market_risk_inputs
 from apps.api.app.marketdata.store import MarketDataStore
@@ -489,6 +507,78 @@ async def run_deployment_cycle(
         )
 
 
+async def _check_and_record_drift(
+    session: AsyncSession,
+    deployment: StrategyDeployment,
+    *,
+    settings: Settings,
+) -> None:
+    """Phase 66 (D084): after a SUCCEEDED cycle, in the SAME transaction as
+    that cycle's trading effects, check whether this deployment's real
+    performance has drifted from its own real backtest and write an
+    append-only `StrategyDriftCheck` row - every time, never only when
+    something is wrong (the `emergency_stop_events` table's "a no-op flip
+    still writes a row" philosophy, applied here to drift instead of the
+    kill switch). When drift is detected and
+    `strategy_drift_auto_pause_enabled` is on, pause the deployment through
+    the EXISTING `deployments/service.py::pause_deployment` - never a
+    reimplementation of pausing.
+
+    Imports `evaluate_deployment_drift` locally: `deployments/drift.py`
+    imports `deployments/monitoring.py`, which imports `utc_now` from this
+    module, so a module-level import here would be circular.
+    """
+    from apps.api.app.deployments.drift import evaluate_deployment_drift
+
+    result = await evaluate_deployment_drift(
+        session,
+        deployment,
+        min_round_trips=settings.strategy_drift_min_round_trips,
+        max_win_rate_deviation_pct=settings.strategy_drift_max_win_rate_deviation_pct,
+    )
+
+    action_taken = "none"
+    if result.status is DriftCheckStatus.DRIFT_DETECTED:
+        if settings.strategy_drift_auto_pause_enabled:
+            try:
+                await pause_deployment(
+                    deployment,
+                    reason=(
+                        f"Phase 66 auto-pause (D084): drift detected - actual win rate "
+                        f"{result.actual_win_rate_pct}% vs. reference backtest "
+                        f"{result.expected_win_rate_pct}% (deviation "
+                        f"{result.win_rate_deviation_pct}%, threshold "
+                        f"{settings.strategy_drift_max_win_rate_deviation_pct}%)."
+                    ),
+                )
+                action_taken = "paused"
+            except DeploymentError:
+                # The deployment stopped being ACTIVE between this cycle's
+                # own status re-read and this point (it cannot have - this
+                # all runs in one transaction with no other writer - but
+                # pause_deployment's own precondition is the source of
+                # truth, not an assumption repeated here). Record the
+                # attempt honestly rather than raising and losing the
+                # drift-check row entirely.
+                action_taken = "observed_only"
+        else:
+            action_taken = "observed_only"
+
+    session.add(
+        StrategyDriftCheck(
+            id=uuid.uuid4(),
+            deployment_id=deployment.id,
+            status=result.status,
+            actual_win_rate_pct=result.actual_win_rate_pct,
+            expected_win_rate_pct=result.expected_win_rate_pct,
+            win_rate_deviation_pct=result.win_rate_deviation_pct,
+            num_round_trips=result.num_round_trips,
+            action_taken=action_taken,
+            detail=result.detail,
+        )
+    )
+
+
 async def _run_deployment_isolated(
     session_factory: async_sessionmaker[AsyncSession],
     deployment_id: uuid.UUID,
@@ -576,6 +666,14 @@ async def _run_deployment_isolated(
             outcome = await _run_one_deployment(
                 session, deployment, run, settings=settings, clock=clock
             )
+            if outcome.status is StrategyDeploymentRunStatus.SUCCEEDED:
+                # Phase 66 (D084): only after a real SUCCEEDED trading cycle
+                # - never for FAILED, a SKIPPED_* status, or a live-mode
+                # cycle (which never reaches SUCCEEDED at all, see above) -
+                # and in the SAME transaction so the drift check and any
+                # resulting pause either commit together with the cycle
+                # they evaluate or, on a crash, neither does.
+                await _check_and_record_drift(session, deployment, settings=settings)
             await session.commit()
             return outcome
         except Exception as exc:  # noqa: BLE001 - the run row must resolve, never strand
