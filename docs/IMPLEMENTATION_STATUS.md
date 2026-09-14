@@ -3197,9 +3197,14 @@ untouched. See docs/DECISIONS.md D057 for the full verification record.
 
 Open, known-and-scoped limitations (not defects): the snapshot scheduler's
 market-hours gate is weekend-only — intraday after-hours and exchange
-holidays are not checked (Phase 35/D042) — and each API worker process
-still runs its own independent scheduler loop, so >1 worker would multiply
-snapshot rows (D030).
+holidays are not checked (Phase 35/D042).
+
+*(Corrected 2026-09-14: this note previously also claimed "each API worker
+process still runs its own independent scheduler loop, so >1 worker would
+multiply snapshot rows (D030)." That was fixed by Phase 38/D047, which put
+a non-blocking Postgres advisory lock around each cycle — verified present
+in `apps/api/app/portfolio/scheduler.py`. The stale line is removed rather
+than left to mislead an operator into avoiding a second worker.)*
 
 Both backend gaps identified by Phase 47 (D062) while building the frontend
 for them are now **CLOSED**:
