@@ -2235,3 +2235,32 @@ gap to fill, never a session of nulls.
 The three VWAP figures are quantized to six decimals — the precision
 `market_data_bars` stores. Levels taken straight from a bar are passed
 through unrounded so the API cannot disagree with the bar it read.
+
+### Creating the first user
+
+There is no public registration. Accounts are created through
+`POST /admin/users`, which itself requires `admin:manage` — so the first
+admin on a fresh database is inserted directly.
+
+`scripts/create_admin.py` does that interactively:
+
+```
+export DATABASE_URL='postgresql://...'   # the target database
+python scripts/create_admin.py
+```
+
+The password is read with `getpass`, hashed with the application's own
+`hash_password`, and only the hash is stored. It is never printed, never
+logged and never passed as an argument, so it does not reach shell
+history, a process list, or a transcript.
+
+Re-running is safe: an existing email is reported and left alone rather
+than overwritten, so the script cannot silently reset somebody's password.
+An existing role is reused **as-is and never widened** — escalating a role
+would escalate everyone already holding it — and the script says plainly
+which permissions the new account will therefore lack.
+
+`--live` additionally grants `trade:submit:live` and
+`strategy:approve_live_deployment`. Off by default. It grants the
+PERMISSION only: `TRADING_MODE` and `LIVE_TRADING_ENABLED` gate execution
+independently and this script touches neither.
