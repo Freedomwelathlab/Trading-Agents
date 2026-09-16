@@ -87,6 +87,35 @@ any strategy makes money.
   risk per trade, the composite -30.43%. **Nothing is deployable and
   nothing was deployed.**
 
+  Verified 2026-09-16 at migration head `0030` (no migration this phase -
+  the intraday engine persists nothing yet): **1360 backend tests**
+  (1276 -> 1360, +84), **325 frontend tests**, ruff / mypy / eslint / `tsc`
+  / secret scan clean. The backend figure is from a complete run watched to
+  completion, not an interim count.
+
+  **Two pre-existing tests failed when credentials were enabled, and that
+  was the correct signal.** `test_omitting_estimated_price_with_no_vendor_
+  wired_is_400_not_configured` and `test_omitting_a_trader_agent_is_400_
+  not_configured` asserted NOT_CONFIGURED while relying on the test host
+  simply having no Longbridge credentials - one of them said so in its own
+  docstring. That held only for as long as the platform had never been
+  configured. Both now override `get_market_data_router` to `None`
+  explicitly, so a test of "no vendor wired" wires no vendor itself and
+  means the same thing on a machine with credentials and one without.
+
+  Two frontend chart tests (`EquityCurveChart`, `PortfolioHistoryChart`)
+  timed out at 5s during a run that shared the machine with the backend
+  suite; re-run in isolation the slower of the two completes in 888ms
+  against a 12,941ms timeout under load. CPU contention, not a regression -
+  no frontend file was touched this phase.
+
+  **Known limitation: intraday runs are not persisted.** `backtest_runs`
+  and the history page cover `engine_v2` only, so the results above live in
+  this document and in the artifact rather than in the product. Persisting
+  them needs its own table (a bracket trade has several fills, which the
+  single-row `backtest_trades` shape cannot hold) and is deliberately not
+  bolted onto a schema that does not fit it.
+
   Not TQQQ-specific: every level derives from the instrument's own
   sessions and every distance is in ATR units, so the same config runs
   against any symbol with intraday bars. New modules: `marketdata/ohlcv.py`
