@@ -21,9 +21,9 @@ from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerGrant, User
 from apps.api.app.execution.live_broker import LiveBrokerAdapter
+from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.marketdata.fundamentals_provider import FundamentalsProvider
 from apps.api.app.marketdata.history_provider import HistoryProvider
-from apps.api.app.marketdata.ingestion.backfill import BarBackfillProvider
 from apps.api.app.marketdata.news_provider import NewsProvider
 from apps.api.app.marketdata.router import MarketDataRouter
 
@@ -80,13 +80,19 @@ def get_live_broker_adapter(request: Request) -> LiveBrokerAdapter | None:
     return request.app.state.live_broker_adapter
 
 
-def get_market_data_bar_backfill_provider(request: Request) -> BarBackfillProvider | None:
-    """Phase 53 (docs/DECISIONS.md D070). None means no historical-bar
-    backfill vendor is configured - the same all-or-nothing Longbridge
-    credential gate every other market-data provider in this app uses.
-    Optional context, exactly like get_history_provider: its absence means
-    POST /admin/market-data/backfill answers NOT_CONFIGURED, never a
-    fabricated or partially-faked ingestion."""
+def get_market_data_bar_backfill_provider(request: Request) -> BarBackfillRouter:
+    """Phase 53 (D070), widened to a router in Phase 71 (D089).
+
+    **Never None**, unlike every other provider dependency here. The router
+    always exists because its crypto half - Coinbase's public candle API -
+    needs no credentials, so there is always at least one vendor reachable.
+    Its Longbridge half is still gated on the usual all-or-nothing
+    credential trio, and `configured_vendors` reports which halves are
+    live.
+
+    A symbol no configured vendor serves raises `UnroutableSymbolError`
+    rather than returning nothing, so an unbacked request fails loudly
+    instead of recording an empty ingestion."""
     return request.app.state.market_data_bar_backfill_provider
 
 

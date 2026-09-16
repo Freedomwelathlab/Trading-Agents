@@ -35,6 +35,7 @@ from apps.api.app.marketdata.router import MarketDataRouter
 from apps.api.app.portfolio.market_hours import MarketHoursDecision, MarketHoursGate
 from apps.api.app.portfolio.scheduler import (
     PortfolioSnapshotScheduler,
+    ScheduledSnapshotStatus,
     eligible_broker_ids,
     open_position_symbols,
     run_snapshot_cycle,
@@ -132,6 +133,27 @@ async def test_a_weekend_cycle_writes_nothing_and_makes_no_vendor_call():
         assert await _snapshot_rows(session, broker_id) == []
 
 
+def _captured(result, broker_id) -> bool:
+    """Whether THIS broker captured a snapshot in this cycle.
+
+    Phase 70. `run_snapshot_cycle` is a GLOBAL cycle - it walks every
+    broker in the database - so `result.captured_count` counts brokers this
+    test never created. Asserting `== 1` on it made these tests assert
+    something about the database's whole contents, and they failed with a
+    baffling "2 != 1" whenever any other broker existed: a leftover row
+    from an aborted run, or the `scripts/seed_e2e.py` demo broker. That is
+    the trap D087's closing note records, hit again in Phase 70.
+
+    Scoping the assertion to the broker under test states the same
+    intent - "this cycle captured for us" - and cannot be perturbed by
+    rows the test does not own.
+    """
+    return any(
+        o.broker_id == broker_id and o.status is ScheduledSnapshotStatus.CAPTURED
+        for o in result.outcomes
+    )
+
+
 @pytest.mark.asyncio
 async def test_the_identical_cycle_on_a_weekday_does_capture_a_real_snapshot():
     """Control for the test above - proves the weekend result was the gate's
@@ -156,7 +178,22 @@ async def test_the_identical_cycle_on_a_weekday_does_capture_a_real_snapshot():
 
         assert result.market_hours is MarketHoursDecision.RUN
         assert result.gated is False
-        assert provider.calls == ["AAPL"]
+        # MEMBERSHIP, not equality (Phase 70). `run_snapshot_cycle` is a
+        # GLOBAL cycle: it walks every broker in the database, so
+        # `provider.calls` accumulates the symbols of every OTHER broker
+        # that happens to exist as well as this test's own. Asserting
+        # equality made this test a test of the database's history - it
+        # fails, with a confusing "extra symbols" diff, whenever an earlier
+        # aborted run leaves orphaned `brokers` rows behind (the trap
+        # D087's closing note already records, hit again in Phase 70).
+        #
+        # What this test is FOR is that a weekday cycle is not gated and
+        # really does reach the vendor for THIS broker's position, which
+        # membership states exactly. The stronger claim - that this
+        # broker's snapshot is correct and singular - is asserted below
+        # against `_snapshot_rows(session, broker_id)`, which is scoped to
+        # this broker and so cannot be polluted.
+        assert "AAPL" in provider.calls
 
         rows = await _snapshot_rows(session, broker_id)
         assert len(rows) == 1
@@ -187,7 +224,7 @@ async def test_a_disabled_gate_captures_on_a_weekend_exactly_as_it_did_before_d0
 
         assert result.market_hours is MarketHoursDecision.RUN_GATE_DISABLED
         assert result.gated is False
-        assert result.captured_count == 1
+        assert _captured(result, broker_id)
         assert len(await _snapshot_rows(session, broker_id)) == 1
 
 
@@ -212,7 +249,7 @@ async def test_omitting_the_gate_entirely_preserves_pre_d042_behavior():
         )
 
         assert result.market_hours is MarketHoursDecision.RUN_GATE_DISABLED
-        assert result.captured_count == 1
+        assert _captured(result, broker_id)
 
 
 @pytest.mark.asyncio

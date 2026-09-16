@@ -54,7 +54,11 @@ VALID_DEFINITION = {
 }
 
 MALFORMED_DEFINITION = {
-    "indicators": [{"id": "sma_20", "type": "ema", "period": -5}],
+    # `not_a_real_indicator` rather than a real-but-unimplemented name: this
+    # was `"ema"` until Phase 70 implemented EMA, at which point the
+    # unknown-type assertion below silently stopped testing anything. What
+    # matters is that an unknown type IS refused, not which type is absent.
+    "indicators": [{"id": "sma_20", "type": "not_a_real_indicator", "period": -5}],
     "entry_rule": {"op": "crosses_above", "left": "sma_99", "right": "close"},
     "exit_rule": {"op": "crosses_below", "left": "sma_20", "right": "close"},
     "position_sizing": {"type": "martingale"},
@@ -467,7 +471,10 @@ async def test_validating_a_malformed_definition_is_422_with_itemized_errors_and
             )
             assert response.status_code == 422
             errors = response.json()["detail"]["errors"]
-            assert "indicators[0].type 'ema' is not one of: sma, rsi" in errors
+            assert (
+                "indicators[0].type 'not_a_real_indicator' is not one of: "
+                "sma, rsi, ema, atr" in errors
+            )
             assert "indicators[0].period must be a positive integer, got -5" in errors
             assert "entry_rule.left references undeclared indicator id 'sma_99'" in errors
             assert (

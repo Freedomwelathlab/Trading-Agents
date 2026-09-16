@@ -79,7 +79,10 @@ function statusTone(status: string): "pos" | "neg" | "warn" | "neutral" {
  */
 export default function StrategyList() {
   const [items, setItems] = useState<StrategySummary[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  // `true` because this panel fetches on mount. The fetch is deferred by
+  // one microtask (see the effect below), so a `false` initial value
+  // would render one frame of the empty state before loading begins.
+  const [loading, setLoading] = useState(true);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [status, setStatus] = useState<number | null>(null);
 
@@ -111,10 +114,15 @@ export default function StrategyList() {
   }
 
   useEffect(() => {
-    void load();
+    // Deferred by one microtask so the first `setState` inside `load()`
+    // lands AFTER this effect returns rather than during it. Calling it
+    // synchronously makes React re-render from inside the effect it is
+    // still committing (`react-hooks` flags exactly this as a cascading
+    // render). The delay is one microtask - imperceptible, and the panel
+    // still mounts in its loading state because that is the initial value.
+    void Promise.resolve().then(load);
     // Load once on mount only, matching the other list panels in this app
     // (e.g. `AdminListings.tsx`).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleCreate(e: React.FormEvent) {

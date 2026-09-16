@@ -15,6 +15,7 @@ from apps.api.app.api.dependencies import get_market_data_bar_backfill_provider
 from apps.api.app.db.models import MarketDataBackfillJob, MarketDataBar
 from apps.api.app.main import app
 from apps.api.app.marketdata.bar_provider import Bar
+from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from tests.api.test_admin import _get_token, admin_user, api_client, db_session, non_admin_user
 
@@ -77,9 +78,18 @@ async def test_non_admin_cannot_trigger_a_backfill():
 
 @pytest.mark.asyncio
 async def test_no_provider_configured_is_not_configured_not_a_fabricated_success():
+    """Phase 71 (D089): the dependency is now a ROUTER and is never None, so
+    "unconfigured" is a router holding neither vendor - which is the real
+    shape of an install with no Longbridge credentials. The refusal it
+    produces is a 422 naming the symbol conventions rather than the old
+    503, because the router knows WHICH half is missing and can say so; the
+    property under test is unchanged, namely that an unbacked request is
+    refused rather than answered with a fabricated ingestion."""
     async with db_session() as session, admin_user(session) as (_uid, email):
         async with api_client() as client:
-            app.dependency_overrides[get_market_data_bar_backfill_provider] = lambda: None
+            app.dependency_overrides[get_market_data_bar_backfill_provider] = (
+                lambda: BarBackfillRouter()
+            )
             try:
                 token = await _get_token(client, email)
                 response = await client.post(
@@ -93,8 +103,8 @@ async def test_no_provider_configured_is_not_configured_not_a_fabricated_success
                 )
             finally:
                 del app.dependency_overrides[get_market_data_bar_backfill_provider]
-    assert response.status_code == 503
-    assert "NOT_CONFIGURED" in response.text
+    assert response.status_code == 422
+    assert "no equity bar provider is configured" in response.text
 
 
 @pytest.mark.asyncio
@@ -102,7 +112,9 @@ async def test_admin_can_trigger_a_successful_backfill():
     async with db_session() as session, admin_user(session) as (_uid, email), clean_up(session):
         fake_provider = FakeBarBackfillProvider(bars=[_bar(18, "100"), _bar(20, "102")])
         async with api_client() as client:
-            app.dependency_overrides[get_market_data_bar_backfill_provider] = lambda: fake_provider
+            app.dependency_overrides[get_market_data_bar_backfill_provider] = (
+                lambda: BarBackfillRouter(equity_provider=fake_provider)
+            )
             try:
                 token = await _get_token(client, email)
                 response = await client.post(
@@ -133,7 +145,9 @@ async def test_a_vendor_failure_returns_201_with_a_failed_status_not_a_5xx():
     async with db_session() as session, admin_user(session) as (_uid, email), clean_up(session):
         fake_provider = FakeBarBackfillProvider(error=VendorError("rate limited"))
         async with api_client() as client:
-            app.dependency_overrides[get_market_data_bar_backfill_provider] = lambda: fake_provider
+            app.dependency_overrides[get_market_data_bar_backfill_provider] = (
+                lambda: BarBackfillRouter(equity_provider=fake_provider)
+            )
             try:
                 token = await _get_token(client, email)
                 response = await client.post(
@@ -162,7 +176,9 @@ async def test_a_data_unavailable_response_is_also_a_failed_job_not_a_5xx():
             error=DataUnavailableError(f"Longbridge returned no candlesticks for {TEST_SYMBOL!r}.")
         )
         async with api_client() as client:
-            app.dependency_overrides[get_market_data_bar_backfill_provider] = lambda: fake_provider
+            app.dependency_overrides[get_market_data_bar_backfill_provider] = (
+                lambda: BarBackfillRouter(equity_provider=fake_provider)
+            )
             try:
                 token = await _get_token(client, email)
                 response = await client.post(
@@ -182,7 +198,16 @@ async def test_a_data_unavailable_response_is_also_a_failed_job_not_a_5xx():
 
 
 @pytest.mark.asyncio
-async def test_bar_interval_other_than_1d_is_a_422():
+async def test_a_bar_interval_outside_the_vocabulary_is_a_422():
+    """Phase 70 (D088) widened `bar_interval` from `Literal["1d"]` to the
+    shared `BarInterval` vocabulary, so this test's old example - `"5m"` -
+    is now a supported interval and asserting a 422 on it would be
+    asserting the opposite of the intended behaviour.
+
+    What the test is FOR is unchanged: an interval outside the closed
+    vocabulary is refused. The column underneath is a plain string, so
+    without that refusal `"1 day"`, `"daily"` and `"1d"` would all be
+    stored as distinct intervals that never match each other on read."""
     async with db_session() as session, admin_user(session) as (_uid, email):
         async with api_client() as client:
             token = await _get_token(client, email)
@@ -191,7 +216,7 @@ async def test_bar_interval_other_than_1d_is_a_422():
                 headers={"Authorization": f"Bearer {token}"},
                 json={
                     "symbol": TEST_SYMBOL,
-                    "bar_interval": "5m",
+                    "bar_interval": "1 day",
                     "start_date": "2026-08-18",
                     "end_date": "2026-08-20",
                 },

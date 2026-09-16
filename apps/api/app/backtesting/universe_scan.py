@@ -57,7 +57,12 @@ from decimal import Decimal
 from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.app.backtesting.engine_v2 import run_strategy_backtest
+from apps.api.app.backtesting.costs import CostModel
+from apps.api.app.backtesting.engine_v2 import (
+    QUANTITY_PRECISION_FRACTIONAL,
+    QUANTITY_PRECISION_WHOLE_UNITS,
+    run_strategy_backtest,
+)
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.models import (
     BacktestRunStatus,
@@ -68,6 +73,7 @@ from apps.api.app.db.models import (
     UniverseScanStatus,
 )
 from apps.api.app.marketdata.bar_provider import HistoricalBarProvider
+from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.portfolio_manager.models import PortfolioLimits
 from apps.api.app.risk.models import RiskLimits
 
@@ -247,6 +253,7 @@ async def run_universe_scan(
     starting_cash: Decimal,
     bar_provider: HistoricalBarProvider,
     risk_limits: RiskLimits,
+    cost_model: CostModel,
     portfolio_limits: PortfolioLimits | None,
     requested_by_user_id: uuid.UUID | None,
 ) -> UniverseScan:
@@ -314,6 +321,19 @@ async def run_universe_scan(
                 bar_provider=bar_provider,
                 risk_limits=risk_limits,
                 portfolio_limits=portfolio_limits,
+                cost_model=cost_model,
+                # PER SYMBOL, not once for the scan: a universe may mix
+                # equities (whole shares) with crypto (fractional), and one
+                # precision for the whole run would either floor every
+                # crypto entry to zero or propose fractional share counts
+                # no equity venue accepts. The crypto test is the router's,
+                # so there is one definition of "crypto symbol" in the
+                # codebase rather than a second copy here.
+                quantity_precision=(
+                    QUANTITY_PRECISION_FRACTIONAL
+                    if BarBackfillRouter.is_crypto_symbol(symbol)
+                    else QUANTITY_PRECISION_WHOLE_UNITS
+                ),
                 requested_by_user_id=requested_by_user_id,
             )
             succeeded = backtest_run.status is BacktestRunStatus.SUCCEEDED

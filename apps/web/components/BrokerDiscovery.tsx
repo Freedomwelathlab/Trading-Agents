@@ -79,7 +79,11 @@ export default function BrokerDiscovery() {
   }, [limit, offset]);
 
   useEffect(() => {
-    void load();
+    // Deferred by one microtask so the loader's first `setState` lands
+    // AFTER this effect returns rather than during it - calling it
+    // synchronously re-renders from inside the effect React is still
+    // committing, which `react-hooks` flags as a cascading render.
+    void Promise.resolve().then(load);
     // Load once on mount; later loads are the explicit Refresh button, so
     // editing limit/offset never fires a request the user didn't ask for.
     // eslint-disable-next-line react-hooks/exhaustive-deps

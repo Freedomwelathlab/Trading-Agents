@@ -45,7 +45,9 @@ from apps.api.app.api.routes.strategies import _load_owned_strategy, _load_versi
 from apps.api.app.api.routes.strategy_backtests import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
+    _cost_model,
     _portfolio_limits,
+    _quantity_precision,
     _risk_limits,
 )
 from apps.api.app.api.schemas_robustness import (
@@ -222,6 +224,8 @@ async def create_robustness_run(
         bar_provider=MarketDataStore(session),
         risk_limits=_risk_limits(settings),
         portfolio_limits=_portfolio_limits(settings),
+        cost_model=_cost_model(settings),
+        quantity_precision=_quantity_precision(payload.symbol),
         requested_by_user_id=current_user.id,
     )
     # The orchestrator already committed - both on success and on failure -

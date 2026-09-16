@@ -146,7 +146,12 @@ export function StrategyLeaderboard(): JSX.Element {
   }
 
   useEffect(() => {
-    void load(minStatus);
+    // Deferred by one microtask so the loader's first `setState` lands
+    // AFTER this effect returns rather than during it - calling it
+    // synchronously re-renders from inside the effect React is still
+    // committing, which `react-hooks` flags as a cascading render.
+    const status = minStatus;
+    void Promise.resolve().then(() => load(status));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minStatus]);
 

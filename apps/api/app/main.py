@@ -72,6 +72,8 @@ from apps.api.app.execution.reconciliation import (
     LiveOrderReconciler,
     build_reconciler_cycle_lock,
 )
+from apps.api.app.marketdata.bar_router import BarBackfillRouter
+from apps.api.app.marketdata.providers.coinbase import build_coinbase_bar_provider
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_bar_backfill_provider,
     build_longbridge_fundamentals_provider,
@@ -109,8 +111,16 @@ async def lifespan(app: FastAPI):
     # range, for POST /admin/market-data/backfill. Same all-or-nothing
     # Longbridge credential gate as every provider above; None means that
     # endpoint answers NOT_CONFIGURED rather than faking an ingestion.
-    app.state.market_data_bar_backfill_provider = build_longbridge_bar_backfill_provider(
-        settings
+    # Phase 71 (D089): a ROUTER over two vendors with disjoint universes,
+    # not a single provider. Longbridge has no spot BTC/USD instrument on
+    # this account (`BTCUSD.BKKT` -> 301600 invalid symbol), so the crypto
+    # side is Coinbase's public candle API - which needs no credentials and
+    # is therefore always present, even on a checkout with no Longbridge
+    # keys. That asymmetry is why the router reports WHICH vendors it has
+    # rather than a single configured/not-configured flag.
+    app.state.market_data_bar_backfill_provider = BarBackfillRouter(
+        equity_provider=build_longbridge_bar_backfill_provider(settings),
+        crypto_provider=build_coinbase_bar_provider(),
     )
 
     # Phase 43 (D058): the LIVE broker adapter. Returns None - and
@@ -259,7 +269,8 @@ async def lifespan(app: FastAPI):
         ),
         news_provider="longbridge" if app.state.news_provider else "NOT_CONFIGURED",
         market_data_bar_backfill_provider=(
-            "longbridge" if app.state.market_data_bar_backfill_provider else "NOT_CONFIGURED"
+            "+".join(app.state.market_data_bar_backfill_provider.configured_vendors)
+            or "NOT_CONFIGURED"
         ),
         # D063: NOT_CONFIGURED here does NOT disable password resets - it
         # means the link is delivered by an admin rather than by email.

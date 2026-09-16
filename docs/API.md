@@ -1150,6 +1150,94 @@ of D017 — `POST /brokers/{broker_id}/trades` uses this same router when
 `estimated_price` is omitted from the trade request; this endpoint lets a
 caller preview the price such a submission would use.
 
+## `GET /backtest-runs`
+
+Cross-strategy backtest history (Phase 71, D089) — every run the caller
+owns, newest first, across ALL strategies.
+
+Requires `Authorization: Bearer <token>` from a user whose role grants
+`strategy:backtest`. Ownership is enforced inside the JOIN (run → version →
+strategy → `owner_user_id`), so another user's run is never loaded and then
+filtered out.
+
+Query params: `symbol` (optional, exact match, upper-cased), `status`
+(optional — `succeeded` / `failed` / `running` / `pending`), `limit`
+(default 50, max 500), `offset` (default 0).
+
+Response (200, `ListBacktestHistoryResponse`): `{items, limit, offset}`.
+Each item is a `BacktestRunSummary` plus `strategy_id`, `strategy_name` and
+`version_number`, so a row is readable without a follow-up request per
+strategy.
+
+**FAILED runs are included and are not second-class.** A run that could not
+complete records what was attempted and why it could not be answered — most
+often insufficient indicator warmup. Filtering them out would make the
+history a record only of the attempts that happened to work. Use
+`?status=succeeded` to narrow deliberately.
+
+Every metric may be `null`, meaning "not computed" — a failed run computed
+none of them. A client must not render a null as `0`. The four Phase 70
+cost fields (`fee_bps`, `slippage_bps`, `total_fees`, `total_slippage`) are
+additionally null on runs predating cost modelling, which means
+"frictionless, costs unknown" rather than zero cost.
+
+## `GET /market-data/{symbol}/bars`
+
+Persisted OHLCV bars for one symbol and interval (Phase 70, D088) — the
+endpoint behind the candlestick chart on a backtest run's detail page.
+
+Requires `Authorization: Bearer <token>` — any active user, no special
+permission, matching `GET /{symbol}/quote` above: this returns historical
+data the account already holds, which is not privileged relative to a live
+quote.
+
+Query params: `start_date`, `end_date` (both required, `YYYY-MM-DD`,
+inclusive), `bar_interval` (default `1d`; one of `1m`, `5m`, `15m`, `30m`,
+`1h`, `1d` — the closed `BarInterval` vocabulary, 422 outside it).
+
+Response (200, `BarsResponse`):
+```json
+{
+  "symbol": "AAPL.US",
+  "bar_interval": "1d",
+  "count": 2,
+  "bars": [
+    {
+      "ts": "2026-08-23T21:00:00Z",
+      "open": "99.000000",
+      "high": "101.000000",
+      "low": "98.000000",
+      "close": "100.000000",
+      "volume": 900,
+      "source": "longbridge"
+    }
+  ]
+}
+```
+
+Reads `market_data_bars` through the same `MarketDataStore` the v2 backtest
+engine replays against, so a chart drawn from this endpoint shows exactly
+the bars a backtest saw — never a second fetch from a vendor that could
+disagree with them.
+
+**Never contacts a vendor and never ingests.** An un-backfilled symbol
+returns **200 with an empty list**, not a 404 and not a silent backfill:
+the symbol may be perfectly valid and simply un-ingested, and those are
+different problems with different fixes. Ingestion stays an explicit,
+ADMIN-gated action (`POST /admin/market-data/backfill`), so a chart request
+can never spend vendor quota or write rows.
+
+`open`/`high`/`low`/`volume` may be `null` — the columns are nullable and a
+vendor may return a close-only record. They are passed through as null
+rather than derived from the close; a client must decline to draw a candle
+there rather than invent one.
+
+422 if `end_date` precedes `start_date` (which would otherwise return an
+ordinary empty list, reading as "no bars here" when the truth is "that is
+not a window"), and 422 if the window holds more than 5,000 bars —
+**refused rather than truncated**, since a truncated series draws a chart
+that looks complete while ending mid-window.
+
 ## `GET /brokers/{broker_id}/orders`
 
 Read-only order history (D065). Requires `Authorization: Bearer <token>`

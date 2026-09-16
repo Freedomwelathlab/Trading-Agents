@@ -945,7 +945,10 @@ class BacktestRun(Base):
 
     Every metric column is nullable because a FAILED run computed none of
     them - a zero would be a fabricated figure, and this schema never writes
-    one (docs/TRADING_SAFETY.md's no-fabrication rule).
+    one (docs/TRADING_SAFETY.md's no-fabrication rule). The four cost
+    columns (Phase 70) are nullable for a second, distinct reason as well:
+    NULL there means the run predates cost modelling entirely, which is not
+    the same claim as zero cost.
     """
 
     __tablename__ = "backtest_runs"
@@ -982,6 +985,44 @@ class BacktestRun(Base):
     """Completed round trips, not raw fills - the same definition
     `BacktestResult.num_trades` documents, so that this number and
     `win_rate_pct` stay consistent with each other."""
+    fee_bps: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    """Phase 70 (D088). The per-side fee assumption this run was executed
+    under, in basis points, copied from `Settings.backtest_fee_bps` at the
+    moment the run started.
+
+    Stored ON THE RUN rather than read back from configuration, because
+    configuration changes and a result must stay interpretable years after
+    the setting that produced it was edited. A return figure without the
+    cost assumption behind it is not a reproducible result - it is a number
+    whose meaning silently moves.
+
+    NULL on runs created before this phase: those really were executed with
+    no cost model at all, and back-filling a value would claim they
+    accounted for something they did not. Read a NULL here as
+    "frictionless, unknown costs", never as zero fees."""
+
+    slippage_bps: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    """Phase 70 (D088). The slippage assumption this run was executed under,
+    in basis points, copied from `Settings.backtest_slippage_bps` at start.
+    Same NULL semantics as `fee_bps`."""
+
+    total_fees: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    """Phase 70 (D088). Currency total of the fees charged across every
+    simulated fill in this run, entries and exits both.
+
+    Reported separately from `total_slippage` even though the engine applies
+    both as one adjustment to the execution price (they are arithmetically
+    identical in effect - a fee on notional IS a price adjustment of the
+    same bps). They are separated here because they are different things an
+    operator can act on: a fee is negotiable with a venue or reducible by
+    trading less often, while slippage is a property of liquidity and order
+    size. Collapsing them into one "costs" figure would hide which one is
+    eating the strategy."""
+
+    total_slippage: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    """Phase 70 (D088). Currency total of the modelled adverse price
+    movement across every simulated fill. See `total_fees`."""
+
     error_detail: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -1015,14 +1056,26 @@ class BacktestEquityPoint(Base):
 
     __tablename__ = "backtest_equity_points"
     __table_args__ = (
-        UniqueConstraint("backtest_run_id", "date", name="uq_backtest_equity_point_run_date"),
+        # Keyed by TIMESTAMP, not calendar day (Phase 71, migration 0029).
+        # The original day key made an hourly backtest impossible: 24 points
+        # land on one date and the write died on a unique violation after
+        # the replay had already finished.
+        UniqueConstraint("backtest_run_id", "ts", name="uq_backtest_equity_point_run_ts"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     backtest_run_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("backtest_runs.id", ondelete="CASCADE"), nullable=False
     )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    """The bar's own timestamp (Phase 71, migration 0029) - authoritative,
+    and what the uniqueness constraint is built on. Daily runs created
+    before that migration carry midnight UTC, which is truthful for them:
+    a daily bar's point belongs to its day and to no finer instant."""
     date: Mapped[date] = mapped_column(Date, nullable=False)
+    """The UTC calendar day of `ts`. Kept alongside it rather than replaced
+    - the monthly-returns heatmap groups by day, and re-deriving a calendar
+    day from an instant at every call site is where timezone bugs breed."""
     equity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
 
 
@@ -1062,8 +1115,19 @@ class BacktestTrade(Base):
     )
     side: Mapped[str] = mapped_column(String(8), nullable=False)
     entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    entry_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """The entry bar's real timestamp (Phase 71). NULLABLE and never
+    back-filled: a run predating migration 0029 recorded only a date, and
+    writing 00:00:00 for it would assert an execution time nobody observed.
+    NULL means "this run predates intraday trade timestamps", which is a
+    different claim from a real midnight fill. Without this, two trades on
+    one intraday day are indistinguishable in the ledger and collapse onto
+    one another as chart markers."""
     entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
     exit_date: Mapped[date | None] = mapped_column(Date)
+    exit_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """The exit bar's real timestamp. Same nullability reasoning as
+    `entry_ts`."""
     exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
     return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
@@ -1926,6 +1990,132 @@ class StrategyDriftCheck(Base):
     num_round_trips: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     action_taken: Mapped[str] = mapped_column(String(32), nullable=False)
     detail: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class StrategyImprovementRunStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy)
+    """Lifecycle of one improvement search (Phase 72, migration 0030).
+    Same four names as `BacktestRunStatus`, for the same reason: a search
+    either completed or it did not, and there is no honest middle state."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class StrategyImprovementRun(Base):
+    """One recorded search for a better version of a strategy (Phase 72,
+    D090, migration 0030).
+
+    **Two windows, both required, neither defaulted.** A loop that proposes
+    variants, measures them, keeps the winner and repeats is a machine for
+    overfitting. The schema therefore cannot express "improve against
+    everything": candidates are generated and scored on the TRAIN window,
+    and the VALIDATE window is not consulted until a candidate has already
+    won on train. A candidate that wins on train and fails on validate is
+    recorded as rejected, with that as its reason - those rows are the
+    search finding noise and saying so.
+
+    **A SUCCEEDED run may have found nothing.** `best_version_id` is NULL
+    when no candidate survived validation, and that is a real, complete
+    answer - "the baseline was not improved on out-of-sample data" - not a
+    failure. FAILED means the search itself could not run.
+    """
+
+    __tablename__ = "strategy_improvement_runs"
+    __table_args__ = (
+        Index("ix_improvement_runs_strategy_created", "strategy_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    strategy_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False
+    )
+    base_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    best_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT")
+    )
+    """The winner, or NULL when nothing beat the baseline out-of-sample."""
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False)
+    train_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    train_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    validate_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    validate_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    starting_cash: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    max_iterations: Mapped[int] = mapped_column(Integer, nullable=False)
+    iterations_run: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidates_tested: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[StrategyImprovementRunStatus] = mapped_column(
+        _pg_enum(StrategyImprovementRunStatus, "strategyimprovementrunstatus"), nullable=False
+    )
+    baseline_train_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    baseline_validate_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    best_train_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    best_validate_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StrategyImprovementStep(Base):
+    """One candidate tried by a search, and what became of it (Phase 72).
+
+    `train_backtest_run_id` / `validate_backtest_run_id` point at ordinary
+    `backtest_runs` rows - the same rows the history page lists and the
+    candlestick chart draws. The loop invents no private notion of a
+    result, so every step is auditable by opening the run behind it.
+
+    `accepted_reason` is populated on rejection as well as acceptance. A
+    row that recorded only numbers would leave a reader reverse-engineering
+    why the search moved on; the stated reason is what makes this a record
+    rather than a log.
+    """
+
+    __tablename__ = "strategy_improvement_steps"
+    __table_args__ = (
+        Index("ix_improvement_steps_run_iteration", "improvement_run_id", "iteration"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    improvement_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_improvement_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    iteration: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    parameter_path: Mapped[str] = mapped_column(String(128), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    original_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    perturbed_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    train_backtest_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="SET NULL")
+    )
+    validate_backtest_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="SET NULL")
+    )
+    """NULL when the candidate never earned a validation run - it did not
+    beat the incumbent on train, so the held-out window was never touched.
+    That is the anti-overfitting rule visible in the data."""
+    train_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    validate_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    accepted_reason: Mapped[str] = mapped_column(String(300), nullable=False)
+    created_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="SET NULL")
+    )
+    """Set only for an ACCEPTED candidate: a search persists a new
+    `StrategyVersion` for a winner and for nothing else, so a rejected
+    variant leaves no strategy behind to be deployed by mistake."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

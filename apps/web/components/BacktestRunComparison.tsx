@@ -157,16 +157,29 @@ export function BacktestRunComparison({
   const selectionKey = selectedRunIds.join(",");
 
   useEffect(() => {
-    if (selectedRunIds.length < 2) {
-      setRuns(null);
-      setErrorDetail(null);
-      setStatus(null);
-      return;
-    }
-
     let cancelled = false;
 
-    void (async () => {
+    // The whole body is deferred by one microtask so that NO `setState`
+    // runs synchronously while React is still committing this effect
+    // (`react-hooks` flags that as a cascading render). An `async` IIFE
+    // alone would not be enough: an async function runs synchronously up
+    // to its first `await`, so the resets below would still land inside
+    // the effect. `Promise.resolve().then(...)` is what actually moves
+    // them off it.
+    void Promise.resolve().then(async () => {
+      if (cancelled) return;
+
+      if (selectedRunIds.length < 2) {
+        // Clears whatever a previous, larger selection left behind. The
+        // render below already short-circuits to an EmptyNote at this
+        // count, so this is about not showing stale runs if the selection
+        // grows again - not about what is on screen right now.
+        setRuns(null);
+        setErrorDetail(null);
+        setStatus(null);
+        return;
+      }
+
       setLoading(true);
       setErrorDetail(null);
       setStatus(null);
@@ -204,7 +217,7 @@ export function BacktestRunComparison({
       } finally {
         if (!cancelled) setLoading(false);
       }
-    })();
+    });
 
     return () => {
       cancelled = true;

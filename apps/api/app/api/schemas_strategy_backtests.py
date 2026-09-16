@@ -21,11 +21,11 @@ run that may have failed.
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from apps.api.app.db.models import BacktestRunStatus
+from apps.api.app.marketdata.bar_provider import BarInterval
 
 
 class CreateBacktestRunRequest(BaseModel):
@@ -33,15 +33,17 @@ class CreateBacktestRunRequest(BaseModel):
     by the path, and everything about the RULES comes from it - this body
     carries only the market and the window.
 
-    `bar_interval` is a `Literal["1d"]` rather than a free string because
-    '1d' is the only interval anything ingests or evaluates today
-    (D070/Phase 54's indicator vocabulary). Accepting '1h' here would
-    produce a run that silently finds no bars and fails, where a 422 says
-    the actual thing.
+    `bar_interval` is the shared `BarInterval` vocabulary
+    (marketdata/bar_provider.py), not a free string: the underlying column
+    is a plain string, so "1 day" and "1d" would otherwise be two intervals
+    that never match each other on read. Phase 70 widened this from
+    `Literal["1d"]` - requesting an interval with no ingested bars is a
+    DATA question, answered by a persisted FAILED run naming the missing
+    range, not a 422 on the interval itself.
     """
 
     symbol: str = Field(min_length=1, max_length=32)
-    bar_interval: Literal["1d"] = "1d"
+    bar_interval: BarInterval = "1d"
     start_date: date
     end_date: date
     starting_cash: Decimal = Field(gt=0)
@@ -111,14 +113,28 @@ class BacktestRunSummary(BaseModel):
     created_at: datetime
     completed_at: datetime | None
 
+    fee_bps: Decimal | None = None
+    """Phase 70 (D088). The cost assumptions this run was executed under,
+    and what they came to. Four nullable fields rather than a nested object,
+    matching every other metric on this model.
+
+    NULL here does NOT mean zero. It means the run predates cost modelling
+    and its returns are frictionless - a materially different claim, and one
+    a reader must be able to tell apart from "costed, and the costs were
+    nil". A client rendering these must not substitute 0 for a null, for the
+    same reason it must not render a null `win_rate_pct` as 0%."""
+    slippage_bps: Decimal | None = None
+    total_fees: Decimal | None = None
+    total_slippage: Decimal | None = None
+
 
 class BacktestRunDetailResponse(BacktestRunSummary):
     """A summary plus the full equity curve and trade list.
 
-    Subclasses `BacktestRunSummary` rather than restating its fourteen
-    fields, so the two can never drift into disagreeing about what a run's
-    metrics are. Returned by the POST that creates a run - the caller who
-    just triggered it wants to see it immediately - and by
+    Subclasses `BacktestRunSummary` rather than restating its fields, so
+    the two can never drift into disagreeing about what a run's metrics
+    are. Returned by the POST that creates a run - the caller who just
+    triggered it wants to see it immediately - and by
     `GET /backtest-runs/{id}`.
     """
 
@@ -134,5 +150,30 @@ class ListBacktestRunsResponse(BaseModel):
     rather than a differently-named list per resource."""
 
     items: list[BacktestRunSummary]
+    limit: int
+    offset: int
+
+
+class BacktestHistoryEntry(BacktestRunSummary):
+    """One run in the cross-strategy history, carrying the two names a
+    reader needs to tell runs apart (Phase 71, D089).
+
+    `BacktestRunSummary` alone identifies a run only by
+    `strategy_version_id` - a uuid, which tells a human nothing. The
+    history view lists runs from MANY strategies side by side, so the
+    strategy's name and the version number are joined in rather than left
+    for the client to resolve with one follow-up request per row.
+    """
+
+    strategy_id: uuid.UUID
+    strategy_name: str
+    version_number: int
+
+
+class ListBacktestHistoryResponse(BaseModel):
+    """`{items, limit, offset}`, the same envelope as every other listing
+    in this codebase."""
+
+    items: list[BacktestHistoryEntry]
     limit: int
     offset: int

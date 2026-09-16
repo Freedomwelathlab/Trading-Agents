@@ -53,7 +53,11 @@ export default function SessionStatus() {
   }, []);
 
   useEffect(() => {
-    void poll();
+    // Deferred by one microtask so the loader's first `setState` lands
+    // AFTER this effect returns rather than during it - calling it
+    // synchronously re-renders from inside the effect React is still
+    // committing, which `react-hooks` flags as a cascading render.
+    void Promise.resolve().then(poll);
     const timer = setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(timer);
   }, [poll]);

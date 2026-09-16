@@ -9,6 +9,7 @@ import { EquityCurveChart } from "@/components/EquityCurveChart";
 import { DrawdownChart } from "@/components/DrawdownChart";
 import { MonthlyReturnsHeatmap } from "@/components/MonthlyReturnsHeatmap";
 import { BacktestTradeLedger, type TradeRow } from "@/components/BacktestTradeLedger";
+import { PriceChart, type PriceBar, type SignalMarker } from "@/components/PriceChart";
 import {
   Alert,
   EmptyNote,
@@ -37,6 +38,16 @@ type BacktestRunDetailResponse = {
   max_drawdown_pct: string | null;
   win_rate_pct: string | null;
   num_trades: number | null;
+  /**
+   * Phase 70 cost fields. Optional in this type as well as nullable: a run
+   * created before D088 has no cost annotation at all, and `null` there
+   * means "frictionless, unknown costs" rather than zero — so these render
+   * as an em dash, never as 0, exactly like every other null metric here.
+   */
+  fee_bps?: string | null;
+  slippage_bps?: string | null;
+  total_fees?: string | null;
+  total_slippage?: string | null;
   error_detail: string | null;
   created_at: string;
   completed_at: string | null;
@@ -107,6 +118,8 @@ export default function BacktestRunDetailPage() {
   const { runId } = params;
 
   const [run, setRun] = useState<BacktestRunDetailResponse | null>(null);
+  const [bars, setBars] = useState<PriceBar[]>([]);
+  const [barsNote, setBarsNote] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [status, setStatus] = useState<number | null>(null);
@@ -140,6 +153,66 @@ export default function BacktestRunDetailPage() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     })();
   }, [runId]);
+
+  /**
+   * Bars are fetched SEPARATELY, after the run loads, and a failure here is
+   * deliberately NOT promoted to the page's error state: a run's metrics,
+   * equity curve and ledger are complete without a price chart, and losing
+   * the whole page because the bar store has a gap would hide the result
+   * the user came for. The chart area says what happened instead.
+   *
+   * The window asked for is exactly the run's own `[start_date, end_date]`,
+   * so the candles shown are the bars the engine replayed — not a wider or
+   * more recent view that would put markers on bars the backtest never saw.
+   */
+  useEffect(() => {
+    if (!run || run.status !== "succeeded") return;
+    void (async () => {
+      setBarsNote(null);
+      const query = new URLSearchParams({
+        start_date: run.start_date,
+        end_date: run.end_date,
+        bar_interval: run.bar_interval,
+      });
+      try {
+        const res = await fetch(
+          `/api/market-data/${encodeURIComponent(run.symbol)}/bars?${query}`,
+          { cache: "no-store" },
+        );
+        const data = (await res.json().catch(() => null)) as
+          | { bars?: PriceBar[]; detail?: unknown }
+          | null;
+        if (!res.ok) {
+          if (handleExpiredSession(res.status)) return;
+          setBars([]);
+          setBarsNote(
+            formatDetail(data?.detail) ?? `Could not load bars (HTTP ${res.status})`,
+          );
+          return;
+        }
+        setBars(data?.bars ?? []);
+      } catch {
+        setBars([]);
+        setBarsNote("DATA_UNAVAILABLE: could not reach the trading API");
+      }
+    })();
+  }, [run]);
+
+  /**
+   * One marker per LEG, not per trade: a round trip is two things that
+   * happened on two different bars, and collapsing it to a single marker at
+   * its entry would leave every exit unmarked. Prices are the executed
+   * ones the ledger stores — which, from Phase 70 on, are net of costs, so
+   * a marker's label agrees with the equity curve rather than with the raw
+   * close beneath it.
+   */
+  const signalMarkers: SignalMarker[] =
+    run?.status === "succeeded"
+      ? run.trades.flatMap((t) => [
+          { date: t.entry_date, side: "buy" as const, price: t.entry_price },
+          { date: t.exit_date, side: "sell" as const, price: t.exit_price },
+        ])
+      : [];
 
   const parsedCurve =
     run?.status === "succeeded"
@@ -224,6 +297,56 @@ export default function BacktestRunDetailPage() {
                     testId="run-num-trades"
                   />
                 </div>
+
+                <SectionHeading>Price &amp; signals</SectionHeading>
+                <Panel
+                  title={`${run.symbol} — ${run.bar_interval}`}
+                  actions={
+                    <Pill tone="neutral">
+                      {signalMarkers.length} signal{signalMarkers.length === 1 ? "" : "s"}
+                    </Pill>
+                  }
+                >
+                  {barsNote ? (
+                    <Alert tone="warn" testId="bars-note">
+                      {barsNote} — the run&rsquo;s own results below are unaffected.
+                    </Alert>
+                  ) : (
+                    <PriceChart bars={bars} signals={signalMarkers} />
+                  )}
+                </Panel>
+
+                <SectionHeading>Costs</SectionHeading>
+                <Panel title="Transaction costs">
+                  {run.fee_bps == null && run.slippage_bps == null ? (
+                    <EmptyNote>
+                      This run predates cost modelling, so its returns are frictionless — no
+                      fee, no spread, no slippage. That is not the same as zero cost, and the
+                      figures above should be read as an upper bound.
+                    </EmptyNote>
+                  ) : (
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <Stat label="fee_bps" value={run.fee_bps ?? "—"} testId="run-fee-bps" />
+                      <Stat
+                        label="slippage_bps"
+                        value={run.slippage_bps ?? "—"}
+                        testId="run-slippage-bps"
+                      />
+                      <Stat
+                        label="total_fees"
+                        value={run.total_fees ?? "—"}
+                        tone="neg"
+                        testId="run-total-fees"
+                      />
+                      <Stat
+                        label="total_slippage"
+                        value={run.total_slippage ?? "—"}
+                        tone="neg"
+                        testId="run-total-slippage"
+                      />
+                    </div>
+                  )}
+                </Panel>
 
                 <SectionHeading>Equity curve</SectionHeading>
                 <Panel title="Equity curve">

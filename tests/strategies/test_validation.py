@@ -76,8 +76,13 @@ def test_a_blank_indicator_id_is_not_a_valid_id():
 
 
 def test_an_unknown_indicator_type_names_the_closed_vocabulary():
-    errors = validate_definition(_with(indicators=[{"id": "e", "type": "ema", "period": 20}]))
-    assert "indicators[0].type 'ema' is not one of: sma, rsi" in errors
+    # A name deliberately outside the vocabulary rather than one merely not
+    # implemented yet: `ema` used to serve here and stopped testing anything
+    # the moment Phase 70 implemented it.
+    errors = validate_definition(
+        _with(indicators=[{"id": "e", "type": "not_a_real_indicator", "period": 20}])
+    )
+    assert "indicators[0].type 'not_a_real_indicator' is not one of: sma, rsi, ema, atr" in errors
 
 
 def test_a_negative_period_is_reported_with_the_offending_value():
@@ -270,7 +275,7 @@ def test_it_collects_every_problem_in_one_call_rather_than_stopping_at_the_first
     errors = validate_definition(
         {
             "indicators": [
-                {"id": "sma_20", "type": "ema", "period": -5},
+                {"id": "sma_20", "type": "not_a_real_indicator", "period": -5},
                 {"id": "sma_20", "type": "sma", "period": 50},
             ],
             "entry_rule": {"op": "equals", "left": "sma_99", "right": "close"},
@@ -282,7 +287,7 @@ def test_it_collects_every_problem_in_one_call_rather_than_stopping_at_the_first
     expected = {
         "unknown top-level key 'stop_loss' - allowed keys are: "
         "indicators, entry_rule, exit_rule, position_sizing",
-        "indicators[0].type 'ema' is not one of: sma, rsi",
+        "indicators[0].type 'not_a_real_indicator' is not one of: sma, rsi, ema, atr",
         "indicators[0].period must be a positive integer, got -5",
         "indicators[1].id 'sma_20' is already used by indicators[0] - "
         "indicator ids must be unique",

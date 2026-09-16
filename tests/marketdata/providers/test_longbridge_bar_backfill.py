@@ -77,12 +77,68 @@ async def test_returns_bars_oldest_first_regardless_of_sdk_order():
 
 
 @pytest.mark.asyncio
-async def test_rejects_any_bar_interval_other_than_1d():
+@pytest.mark.parametrize(
+    ("bar_interval", "expected_period"),
+    [
+        ("1m", "Min_1"),
+        ("5m", "Min_5"),
+        ("15m", "Min_15"),
+        ("30m", "Min_30"),
+        ("1h", "Min_60"),
+        ("1d", "Day"),
+    ],
+)
+async def test_each_interval_asks_the_vendor_for_the_matching_period(
+    bar_interval: str, expected_period: str
+):
+    """Phase 70 (D088). This provider accepted only `1d` until this phase.
+
+    **What this proves and what it does not.** It proves the adapter asks
+    the SDK for the right `Period` member for each interval in the
+    `BarInterval` vocabulary - which is the part of the mapping this
+    codebase owns, and the part where a mistake would be invisible
+    (persisting daily bars under a `bar_interval` of `"5m"`). It does NOT
+    prove Longbridge returns intraday candles for any given symbol or
+    entitlement: that needs a live call with a valid token, and the token
+    available when this was written was expired. See D088 section 4.
+    """
+    candle = FakeHistoryCandle(
+        open="99", high="101", low="98", close="100", volume=900,
+        timestamp=datetime(2026, 8, 23, 14, 30, tzinfo=UTC),
+    )
+    client = FakeHistoryCandlestickClient(results=[candle])
+    provider = LongbridgeBarBackfillProvider(client)
+
+    bars = await provider.get_bars(
+        "AAPL.US",
+        bar_interval=bar_interval,
+        start_date=date(2026, 8, 23),
+        end_date=date(2026, 8, 25),
+    )
+
+    # The period the SDK was actually handed, compared by NAME rather than
+    # by importing `Period` here - the vendor package stays out of this
+    # test file exactly as it stays out of the provider's module scope.
+    (_symbol, period, _adjust, _start, _end) = client.calls[0]
+    assert getattr(period, "name", str(period)).endswith(expected_period)
+
+    # And the bar is tagged with OUR interval, not the vendor's spelling -
+    # this is the string every later reader matches on exactly.
+    assert bars[0].bar_interval == bar_interval
+
+
+@pytest.mark.asyncio
+async def test_an_unmappable_interval_raises_rather_than_falling_back_to_daily():
+    """The failure mode this refusal exists to prevent is silent and
+    undetectable: falling back to `Period.Day` would persist DAILY bars
+    under whatever `bar_interval` was requested, and every later reader -
+    backtest, deployment, chart - would treat them as that interval's data.
+    Nothing downstream could tell."""
     provider = LongbridgeBarBackfillProvider(FakeHistoryCandlestickClient(results=[]))
 
-    with pytest.raises(ValueError, match="1d"):
+    with pytest.raises(ValueError, match="cannot map bar_interval"):
         await provider.get_bars(
-            "AAPL.US", bar_interval="5m", start_date=date(2026, 8, 1), end_date=date(2026, 8, 2)
+            "AAPL.US", bar_interval="1w", start_date=date(2026, 8, 1), end_date=date(2026, 8, 2)
         )
 
 

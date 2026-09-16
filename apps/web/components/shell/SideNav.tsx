@@ -15,7 +15,12 @@ import { usePathname } from "next/navigation";
  */
 
 type Item = {
-  href: "/dashboard" | "/strategies" | "/strategies/leaderboard" | "/admin";
+  href:
+    | "/dashboard"
+    | "/strategies"
+    | "/strategies/history"
+    | "/strategies/leaderboard"
+    | "/admin";
   label: string;
   icon: React.ReactNode;
 };
@@ -54,6 +59,24 @@ function IconFlask() {
       <path d="M10 3h4" />
       <path d="M10 3v5.5L4.8 18a1.5 1.5 0 0 0 1.3 2.3h11.8a1.5 1.5 0 0 0 1.3-2.3L14 8.5V3" />
       <path d="M7.5 15h9" />
+    </svg>
+  );
+}
+
+function IconClock() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4 shrink-0"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
     </svg>
   );
 }
@@ -101,6 +124,7 @@ function IconShield() {
 const ITEMS: Item[] = [
   { href: "/dashboard", label: "Trading desk", icon: <IconTerminal /> },
   { href: "/strategies", label: "Strategy Lab", icon: <IconFlask /> },
+  { href: "/strategies/history", label: "Backtest history", icon: <IconClock /> },
   { href: "/strategies/leaderboard", label: "Leaderboard", icon: <IconTrophy /> },
   { href: "/admin", label: "Administration", icon: <IconShield /> },
 ];

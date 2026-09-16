@@ -9641,3 +9641,460 @@ own failure, and that a cross-module failure should be re-checked on a fresh
 container before it is believed.
 
 Status: Implemented and verified.
+
+---
+
+## D088 — Phase 70: transaction costs, two more indicators, an intraday bar vocabulary, and a chart of our own bars
+
+The first vertical slice through the BTC/USD strategy work: one change at
+each layer — ingestion, indicators, the backtest engine, the API, the UI —
+chosen so the whole pipeline is exercised end to end rather than one layer
+being built out ahead of the rest.
+
+### 1. Backtests modelled no transaction cost at all, and that was the most important thing wrong with them
+
+Before this phase, a case-insensitive grep for `slippage`, `commission` or
+`fee` across the whole `apps/api/app/backtesting/` package returned **zero
+matches**. Every backtest figure this platform had ever produced described a
+market with no fees, no spread and no slippage — fills at the bar's close,
+exactly, on both sides.
+
+That is a mild distortion for a strategy that trades twice a year and a
+decisive one for a strategy that trades several times a day, which is
+precisely what the BTC/USD spec asks for. More to the point, it distorts in
+the **flattering** direction: a frictionless engine will always report a
+better result than reality, and a round trip that broke even graded as
+neither a win nor a loss when it was in fact a loss.
+
+`apps/api/app/backtesting/costs.py` adds a `CostModel` with two rates in
+basis points, and `engine_v2` applies it to every simulated fill.
+
+**Costs are applied to the execution PRICE, not deducted from cash.** A buy
+fills above the bar's close and a sell below it. This is not an
+approximation — it is an identity: a fee of `bps` on notional is
+`quantity * price * bps / 10_000`, and moving the price by
+`price * bps / 10_000` moves the notional by exactly the same amount. So
+one adjusted price gives the account precisely the cash outcome that
+slipping the price and then deducting a fee separately would, while keeping
+all the arithmetic inside the existing `PaperBrokerAdapter` fill path
+rather than requiring a new way to remove money from a broker.
+`tests/backtesting/test_costs.py` asserts that identity over five price
+scales, with exact Decimal equality rather than a tolerance.
+
+**Sizing is computed against the costed price.** This is not a refinement,
+it is what keeps the feature from silently breaking entries: an `all_in`
+entry sized against the raw close would propose a notional larger than the
+account's cash once costs land, and the paper broker would refuse the whole
+order with `InsufficientFundsError`. A costed backtest would then trade
+strictly less often than an uncosted one, for a reason that has nothing to
+do with costs.
+
+**Fees and slippage are reported separately** even though they are
+interchangeable in the arithmetic, because they are not interchangeable in
+what an operator can do about them: a fee is a venue's published schedule,
+negotiable or reducible by trading less often, while slippage is a property
+of liquidity and order size. Collapsing them into one figure would hide
+which one is eating the strategy.
+
+**The defaults are deliberately non-zero** (10 bps fee, 5 bps slippage). A
+zero default would let the single most optimistic assumption available be
+the one nobody had to choose. They are a plausible retail crypto taker
+schedule and a starting point an operator must replace with their venue's
+real one — not a figure this system claims is accurate for any broker.
+`CostModel.frictionless()` exists and is legitimate to pass; what it is not
+is something a caller can reach by forgetting, which is why `cost_model` is
+a required keyword argument on `run_strategy_backtest` with no default.
+
+**This is a simplification and says so.** Real slippage scales with order
+size against available depth and widens in fast markets; a flat bps figure
+models none of that. Funding costs on a perpetual and borrow costs on a
+short are not modelled at all, because this engine is long-only and
+cash-settled and neither has anything to attach to. What the model buys is
+that a backtest is now **pessimistic by default rather than silently
+perfect**. It does not make a backtest accurate.
+
+### 2. The four cost columns are nullable, and NULL does not mean zero
+
+Migration 0028 adds `fee_bps`, `slippage_bps`, `total_fees` and
+`total_slippage` to `backtest_runs`, all nullable, with no server default
+and no data migration.
+
+Runs created before this phase genuinely executed with no cost model.
+Writing `0` into their `fee_bps` would assert they were run under a
+zero-fee assumption — a claim about a choice nobody made, and exactly the
+kind of plausible-looking fabricated figure `docs/TRADING_SAFETY.md`
+forbids. NULL means "this run predates cost modelling; its returns are
+frictionless and its costs are unknown," which is a different and more
+honest statement. The UI renders it as such rather than as `0`.
+
+**The two rate columns are written when the row is created, not on
+success.** A FAILED run is still a record of what was attempted, and the
+assumptions it was attempted under are part of that. It also means an
+operator editing a rate mid-flight cannot change the meaning of a run
+already in progress.
+
+**The rates are stored on the row rather than read back from settings.** A
+return figure without its cost assumption is not a reproducible result —
+the setting behind it can be edited afterwards, silently moving what the
+number means. A stored result must stay self-describing.
+
+### 3. EMA and ATR, and why those two rather than any others
+
+The vocabulary was `sma` and `rsi`, which is a real constraint on what a
+strategy can express. Two were added:
+
+- **EMA** is the spec's trend core (20/50/200) and the smallest honest step
+  past SMA. Seeded from the SMA of the first `period` closes — an EMA
+  seeded from a single close depends heavily on where the caller started
+  the series, so two callers passing different amounts of history would get
+  different "EMA(20)"s for the same bar.
+- **ATR** is what makes a **stop-loss possible at all**. The spec wants
+  stop-loss, take-profit and volatility-based sizing; the platform has none
+  of those, and every deployment runs with `require_stop_price=False`. ATR
+  is the prerequisite, not a fourth moving average.
+
+Both are the **simple-average** variants, matching the choice `rsi`'s
+docstring already documents, rather than Wilder's smoothing. One convention
+across the module, stated rather than inherited from whichever platform a
+reader happens to know — these are not claimed to match any particular
+vendor's chart.
+
+**ATR is the first indicator that reads `high` and `low`,** and both
+columns are nullable. An ATR over a close-only bar raises
+`InsufficientDataError` — the same error, not a second one meaning the same
+thing — which `expressions.py` already records as `None`, so the rule
+simply does not fire. The only alternative is estimating a day's range from
+its close, which is fabricating market data. `CLOSE_ONLY_INDICATORS` in
+`strategies/models.py` is what makes the dispatch a set membership rather
+than an `if` on ATR specifically.
+
+**A test-hygiene finding worth recording.** Four existing tests used `ema`
+as their example of an *unknown* indicator type. Implementing EMA made all
+four pass for the wrong reason — nothing raised, because nothing was
+unknown any more. Each now uses a name nobody is likely to implement, with
+a comment saying why: what those tests assert is the **refusal of an
+unknown type**, not any particular type's absence, and adding a real
+indicator must never silently disarm them again.
+
+### 4. `bar_interval` becomes one shared closed vocabulary, widened past `1d`
+
+Six request schemas each carried their own `Literal["1d"]`. Their stated
+reason was sound while `1d` was the only interval anything ingested:
+accepting `'1h'` would produce a run that silently found no bars.
+
+That reason no longer holds, because the thing it was a proxy for is now
+handled properly: `_load_warmup_and_window` raises a specific
+`InsufficientHistoryError` naming the real numbers, and
+`run_strategy_backtest` persists that as a FAILED run carrying the message.
+A request for an interval with no ingested bars is a **data** question with
+a real, auditable answer — strictly more informative than a 422 on the
+interval itself.
+
+`BarInterval` (`marketdata/bar_provider.py`) is now the single definition,
+imported by all six. It stays CLOSED because `market_data_bars.bar_interval`
+is a plain string column (migration 0016, deliberately not a Postgres enum
+so adding an interval needs no `ALTER TYPE`) — which by itself would accept
+`"1 day"`, `"daily"` and `"1D"` as three intervals that never match each
+other on read.
+
+`LongbridgeBarBackfillProvider` maps each interval to the SDK's `Period`
+enum by **attribute name resolved through `getattr`**, not by holding real
+enum members: `longport.openapi` is imported lazily inside the methods that
+need it, never at module level, so that tests and every non-Longbridge path
+run without the vendor package installed. An unmappable interval **raises**;
+falling back to `Period.Day` would persist daily bars under a
+`bar_interval` of `"5m"`, and nothing downstream could ever detect it.
+
+**Verification status, stated plainly.** Only the `Day` mapping has made a
+real round trip — it is the one Phase 53 shipped. The five intraday
+mappings are correct by direct introspection of the installed SDK's
+`Period` enum and are covered by tests against a stub client, which proves
+this adapter asks for the right period. It does **not** prove the vendor
+returns intraday candles for any particular symbol or entitlement: the
+Longbridge token available while this phase was written was expired
+(`401103 token is expired`), so no live intraday call was possible. The
+first real intraday backfill is what would establish that, and until one
+runs this is documented as unverified rather than described as working.
+
+### 5. `lightweight-charts`, and why not TradingView's free widget
+
+The request was for TradingView-style charts with this platform's signals
+marked on them. The free TradingView **embed widget** cannot do the second
+half: it renders TradingView's own data inside a sealed cross-origin
+iframe, with no supported way to hand it a bar series and no way to draw a
+marker.
+
+That is not merely an API limitation, it is a correctness problem. A marker
+on someone else's bars would sit on a bar the backtest never saw — two
+feeds can and do differ on exact OHLC — so the chart would be asserting
+something about when the strategy acted that is not quite true.
+
+`lightweight-charts` is the same rendering engine, Apache-2.0 licensed,
+published by TradingView, and it takes the caller's series. Every bar it
+draws comes from `market_data_bars` through the same `MarketDataStore` the
+backtest engine reads, over the run's own `[start_date, end_date]`.
+
+Three honesty rules in the component, each tested:
+
+- **A bar with no high/low is skipped, never completed from its close,** and
+  the skipped count is disclosed on the page. Filling those from the close
+  would draw a doji asserting the market opened and closed at one price and
+  never moved.
+- **A signal whose bar is not in the loaded window is dropped, never snapped
+  to the nearest bar.** A marker on a bar the trade did not happen on is a
+  plausible-looking lie; an absent marker is merely absent.
+- **An empty result is a message, not an empty frame** — and it distinguishes
+  "no bars are ingested, backfill them" from "these bars are close-only",
+  which call for different actions.
+
+`GET /market-data/{symbol}/bars` **never contacts a vendor and never
+ingests.** An un-backfilled symbol returns 200 with an empty list, not a
+404 and not a silent backfill: reading is a read, and ingestion stays an
+explicit ADMIN-gated action, so a chart request can never spend a vendor
+quota or write rows. A result above `MAX_BARS` is **refused with a 422
+rather than truncated** — a truncated series draws a chart that looks
+complete while ending mid-window, and a reader has no way to tell.
+
+### 6. A test-environment finding, recorded because it nearly shipped
+
+The canvas stub `lightweight-charts` needs under jsdom was first added to
+the shared `test/setup.ts`, where it broke five unrelated suites: Recharts
+measures text through `ctx.measureText(...).width`, and a global stub
+answering every method with `undefined` made every Recharts-based chart
+test time out. The stub now lives beside the one component that needs it.
+An environment stub that changes how *other* components behave under test
+is not a stub, it is a mutation of the test environment.
+
+Status: Implemented. Cost model, indicators, vocabulary and chart verified
+by test against real Postgres and a real browser DOM; the intraday vendor
+round trip is unverified, for the reason stated in section 4.
+
+---
+
+## D089 — Phase 71: a second market-data vendor, and three limits that made BTC unreachable
+
+The BTC/USD brief could not be started, and the reason was not the one
+anyone expected. Four separate things had to be true before a single
+honest number existed, and each of the first three produced a
+plausible-looking wrong answer rather than an error.
+
+### 1. Longbridge has no spot BTC instrument, and no amount of re-authorizing changes that
+
+`BTCUSD.BKKT` answers `301600 invalid symbol`. `.HAS` and `.OSL` crypto
+symbols return nothing. Authentication is fine throughout — live `AAPL.US`
+quotes and 5-minute candles both work on the same credentials in the same
+session.
+
+This matters because the obvious diagnosis was wrong for weeks: an earlier
+`401103 token is expired` made it look like a credentials problem, and a
+credentials problem is the kind that gets fixed by reconnecting. It is an
+ENTITLEMENT fact. The account can price US equities and the Bitcoin
+ETFs — IBIT, GBTC, BITO, MSTR, and `BTC.US` (Grayscale Bitcoin Mini Trust)
+— and cannot price Bitcoin.
+
+A separate finding worth recording alongside it: **the platform's own
+`.env` had all three `LONGPORT_*` lines commented out**, so it had never
+ingested anything from Longbridge at any point in its history. The
+startup banner said `market_data_vendor: NOT_CONFIGURED` and that was
+accurate.
+
+### 2. Coinbase, chosen by measurement rather than reputation
+
+Three candidates, all probed with real requests before picking:
+
+  * **Kraken** — the public OHLC endpoint IGNORES `since` when asked to go
+    backwards: it returns the most recent 720 bars whatever is passed.
+    Hourly history therefore reaches back about 30 days, and the brief's
+    90- and 180-day windows are not obtainable from it at all.
+  * **Binance** — exposes a real `BTCUSD` pair, but it is nearly untraded:
+    median **0.04 BTC per hour** against BTCUSDT's 560, with daily history
+    beginning four days before the probe. Backtesting it would produce
+    numbers about an empty order book. Its liquid pair, BTC/USDT, is a
+    tether pair rather than a dollar pair.
+  * **Coinbase `BTC-USD`** — a genuine, deeply liquid USD market (median
+    218 BTC/hour in the sampled window), real `start`/`end` range support,
+    and 5-minute candles still available 180 days back.
+
+`CoinbaseBarProvider` needs no credentials, which is why it has no
+all-or-nothing gate and no `build_*` returning `None` — a structural
+difference from every other provider in that package, and the reason the
+router reports WHICH vendors it has rather than a single configured flag.
+
+**The response shape is a trap and is handled explicitly.** Coinbase
+returns `[time, low, high, open, close, volume]` — `low` and `high` come
+BEFORE `open`, which is not the ordering any other vendor here uses.
+Reading it positionally in the conventional order transposes every bar's
+open with its low, producing candles that look plausible, validate fine,
+and are wrong in a way nothing downstream could detect.
+
+`BarBackfillRouter` dispatches on symbol SHAPE — a dot means Longbridge, a
+hyphen without a dot means a Coinbase product — because the two universes
+are DISJOINT. That is the important difference from `MarketDataRouter`,
+which tries providers in turn for the same symbol: a fallback here would
+mean answering "what are AAPL's bars?" with a crypto exchange's silence.
+An unroutable symbol is refused with a 422 naming both conventions,
+before any job row is created.
+
+### 3. The platform could not trade Bitcoin at all
+
+Sizing floored every quantity to a whole unit. $10,000 of a $70,000 asset
+is 0.1428 units, which floors to **zero**. Every entry was skipped, and
+every BTC backtest returned **0 trades and a 0.00% return** while
+buy-and-hold over the same window made 17.3%.
+
+The dangerous part is not the bug, it is its shape: "no trades" is
+indistinguishable from "a strategy that never found a setup". Five
+different strategies all reporting 0.00% looked like five strategies that
+did not fire, and only comparing against buy-and-hold made it obviously
+impossible.
+
+`QUANTITY_PRECISION_FRACTIONAL = 6` for crypto (about seven cents of BTC,
+the limit of the `NUMERIC(20,6)` quantity columns), `0` for equities, with
+the crypto test delegated to the router so there is one definition of
+"crypto symbol" in the codebase. A universe scan decides PER SYMBOL, since
+a mixed universe would otherwise either floor every crypto entry to zero
+or propose fractional share counts no equity venue accepts.
+
+**A related discovery, not a bug:** the Risk Engine caps any single order
+at 10% of equity. Measured precisely — `fixed_fraction` 0.09 fills, 0.10
+does not. So `all_in` fills nothing on any symbol, and a strategy sized
+above ~9% of equity silently produces an empty backtest. That is the risk
+engine doing its job, but it is invisible unless you know to look, so it
+is recorded here.
+
+### 4. Two schema limits that only intraday data reaches
+
+Both were written when `1d` was the only interval anything ingested, and
+both are hard failures rather than degradations:
+
+  * `backtest_equity_points` was UNIQUE on `(run_id, date)` — one point per
+    calendar day. An hourly run produces 24, so the write died on a unique
+    violation AFTER the replay had completed. Migration `0029` re-keys it
+    on the bar's real timestamp and adds `entry_ts`/`exit_ts` to trades,
+    without which two intraday trades on one day are indistinguishable in
+    the ledger and collapse onto one another as chart markers.
+  * `MarketDataStore.upsert_bars` built one INSERT for the whole backfill.
+    At 9 bind parameters per bar, Postgres' 32,767-parameter ceiling caps a
+    write at ~3,640 bars. A decade of daily bars fits; 185 days of hourly
+    does not. Now chunked at a size DERIVED from the column count, so
+    adding a column shrinks the chunk automatically rather than silently
+    reintroducing the overflow.
+
+`date` is kept alongside `ts` rather than replaced: the monthly-returns
+heatmap groups by day, and re-deriving a calendar day from an instant at
+every call site is where timezone bugs live.
+
+### 5. Backtest history as a first-class surface
+
+`GET /backtest-runs` lists every run the caller owns across ALL
+strategies. The per-version listing answers "what has this version done",
+which is right while iterating on one strategy and wrong afterwards:
+comparing a new idea against everything tried before meant knowing each
+strategy id in advance. Ownership is enforced in the JOIN rather than by
+filtering after loading. FAILED runs are included — a run that could not
+complete records what was attempted and why, and hiding them would make
+the history a record only of the attempts that happened to work.
+
+### 6. What the real numbers said
+
+Five conventional strategies over 180 days of real hourly BTC/USD, costed:
+**every one underperformed buy-and-hold (+8.29%), and three lost money.**
+Best was `sma-50-200` at +1.69%. Ranking the five by trade count ranks them
+by result, inverted: 11 trades best, 69 trades second-worst.
+
+`rsi-30-70` won **59.3% of its trades and still lost money** — $144.84 of
+costs across 54 round trips on a $10,000 account. Before D088's cost model
+that strategy would have reported a profit. This is the clearest evidence
+so far that the cost model earns its place.
+
+Status: Implemented and verified against real Coinbase data.
+
+---
+
+## D090 — Phase 72: an improvement loop that is built not to fool itself
+
+"Improve the strategy over time" describes, stated plainly, a machine for
+overfitting: propose variants, measure them, keep the winner, repeat. Run
+that against one window long enough and it will find a definition that
+fits that window's noise beautifully and predicts nothing — and it will
+report a wonderful number while doing it.
+
+So the design question was never "how do we search" but "how do we stop
+the search lying to us". Three rules, all structural rather than
+advisory:
+
+**1. Two windows, and the second is not looked at until the first has
+already chosen.** `train_*` and `validate_*` are separate NOT NULL columns
+with no defaults, so there is no shape of `strategy_improvement_runs` that
+means "improve against everything" — a caller cannot express it even by
+accident. Candidates are generated and ranked on train alone; the hold-out
+is touched exactly once per iteration, for the single candidate that
+already won. A candidate that never won on train leaves a step row with
+`validate_backtest_run_id IS NULL` — the rule is visible in the data.
+
+**2. Acceptance requires improving on BOTH.** Beating the incumbent on
+train earns a candidate the right to be judged; beating it out-of-sample
+earns acceptance. Train-only improvement is recorded as `OVERFIT_REJECTED`
+with both figures quoted.
+
+**3. The search stops at the first rejection.** It does not go on to the
+second-best candidate, the third, and so on. That is precisely how a
+hold-out gets consumed: judge enough candidates against it and it stops
+being held out. One validation per iteration is the entire budget.
+
+**Nothing here is an LLM.** Variants come from `perturbation.py`'s
+deterministic one-factor-at-a-time generator and every number comes from
+`engine_v2` replaying real bars through the real Risk Engine and the real
+cost model — so the same inputs reproduce the same search, which is what
+makes a recorded run re-checkable. Each step keeps the ids of the ordinary
+`backtest_runs` behind it, so a search re-opens as normal runs with their
+own equity curves and trade ledgers rather than as a private notion of a
+result.
+
+**`accepted_reason` is always populated**, on rejection as well as
+acceptance. A row recording only numbers leaves a reader reverse-
+engineering why the search moved on; the stated reason is the difference
+between a record and a log. The objective is deliberately crude — return
+only, ignoring drawdown and trade count — and every stored reason carries
+that caveat rather than leaving it to be assumed.
+
+**A SUCCEEDED run may have improved nothing.** `best_version_id` is NULL
+when no candidate survived validation, and that is a complete answer, not
+a failure. Only an ACCEPTED candidate leaves a `StrategyVersion` behind,
+so a rejected variant cannot be mistaken for something the search
+endorsed.
+
+### What it did on its first real run
+
+Baseline EMA(20/50) on real BTC/USD: **−0.36% train, +1.98% held-out**.
+The search tried six one-parameter variants; the best moved EMA(50) →
+EMA(55) and improved train to **−0.22%**. On the held-out window that same
+variant returned **1.91%** — worse than the baseline's 1.98%.
+
+`OVERFIT_REJECTED`. The search stopped and the baseline stood. A naive
+optimiser would have reported that variant as an improvement.
+
+### A latent bug this surfaced, and a wrong fix caught by an existing test
+
+The loop's first real run died on "Object of type Decimal is not JSON
+serializable": `perturbation.py` writes `position_sizing.fraction` as a
+`Decimal`, and `strategy_versions.definition` is JSONB. It had never
+mattered because `robustness.py` uses variants in memory only - this loop
+is the first thing that PERSISTS one.
+
+The obvious fix - have `perturbation.py` write a float - was **wrong, and
+`test_no_returned_value_is_ever_a_binary_float` caught it.** That module
+computes an EXACT Decimal on purpose, so `0.25 * 0.9` is precisely `0.225`
+rather than binary float's `0.225000000000000005...`; writing a float
+reintroduces the artifact that test exists to forbid. The in-memory
+contract was right and the problem was never there.
+
+The conversion therefore happens at the DATABASE BOUNDARY, in the loop's
+own `_json_native`, and only there. An integral Decimal becomes an `int`
+so a period stays a period rather than becoming `20.0`; a fractional one
+becomes `float(str(d))`, which round-trips exactly because every consumer
+parses the field back through `Decimal(str(...))` (see
+`engine_v2._desired_quantity`). Both halves are pinned by tests.
+
+Status: Implemented, verified against real data, 7 tests covering the
+discipline rather than the outcome.

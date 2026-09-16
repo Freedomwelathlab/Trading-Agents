@@ -48,6 +48,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.backtesting.costs import CostModel
 from apps.api.app.backtesting.engine_v2 import run_strategy_backtest
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.models import (
@@ -199,6 +200,8 @@ async def run_walk_forward(
     starting_cash: Decimal,
     bar_provider: HistoricalBarProvider,
     risk_limits: RiskLimits,
+    cost_model: CostModel,
+    quantity_precision: int,
     portfolio_limits: PortfolioLimits | None,
     requested_by_user_id: uuid.UUID | None,
 ) -> WalkForwardRun:
@@ -279,6 +282,8 @@ async def run_walk_forward(
                 bar_provider=bar_provider,
                 risk_limits=risk_limits,
                 portfolio_limits=portfolio_limits,
+                cost_model=cost_model,
+                quantity_precision=quantity_precision,
                 requested_by_user_id=requested_by_user_id,
             )
             session.add(

@@ -6,8 +6,8 @@ apps/api/app/strategies/validation.py states: it does not `eval()`,
 user-supplied definition into something that runs. What follows is a fixed,
 small set of ordinary Python functions that dispatch on the CLOSED
 vocabulary in apps/api/app/strategies/models.py - an `if` chain over six
-known operator strings and two known indicator types, nothing more. A
-definition is untrusted input submitted over HTTP on a system that places
+known operator strings and a dict keyed by the four known indicator types,
+nothing more. A definition is untrusted input submitted over HTTP on a system that places
 real orders through a real broker; a definition language that could execute
 arbitrary expressions would put remote code execution one endpoint away
 from the trading path. The only strings this module ever *interprets* are
@@ -48,16 +48,36 @@ this module's existing `None`, exactly like insufficient history - a
 corrupted close is exactly as unusable as a not-yet-defined indicator.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from apps.api.app.marketdata.bar_provider import Bar
-from apps.api.app.marketdata.indicators import InsufficientDataError, rsi, sma
+from apps.api.app.marketdata.indicators import (
+    InsufficientDataError,
+    atr,
+    ema,
+    rsi,
+    sma,
+)
 from apps.api.app.strategies.models import (
+    CLOSE_ONLY_INDICATORS,
     PRICE_OPERAND_CLOSE,
     IndicatorType,
     RuleOperator,
 )
+
+_INDICATOR_FUNCTIONS: dict[IndicatorType, Callable[[Any, int], Decimal]] = {
+    IndicatorType.SMA: sma,
+    IndicatorType.RSI: rsi,
+    IndicatorType.EMA: ema,
+    IndicatorType.ATR: atr,
+}
+"""Every member of the closed vocabulary mapped to the pure function that
+computes it. Exhaustive by construction: a member missing from this dict
+raises the same explicit "did not pass validate_definition()" error an
+unknown type string does, rather than a bare KeyError from somewhere
+deeper."""
 
 
 def compute_indicator_series(bars: list[Bar], indicator: dict) -> list[Decimal | None]:
@@ -69,14 +89,17 @@ def compute_indicator_series(bars: list[Bar], indicator: dict) -> list[Decimal |
     inclusive, i.e. using only information available at bar `i` and never
     a later bar. This is the same `sma_at` construction
     apps/api/app/backtesting/strategy.py already uses for its one hard-coded
-    SMA, generalized to the two indicator types the vocabulary allows.
+    SMA, generalized to the four indicator types the vocabulary allows.
 
     Entries where the indicator is not yet defined are `None`: SMA(period)
-    needs `period` closes, RSI(period) needs `period + 1` (it measures
-    `period` *changes*), so the leading entries of the series have no
-    answer. That boundary is not restated here - the indicator function
-    raises InsufficientDataError and this records `None` - so the two
-    modules cannot drift apart on an off-by-one.
+    and EMA(period) need `period` closes, RSI(period) and ATR(period) need
+    `period + 1` (they measure `period` *changes* and `period` true ranges
+    respectively), so the leading entries have no answer. ATR additionally
+    yields `None` for any window containing a bar without a high or a low -
+    a real possibility, since both columns are nullable. None of those
+    boundaries is restated here - the indicator function raises
+    InsufficientDataError and this records `None` - so the two modules
+    cannot drift apart on an off-by-one.
 
     Raises ValueError if `indicator["type"]` is outside the closed
     vocabulary. That cannot happen for a definition that passed
@@ -87,23 +110,29 @@ def compute_indicator_series(bars: list[Bar], indicator: dict) -> list[Decimal |
     indicator_type = indicator["type"]
     period = indicator["period"]
 
-    compute: Callable[[list[Decimal], int], Decimal]
-    if indicator_type == IndicatorType.SMA.value:
-        compute = sma
-    elif indicator_type == IndicatorType.RSI.value:
-        compute = rsi
-    else:
-        allowed = ", ".join(member.value for member in IndicatorType)
+    try:
+        member = IndicatorType(indicator_type)
+        compute: Callable[[Any, int], Decimal] = _INDICATOR_FUNCTIONS[member]
+    except (ValueError, KeyError):
+        allowed = ", ".join(m.value for m in IndicatorType)
         raise ValueError(
             f"unknown indicator type {indicator_type!r} - allowed types are: {allowed}. "
             "This definition did not pass validate_definition()."
-        )
+        ) from None
 
-    closes = [bar.close for bar in bars]
+    # Most indicators read the close series; ATR also needs each bar's high
+    # and low, so it is handed the bars themselves. The distinction lives in
+    # CLOSE_ONLY_INDICATORS (strategies/models.py) rather than in an `if`
+    # on ATR specifically, so the next high/low indicator is one set entry
+    # and one dict entry rather than a new branch here.
+    inputs: Sequence[Any] = (
+        [bar.close for bar in bars] if member in CLOSE_ONLY_INDICATORS else bars
+    )
+
     series: list[Decimal | None] = []
-    for i in range(len(closes)):
+    for i in range(len(bars)):
         try:
-            series.append(compute(closes[: i + 1], period))
+            series.append(compute(inputs[: i + 1], period))
         except InsufficientDataError:
             series.append(None)
         except (TypeError, InvalidOperation):

@@ -32,6 +32,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import delete
 
+from apps.api.app.backtesting.costs import CostModel
 from apps.api.app.backtesting.universe_scan import (
     MAX_SCAN_SYMBOLS,
     RESULT_STATUS_FAILED,
@@ -145,6 +146,7 @@ async def _run(symbols, returns: list[str | None]):
             bar_provider=SimpleNamespace(),  # type: ignore[arg-type]
             risk_limits=_risk_limits(),
             portfolio_limits=None,
+            cost_model=CostModel.frictionless(),
             requested_by_user_id=None,
         )
     return session, scan, fake
@@ -266,6 +268,7 @@ async def test_an_unexpected_failure_resolves_the_row_instead_of_raising() -> No
             bar_provider=SimpleNamespace(),  # type: ignore[arg-type]
             risk_limits=_risk_limits(),
             portfolio_limits=None,
+            cost_model=CostModel.frictionless(),
             requested_by_user_id=None,
         )
 
@@ -429,6 +432,7 @@ async def test_all_ingested_mode_records_no_requested_symbols() -> None:
             bar_provider=SimpleNamespace(),  # type: ignore[arg-type]
             risk_limits=_risk_limits(),
             portfolio_limits=None,
+            cost_model=CostModel.frictionless(),
             requested_by_user_id=None,
         )
 

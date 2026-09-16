@@ -6,7 +6,10 @@ Update this after meaningful implementation work — not for every commit.
 
 **Phases 53-68 (D070-D086) completed the Strategy Lab initiative. Phase 69
 (D087) then built the unattended live execution path those phases had
-deliberately left out.**
+deliberately left out. Phase 70 (D088) opened the BTC/USD strategy work
+with a vertical slice: transaction-cost modelling, two more indicators, an
+intraday bar vocabulary, and a chart that draws this platform's own signals
+on its own bars.**
 
 `LIVE_TRADING_ENABLED` and `STRATEGY_LIVE_AUTO_EXECUTION_ENABLED` both stay
 `false` on every default and every test in this repository. Phase 69 built
@@ -20,6 +23,159 @@ broker, exactly as under D082.
 Nothing below claims the platform is "production ready" or "fully secure"
 beyond what each phase actually verified, and nothing below is a claim that
 any strategy makes money.
+
+- Phases 71-72: real BTC/USD data, and an improvement loop built not to
+  fool itself (2026-09-15, D089/D090). **Longbridge cannot price spot BTC**
+  - `BTCUSD.BKKT` answers `301600 invalid symbol` while live AAPL quotes
+  and 5m candles work on the same credentials, so it is an entitlement
+  fact, not a token one; the account can price the BTC ETFs (IBIT, GBTC,
+  BITO, MSTR) and not Bitcoin. New `CoinbaseBarProvider` (public API, no
+  credentials) supplies genuine BTC/USD, chosen after measuring the
+  alternatives: Kraken's OHLC ignores `since` backwards so hourly reaches
+  only ~30 days, and Binance's real `BTCUSD` trades 0.04 BTC/hour against
+  BTCUSDT's 560. `BarBackfillRouter` dispatches on symbol shape because the
+  two vendors' universes are DISJOINT - an unroutable symbol is refused,
+  never tried against every provider. **5,166 hourly + 17,775 15-minute
+  real BTC/USD bars ingested.**
+  **Three limits that each produced a plausible wrong answer**, all found
+  by pointing real intraday crypto data at the engine: whole-unit sizing
+  meant $10,000 of a $70,000 asset floored to ZERO, so every BTC backtest
+  returned "0 trades, 0.00%" - indistinguishable from a strategy that never
+  fired (fixed: fractional precision for crypto, whole units for equities,
+  decided per symbol); `backtest_equity_points` was UNIQUE on
+  `(run_id, date)` so 24 hourly points collided and the write died AFTER
+  the replay finished (migration `0029` re-keys on the bar's timestamp and
+  adds intraday trade timestamps); and `upsert_bars` built one INSERT,
+  hitting Postgres' 32,767 bind-parameter ceiling at ~3,640 bars (now
+  chunked at a size derived from the column count). Separately measured and
+  recorded: **the Risk Engine caps any single order at 10% of equity**, so
+  `all_in` and any fraction above ~0.09 fill nothing and report an empty
+  backtest with no error.
+  **The platform's first real results.** Five conventional strategies over
+  180 days of real hourly BTC/USD, costed: every one underperformed
+  buy-and-hold (+8.29%) and three lost money; best was sma-50-200 at
+  +1.69%. `rsi-30-70` won **59.3% of its trades and still lost money** -
+  $144.84 of costs across 54 round trips - which before D088's cost model
+  would have reported a profit.
+  **Backtest history** (`GET /backtest-runs` + `/strategies/history`): every
+  run across all strategies, ownership enforced in the JOIN, failed runs
+  included deliberately.
+  **The improvement loop** (D090) is a search that cannot quietly overfit:
+  train and validate are separate NOT NULL columns so "improve against
+  everything" is inexpressible; the hold-out is touched once per iteration
+  and only for a candidate that already won on train; acceptance needs both
+  windows; and the search stops at the first rejection rather than spending
+  more of the hold-out. On its first real run it rejected its own best
+  candidate - EMA(50)->EMA(55) improved train (-0.36% -> -0.22%) and
+  degraded held-out (1.98% -> 1.91%) - and left the baseline standing. A
+  latent bug surfaced with it: `perturbation.py` wrote
+  `position_sizing.fraction` as a Decimal, unnoticed because `robustness.py`
+  never persists a variant.
+  Verified 2026-09-15 at migration head `0030`: **1276 backend tests**
+  (1265 -> 1276, +11), **325 frontend tests**, ruff / mypy (146 files) /
+  eslint (0 errors, down from 10 pre-existing) / `tsc` / secret scan all
+  clean.
+  **A wrong fix caught by the suite, recorded because it nearly shipped.**
+  The improvement loop first failed on "Object of type Decimal is not JSON
+  serializable"; the obvious repair - have `perturbation.py` write a float
+  - was wrong, and `test_no_returned_value_is_ever_a_binary_float` failed
+  on it. That module computes an EXACT Decimal deliberately, so 0.25*0.9 is
+  precisely 0.225 rather than 0.225000000000000005..., and a float
+  reintroduces the artifact the test forbids. The conversion belongs at the
+  DATABASE boundary and now happens only there (`_json_native`), leaving
+  `perturbation.py` untouched at 22/22.
+  No BTC strategy has been deployed to paper: nothing here has earned it.
+
+- Phase 70: transaction costs, EMA/ATR, an intraday bar vocabulary and a
+  signal chart (2026-09-15, D088) — the first vertical slice of the BTC/USD
+  strategy work: one change at each layer, chosen so the whole pipeline is
+  exercised rather than one layer built out ahead of the rest.
+  **The headline is the cost model.** Before this phase a case-insensitive
+  grep for `slippage`/`commission`/`fee` across the entire
+  `apps/api/app/backtesting/` package returned **zero matches** — every
+  backtest figure this platform had ever produced described a frictionless
+  market, distorted in the flattering direction, and a round trip that broke
+  even graded as neither a win nor a loss when it was in fact a loss. New
+  `backtesting/costs.py` applies a fee and a slippage allowance (10 bps /
+  5 bps by default, deliberately non-zero so the most optimistic assumption
+  is never the one nobody chose) to every simulated fill as an adverse
+  adjustment to the execution PRICE — which is an exact identity with
+  slipping the price and deducting a fee separately, asserted over five
+  price scales at exact Decimal equality. Sizing is computed against the
+  costed price, without which an `all_in` entry would propose a notional
+  larger than its cash and the paper broker would refuse the order outright.
+  `cost_model` is a REQUIRED keyword on `run_strategy_backtest`:
+  `CostModel.frictionless()` exists and is legitimate, but must never be
+  reachable by forgetting. Migration `0028` records `fee_bps`,
+  `slippage_bps`, `total_fees`, `total_slippage` on every run, all nullable
+  with no back-fill — NULL means "predates cost modelling, costs unknown",
+  which is a different claim from zero, and the UI renders it as such.
+  **Two indicators**, chosen rather than accumulated: EMA (the spec's trend
+  core, seeded from the SMA so the value does not depend on where the caller
+  started the series) and ATR — which is what makes a stop-loss possible at
+  all, the prerequisite the spec's SL/TP and volatility sizing need, not a
+  fourth moving average. ATR is the first indicator reading `high`/`low`,
+  both nullable, and it refuses a close-only bar rather than estimating a
+  day's range from its close.
+  **`bar_interval` becomes one shared closed `BarInterval` vocabulary**
+  (`1m`/`5m`/`15m`/`30m`/`1h`/`1d`) replacing six separate `Literal["1d"]`s.
+  Their stated reason — that an unsupported interval would "silently find no
+  bars" — is now handled properly by a persisted FAILED run naming the
+  missing range, which says more than a 422 on the interval did. The
+  Longbridge adapter maps each interval to the SDK's `Period` by attribute
+  name through `getattr` (keeping the vendor import lazy) and **raises** on
+  an unmappable one: falling back to `Period.Day` would persist daily bars
+  under a `bar_interval` of `"5m"` and nothing downstream could detect it.
+  **A TradingView-style chart of our own bars**, via `lightweight-charts`
+  (Apache-2.0, by TradingView) — not TradingView's free embed widget, which
+  renders TradingView's own data in a sealed iframe and cannot take a bar
+  series or draw a marker. That is a correctness problem, not just an API
+  limit: a marker on someone else's bars would sit on a bar the backtest
+  never saw. New `GET /market-data/{symbol}/bars` reads through the same
+  `MarketDataStore` the engine replays against, never contacts a vendor and
+  never ingests (an un-backfilled symbol is an empty 200, not a 404), and
+  refuses rather than truncates above 5,000 bars. The component skips a
+  close-only bar rather than inventing a candle from its close and discloses
+  the count, and drops a signal whose bar is not in the window rather than
+  snapping it to the nearest one.
+  **A test-hygiene finding:** four existing tests used `ema` as their
+  example of an *unknown* indicator type, so implementing EMA made all four
+  pass for the wrong reason — nothing raised because nothing was unknown any
+  more. Each now uses a name nobody is likely to implement, with a comment
+  saying why.
+  **A near-miss caught by the suite:** the jsdom canvas stub
+  `lightweight-charts` needs was first added to the shared `test/setup.ts`,
+  where it broke five unrelated suites — Recharts measures text through
+  `ctx.measureText(...).width`, and a global stub answering every method
+  with `undefined` timed out every Recharts chart test. It now lives beside
+  the one component that needs it.
+  **Not verified, and stated as such:** only the `Day` vendor mapping has
+  ever made a real round trip. The five intraday mappings are correct by
+  direct introspection of the installed SDK's `Period` enum and are tested
+  against a stub client — which proves the adapter asks for the right
+  period, not that Longbridge returns intraday candles for any given symbol
+  or entitlement. The token available during this phase was expired
+  (`401103 token is expired`), so no live intraday call was possible. No
+  BTC/USD strategy has been authored, backtested or deployed by this phase;
+  it built the capabilities that work needs.
+  Verified 2026-09-15 at migration head `0028`: **1265 backend tests**
+  (1215 → 1265, +50), **325 frontend tests / 41 files** (312 → 325), ruff
+  clean, mypy clean across 143 source files, `tsc --noEmit` clean, secret
+  scan clean. `eslint` reports 10 errors, all of them PRE-EXISTING
+  (`react-hooks` "setState synchronously within an effect") in ten files
+  this phase does not touch; every file it adds or changes is clean, and
+  the one file it modifies carried its single warning at the same line
+  before the change. Fixing the pre-existing ten is real work that belongs
+  to its own change, not to this one. Both live switches `false` throughout; no live
+  credential handled and no live order placed at any point.
+  The full backend run reported one failure,
+  `test_the_identical_cycle_on_a_weekday_does_capture_a_real_snapshot`,
+  which was **database pollution rather than a regression** - the same
+  failure mode D087's closing note already records. Three orphaned `brokers`
+  rows left by earlier aborted teardowns held positions in symbols that test
+  does not own, and it asserts a GLOBAL `provider.calls` list, so the
+  scheduler's cycle priced those symbols too. Re-run against a cleaned
+  database: 6/6 pass. Nothing in this phase touches the snapshot scheduler.
 
 - Phase 69: unattended live execution (2026-09-11, D087) — **supersedes the
   operative half of D082**. A `mode='live'` deployment's scheduled runner can

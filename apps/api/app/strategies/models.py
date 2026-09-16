@@ -8,8 +8,8 @@ Anything not listed here is an itemized validation error, never a value
 that is quietly passed through to a later phase to deal with.
 
 `IndicatorType` matches exactly what
-apps/api/app/marketdata/indicators.py already implements - `sma` and `rsi`,
-and nothing else. Listing an indicator type here that no deterministic
+apps/api/app/marketdata/indicators.py already implements - `sma`, `rsi`,
+`ema` and `atr`, and nothing else. Listing an indicator type here that no deterministic
 function computes would let a user save and validate a strategy this system
 cannot actually run, which is a worse failure than refusing it up front:
 the refusal happens while they are editing, the other one happens when a
@@ -35,6 +35,23 @@ class IndicatorType(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
 
     SMA = "sma"
     RSI = "rsi"
+    EMA = "ema"
+    ATR = "atr"
+
+
+CLOSE_ONLY_INDICATORS: frozenset[IndicatorType] = frozenset(
+    {IndicatorType.SMA, IndicatorType.RSI, IndicatorType.EMA}
+)
+"""Indicators computed from the close series alone.
+
+`ATR` is the first indicator in this vocabulary that reads `high` and
+`low` as well, which is why this set exists rather than every indicator
+being handed the same `list[Decimal]`. Both columns are NULLABLE on
+`market_data_bars` (a vendor may return a close-only record), so an ATR
+over close-only bars has no answer and says so - it is never estimated
+from the close, which would be fabricating a day's range. See
+apps/api/app/strategies/expressions.py, which dispatches on this set.
+"""
 
 
 class RuleOperator(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)

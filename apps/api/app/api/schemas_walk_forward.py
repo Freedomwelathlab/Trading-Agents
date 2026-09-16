@@ -17,11 +17,11 @@ instead of receiving every window's curve inline.
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from apps.api.app.db.models import WalkForwardRunStatus
+from apps.api.app.marketdata.bar_provider import BarInterval
 
 
 class CreateWalkForwardRunRequest(BaseModel):
@@ -29,10 +29,10 @@ class CreateWalkForwardRunRequest(BaseModel):
     version is named by the path and supplies every RULE; this body carries
     nothing about the strategy itself.
 
-    `bar_interval` is a `Literal["1d"]` for the reason
-    `CreateBacktestRunRequest` gives: '1d' is the only interval anything
-    ingests or evaluates today, so a 422 here says the actual thing where a
-    free string would produce a run that silently finds no bars.
+    `bar_interval` is the shared `BarInterval` vocabulary for the reason
+    `CreateBacktestRunRequest` gives: one closed spelling of each
+    interval, so the plain-string column underneath cannot end up
+    holding two spellings that never match each other on read.
 
     `window_days` is in CALENDAR days, matching how
     backtesting/walk_forward.py plans boundaries - it has no market calendar,
@@ -41,7 +41,7 @@ class CreateWalkForwardRunRequest(BaseModel):
     """
 
     symbol: str = Field(min_length=1, max_length=32)
-    bar_interval: Literal["1d"] = "1d"
+    bar_interval: BarInterval = "1d"
     overall_start_date: date
     overall_end_date: date
     window_days: int = Field(gt=0)

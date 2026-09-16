@@ -204,6 +204,43 @@ class Settings(BaseSettings):
     age out - a breaker whose threshold silently moves is worse than one
     that measures something simpler and says so."""
 
+    backtest_fee_bps: Decimal = Decimal("10")
+    """Phase 70 (D088). Round-turn-per-side trading fee charged in every
+    engine_v2 backtest, in BASIS POINTS of the trade's notional (10 bps =
+    0.10%), applied on BOTH the entry and the exit.
+
+    **The default is deliberately not zero.** Before this phase the engine
+    modelled no cost of any kind, which meant every backtest number this
+    platform had ever produced described a frictionless market that does
+    not exist. On an intraday strategy that trades often, costs are
+    routinely the entire edge, so a zero default would let the most
+    optimistic possible assumption be the one nobody had to choose.
+    10 bps is a plausible retail crypto taker fee; it is a STARTING POINT
+    an operator should replace with their own venue's real schedule, not a
+    figure this system claims is accurate for any particular broker.
+
+    Set to 0 only to deliberately reproduce a frictionless run - and read
+    the result knowing that is what it is."""
+
+    backtest_slippage_bps: Decimal = Decimal("5")
+    """Phase 70 (D088). Assumed adverse price movement between a signal and
+    its fill, in BASIS POINTS, applied to every simulated fill: a buy fills
+    ABOVE the bar's close and a sell BELOW it, never the reverse.
+
+    Modelled as a price adjustment rather than a cash deduction because
+    that is what slippage physically is - you transact at a worse price,
+    which also means an `all_in` entry can afford slightly fewer shares.
+    Sizing is computed against the slipped price for exactly that reason,
+    so a backtest never proposes a quantity the simulated account could not
+    actually pay for.
+
+    A flat bps figure is a SIMPLIFICATION and is documented as one: real
+    slippage scales with order size relative to available liquidity, gaps
+    wider in fast markets, and is worse for a large order than a small one.
+    This constant models none of that. It exists so a backtest is
+    pessimistic by default rather than silently perfect, not because a
+    single number describes execution well."""
+
     live_account_currency: str = "USD"
     """Which currency's cash balance on the live Longbridge account is
     treated as this account's cash. A live Longbridge account can hold

@@ -67,7 +67,8 @@ from apps.api.app.db.models import (
     Role,
     User,
 )
-from apps.api.app.marketdata.ingestion.backfill import BarBackfillProvider, run_backfill_job
+from apps.api.app.marketdata.bar_router import BarBackfillRouter, UnroutableSymbolError
+from apps.api.app.marketdata.ingestion.backfill import run_backfill_job
 from apps.api.app.notifications.provider import EmailProvider, EmailProviderError
 
 router = APIRouter(
@@ -591,7 +592,7 @@ async def trigger_market_data_backfill(
     request: CreateMarketDataBackfillRequest,
     current_user: User = Depends(require_permission(Permission.ADMIN)),
     session: AsyncSession = Depends(get_session),
-    provider: BarBackfillProvider | None = Depends(get_market_data_bar_backfill_provider),
+    provider: BarBackfillRouter = Depends(get_market_data_bar_backfill_provider),
 ) -> MarketDataBackfillJobResponse:
     """Phase 53 (docs/DECISIONS.md D070). Manual, on-demand, and
     synchronous - runs to completion within this request, since there is
@@ -608,18 +609,19 @@ async def trigger_market_data_backfill(
     outcome still answers 201 with `status: "failed"` and a real
     `error_detail`, not a 5xx that discards the audit row.
     """
-    if provider is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "NOT_CONFIGURED: no historical-bar backfill provider is configured "
-                "(the same LONGPORT_APP_KEY / LONGPORT_APP_SECRET / "
-                "LONGPORT_ACCESS_TOKEN trio the rest of the market-data stack "
-                "requires)."
-            ),
-        )
-
     symbol = request.symbol.strip().upper()
+
+    # Phase 71 (D089): routed BEFORE any job row is created. An unroutable
+    # symbol is a typo or a missing credential - a request that can never
+    # succeed however often it is retried - so it is refused with a 422
+    # naming both symbol conventions rather than persisted as a job that
+    # was doomed before it started. A vendor that IS reachable and simply
+    # has no data still produces a real FAILED job, unchanged: that is a
+    # genuine outcome worth recording, and the two are different.
+    try:
+        provider.provider_for(symbol)
+    except UnroutableSymbolError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     job = await run_backfill_job(
         session,
         symbol=symbol,

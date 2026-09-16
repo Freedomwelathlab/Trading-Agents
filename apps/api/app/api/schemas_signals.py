@@ -16,11 +16,11 @@ the single most useful field on it.
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from apps.api.app.db.models import SignalDirection
+from apps.api.app.marketdata.bar_provider import BarInterval
 
 
 class CreateSignalEvaluationRequest(BaseModel):
@@ -33,10 +33,10 @@ class CreateSignalEvaluationRequest(BaseModel):
     window would turn this into a backtest with one bar, which
     `POST .../backtests` already does properly.
 
-    `bar_interval` is a `Literal["1d"]` for the reason
-    `CreateBacktestRunRequest` gives: '1d' is the only interval anything
-    ingests or evaluates today, so a 422 here says the actual thing where a
-    free string would produce an evaluation that silently finds no bars.
+    `bar_interval` is the shared `BarInterval` vocabulary for the reason
+    `CreateBacktestRunRequest` gives: one closed spelling of each
+    interval, so the plain-string column underneath cannot end up
+    holding two spellings that never match each other on read.
 
     The 50-symbol cap is the same order of magnitude as a universe scan's, but
     for a much cheaper unit of work: each symbol here is one small indexed
@@ -45,7 +45,7 @@ class CreateSignalEvaluationRequest(BaseModel):
     """
 
     symbols: list[str] = Field(min_length=1, max_length=50)
-    bar_interval: Literal["1d"] = "1d"
+    bar_interval: BarInterval = "1d"
 
 
 class SignalEvaluationResponse(BaseModel):

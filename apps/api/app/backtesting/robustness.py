@@ -61,6 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # in the way that matters here - none of them writes to the database - so a
 # perturbed variant is replayed by precisely the code an ordinary backtest
 # runs, minus only the persistence this module does not want.
+from apps.api.app.backtesting.costs import CostModel
 from apps.api.app.backtesting.engine_v2 import (
     _load_warmup_and_window,
     _replay_window,
@@ -123,6 +124,8 @@ async def _replay_definition(
     end_date: date,
     starting_cash: Decimal,
     risk_limits: RiskLimits,
+    cost_model: CostModel,
+    quantity_precision: int,
     portfolio_limits: PortfolioLimits | None,
 ) -> _ReplayMetrics:
     """One definition over one window, through the real engine helpers.
@@ -162,13 +165,15 @@ async def _replay_definition(
         starting_cash=starting_cash,
         risk_limits=risk_limits,
         portfolio_limits=portfolio_limits,
+        cost_model=cost_model,
+        quantity_precision=quantity_precision,
     )
     return _ReplayMetrics(
         total_return_pct=compute_total_return_pct(
             starting_cash=starting_cash, final_equity=replay.final_equity
         ),
         max_drawdown_pct=compute_max_drawdown_pct(
-            [equity for _day, equity in replay.equity_curve]
+            [equity for _ts, _day, equity in replay.equity_curve]
         ),
     )
 
@@ -242,6 +247,8 @@ async def run_robustness_test(
     magnitude_pct: Decimal,
     bar_provider: HistoricalBarProvider,
     risk_limits: RiskLimits,
+    cost_model: CostModel,
+    quantity_precision: int,
     portfolio_limits: PortfolioLimits | None,
     requested_by_user_id: uuid.UUID | None,
 ) -> RobustnessRun:
@@ -313,6 +320,8 @@ async def run_robustness_test(
             end_date=end_date,
             starting_cash=starting_cash,
             risk_limits=risk_limits,
+            cost_model=cost_model,
+            quantity_precision=quantity_precision,
             portfolio_limits=portfolio_limits,
         )
     except Exception as exc:
@@ -381,6 +390,8 @@ async def run_robustness_test(
                 end_date=end_date,
                 starting_cash=starting_cash,
                 risk_limits=risk_limits,
+                cost_model=cost_model,
+                quantity_precision=quantity_precision,
                 portfolio_limits=portfolio_limits,
             )
         except Exception as exc:

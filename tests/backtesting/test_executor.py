@@ -219,10 +219,18 @@ def test_indicator_type_outside_the_vocabulary_raises_value_error() -> None:
     # Cannot happen for a definition that passed validate_definition. It
     # fails loudly rather than emitting signals from a definition it did not
     # understand.
+    #
+    # The example used to be `ema`, which Phase 70 added to the vocabulary -
+    # so this test started passing for the wrong reason (nothing raised
+    # because nothing was unknown any more). It is now a name no one is
+    # likely to implement, which is the property this test actually needs:
+    # what is asserted is the REFUSAL of an unknown type, not any particular
+    # type's absence. Adding a real indicator must never silently disarm it
+    # again.
     definition = {
-        "indicators": [{"id": "ema_10", "type": "ema", "period": 10}],
-        "entry_rule": {"op": "gt", "left": "close", "right": "ema_10"},
-        "exit_rule": {"op": "lt", "left": "close", "right": "ema_10"},
+        "indicators": [{"id": "x_10", "type": "not_a_real_indicator", "period": 10}],
+        "entry_rule": {"op": "gt", "left": "close", "right": "x_10"},
+        "exit_rule": {"op": "lt", "left": "close", "right": "x_10"},
         "position_sizing": {"type": "all_in"},
     }
     with pytest.raises(ValueError, match="unknown indicator type"):

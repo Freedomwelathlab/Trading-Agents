@@ -29,6 +29,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import delete, select
 
+from apps.api.app.backtesting.costs import CostModel
 from apps.api.app.backtesting.engine_v2 import _desired_quantity, run_strategy_backtest
 from apps.api.app.backtesting.strategy import Signal
 from apps.api.app.db.base import get_session
@@ -192,7 +193,15 @@ async def validated_version(session, definition: dict):
         await session.commit()
 
 
-async def _run(session, version, *, bars, signals, starting_cash=Decimal(10_000)):
+async def _run(
+    session,
+    version,
+    *,
+    bars,
+    signals,
+    starting_cash=Decimal(10_000),
+    cost_model=None,
+):
     with patch(
         "apps.api.app.backtesting.engine_v2.generate_signals", return_value=signals
     ) as fake:
@@ -207,6 +216,16 @@ async def _run(session, version, *, bars, signals, starting_cash=Decimal(10_000)
             bar_provider=FakeBarProvider(bars),
             risk_limits=_risk_limits(),
             portfolio_limits=None,
+            # FRICTIONLESS ON PURPOSE. Every assertion in this file predates
+            # Phase 70's cost model and states what the engine's replay loop
+            # does - sizing, the risk/portfolio/broker sequence, round-trip
+            # bookkeeping, the failure paths. Running them at zero cost is
+            # what pins that Phase 70 changed none of it: if a number here
+            # moves, the cost model leaked into behaviour it should not
+            # touch. The cost model's own effect on those numbers is
+            # asserted separately, in tests/backtesting/test_costs.py and
+            # test_engine_v2_costs.py, against a NON-zero model.
+            cost_model=cost_model or CostModel.frictionless(),
             requested_by_user_id=None,
         )
     return run, fake
@@ -537,6 +556,7 @@ async def test_the_provider_is_asked_once_for_a_buffered_range_covering_warmup()
                     bar_provider=provider,
                     risk_limits=_risk_limits(),
                     portfolio_limits=None,
+                    cost_model=CostModel.frictionless(),
                     requested_by_user_id=None,
                 )
 

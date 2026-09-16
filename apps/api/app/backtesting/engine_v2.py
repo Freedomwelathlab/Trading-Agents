@@ -45,6 +45,8 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.backtesting.costs import CostModel
+
 # `_attempt_trade` is imported ACROSS MODULES despite its leading
 # underscore, deliberately: it is the exact RISK -> PORTFOLIO -> BROKER
 # replay sequence D025/D035 already pinned with tests, and reusing it is
@@ -121,6 +123,10 @@ class _OpenPosition:
     necessarily what the strategy proposed, since the Risk Engine and the
     Portfolio Manager may both have shrunk it on the way through."""
 
+    entry_ts: datetime
+    """The entry bar's own timestamp (Phase 71). Carried alongside the date
+    because on an intraday interval a date alone cannot tell two trades on
+    the same day apart."""
     entry_date: date
     entry_price: Decimal
     quantity: Decimal
@@ -130,8 +136,10 @@ class _OpenPosition:
 class _CompletedTrade:
     """One closed round trip, in the shape `backtest_trades` stores."""
 
+    entry_ts: datetime
     entry_date: date
     entry_price: Decimal
+    exit_ts: datetime
     exit_date: date
     exit_price: Decimal
     quantity: Decimal
@@ -143,14 +151,59 @@ class _Replay:
     written. Kept as a value so the persistence step below has a single
     object to write rather than five parallel locals."""
 
-    equity_curve: list[tuple[date, Decimal]]
+    equity_curve: list[tuple[datetime, date, Decimal]]
     round_trips: list[RoundTrip]
     trades: list[_CompletedTrade]
     final_equity: Decimal
+    total_fees: Decimal
+    """Phase 70 (D088). Currency fees charged across every fill this replay
+    produced - entries and exits both. Already reflected in `final_equity`
+    and in every point of `equity_curve`, because costs are applied to the
+    execution price the paper broker fills at; this is a breakdown of a cost
+    already paid, never a second deduction to apply on top."""
+    total_slippage: Decimal
+    """Phase 70 (D088). Currency slippage, on the same terms as
+    `total_fees`."""
+
+
+QUANTITY_PRECISION_WHOLE_UNITS = 0
+"""Equities and ETFs: whole shares only, which is what every venue this
+system can actually route an equity order to accepts."""
+
+QUANTITY_PRECISION_FRACTIONAL = 6
+"""Crypto: six decimal places, the limit of `orders.quantity` and
+`backtest_trades.quantity`, both NUMERIC(20,6). At BTC's scale that is a
+granularity of about seven cents.
+
+**Without this the platform cannot trade Bitcoin at all.** Sizing floors
+to a whole unit, and $10,000 of a $70,000 asset is 0.1428 units, which
+floors to ZERO - so every entry was silently skipped and every BTC
+backtest returned 0 trades and a 0.00% return while buy-and-hold made
+17.3%. That is not a strategy result; it is the absence of one, and it
+looked exactly like a strategy that never found a setup."""
+
+
+def _quantize_down(raw: Decimal, precision: int) -> Decimal:
+    """`raw` truncated DOWN to `precision` decimal places.
+
+    Always down, never nearest: rounding up would propose a quantity the
+    account cannot pay for, which the paper broker refuses outright - the
+    same reasoning behind the original whole-share ROUND_FLOOR, just
+    generalized past integers.
+    """
+    if precision <= 0:
+        return raw.to_integral_value(rounding="ROUND_FLOOR")
+    step = Decimal(1).scaleb(-precision)
+    return (raw / step).to_integral_value(rounding="ROUND_FLOOR") * step
 
 
 def _desired_quantity(
-    *, sizing: dict, cash: Decimal, equity: Decimal, price: Decimal
+    *,
+    sizing: dict,
+    cash: Decimal,
+    equity: Decimal,
+    price: Decimal,
+    quantity_precision: int = QUANTITY_PRECISION_WHOLE_UNITS,
 ) -> Decimal:
     """Whole shares to propose for an entry, per the definition's
     `position_sizing` block (Phase 54's closed vocabulary).
@@ -165,11 +218,14 @@ def _desired_quantity(
       amount larger than the account proposes what can actually be afforded
       rather than a quantity certain to be refused.
 
-    Floored to a whole share (`ROUND_FLOOR`), exactly as v1 floors its own
-    all-cash quantity - this system does not model fractional shares
-    anywhere, and rounding UP would propose a trade the account cannot pay
-    for. A sizing that floors to 0 simply makes no trade; that is a real
-    answer, not an error.
+    Truncated DOWN to `quantity_precision` decimal places. At the default
+    of 0 this is v1's exact whole-share `ROUND_FLOOR` behaviour; a crypto
+    caller passes `QUANTITY_PRECISION_FRACTIONAL` because a whole unit of
+    Bitcoin costs more than the whole account (see that constant). Rounding
+    UP at any precision would propose a trade the account cannot pay for.
+    A sizing that truncates to 0 simply makes no trade; that is a real
+    answer, not an error - though on crypto at precision 0 it is the
+    WRONG answer, which is the bug this parameter exists to fix.
 
     `fraction` / `amount` arrive as JSON numbers (possibly floats), so they
     are converted through `Decimal(str(...))` rather than `Decimal(float)` -
@@ -183,7 +239,7 @@ def _desired_quantity(
         raw = equity * Decimal(str(sizing["fraction"])) / price
     else:
         raw = min(cash, Decimal(str(sizing["amount"]))) / price
-    return raw.to_integral_value(rounding="ROUND_FLOOR")
+    return _quantize_down(raw, quantity_precision)
 
 
 async def _load_warmup_and_window(
@@ -254,6 +310,8 @@ def _replay_window(
     starting_cash: Decimal,
     risk_limits: RiskLimits,
     portfolio_limits: PortfolioLimits | None,
+    cost_model: CostModel,
+    quantity_precision: int,
 ) -> _Replay:
     """The simulation itself. Pure in the sense that matters: no session, no
     provider, no I/O - it takes bars and limits and returns numbers.
@@ -269,10 +327,12 @@ def _replay_window(
     sizing = definition["position_sizing"]
 
     broker = PaperBrokerAdapter(starting_cash=starting_cash)
-    equity_curve: list[tuple[date, Decimal]] = []
+    equity_curve: list[tuple[datetime, date, Decimal]] = []
     round_trips: list[RoundTrip] = []
     trades: list[_CompletedTrade] = []
     open_position: _OpenPosition | None = None
+    total_fees = Decimal(0)
+    total_slippage = Decimal(0)
 
     for index in range(len(warmup), len(all_bars)):
         bar = all_bars[index]
@@ -290,8 +350,19 @@ def _replay_window(
 
         if signal is Signal.BUY and held == 0:
             account = broker.get_account_state(marks={symbol: price})
+            # Sized against the price the entry will REALLY fill at, not the
+            # bar's close. Sizing off the raw close and then filling higher
+            # would make an `all_in` entry propose a quantity the account
+            # cannot pay for, and the paper broker would refuse the whole
+            # order - so this is not a refinement, it is what keeps a costed
+            # backtest from silently trading less often than an uncosted one.
+            entry_price = cost_model.buy_price(price)
             quantity = _desired_quantity(
-                sizing=sizing, cash=account.cash, equity=account.equity, price=price
+                sizing=sizing,
+                cash=account.cash,
+                equity=account.equity,
+                price=entry_price,
+                quantity_precision=quantity_precision,
             )
             if quantity > 0:
                 attempt = _attempt_trade(
@@ -299,15 +370,25 @@ def _replay_window(
                     symbol=symbol,
                     side=Side.BUY,
                     quantity=quantity,
-                    price=price,
+                    price=entry_price,
                     as_of=as_of,
                     risk_limits=risk_limits,
                     portfolio_limits=portfolio_limits,
                 )
                 if attempt.filled_quantity > 0:
+                    fee, slip = cost_model.costs_for(
+                        quantity=attempt.filled_quantity, mid=price
+                    )
+                    total_fees += fee
+                    total_slippage += slip
                     open_position = _OpenPosition(
+                        entry_ts=as_of,
                         entry_date=current_date,
-                        entry_price=price,
+                        # The costed price, so this round trip's recorded
+                        # return is NET of what it cost to get in. Recording
+                        # the mid here would make every trade look better
+                        # than the equity curve it produced.
+                        entry_price=entry_price,
                         # What actually FILLED, which the Risk Engine or the
                         # Portfolio Manager may have shrunk below `quantity`.
                         quantity=attempt.filled_quantity,
@@ -317,42 +398,58 @@ def _replay_window(
             # A SELL while flat is a no-op, exactly as in v1 - this branch's
             # `held > 0` guard is the whole mechanism, and nothing reaches
             # _attempt_trade on such a bar.
+            exit_price = cost_model.sell_price(price)
             attempt = _attempt_trade(
                 broker=broker,
                 symbol=symbol,
                 side=Side.SELL,
                 quantity=held,
-                price=price,
+                price=exit_price,
                 as_of=as_of,
                 risk_limits=risk_limits,
                 portfolio_limits=portfolio_limits,
             )
+            if attempt.filled_quantity > 0:
+                fee, slip = cost_model.costs_for(
+                    quantity=attempt.filled_quantity, mid=price
+                )
+                total_fees += fee
+                total_slippage += slip
             if attempt.filled_quantity > 0 and open_position is not None:
                 remaining = broker.positions.get(symbol, Decimal(0))
                 if remaining == 0:
+                    # Both legs are costed prices, so `win_rate_pct` grades
+                    # round trips on whether they beat their own costs -
+                    # which is the only question worth asking of one.
                     round_trips.append(
-                        RoundTrip(entry_price=open_position.entry_price, exit_price=price)
+                        RoundTrip(
+                            entry_price=open_position.entry_price, exit_price=exit_price
+                        )
                     )
                     trades.append(
                         _CompletedTrade(
+                            entry_ts=open_position.entry_ts,
                             entry_date=open_position.entry_date,
                             entry_price=open_position.entry_price,
+                            exit_ts=as_of,
                             exit_date=current_date,
-                            exit_price=price,
+                            exit_price=exit_price,
                             quantity=open_position.quantity,
                         )
                     )
                     open_position = None
 
         equity = broker.get_account_state(marks={symbol: price}).equity
-        equity_curve.append((current_date, equity))
+        equity_curve.append((as_of, current_date, equity))
 
-    final_equity = equity_curve[-1][1] if equity_curve else starting_cash
+    final_equity = equity_curve[-1][2] if equity_curve else starting_cash
     return _Replay(
         equity_curve=equity_curve,
         round_trips=round_trips,
         trades=trades,
         final_equity=final_equity,
+        total_fees=total_fees,
+        total_slippage=total_slippage,
     )
 
 
@@ -371,9 +468,9 @@ def _persist_children(session: AsyncSession, run: BacktestRun, replay: _Replay) 
     session.add_all(
         [
             BacktestEquityPoint(
-                id=uuid.uuid4(), backtest_run_id=run.id, date=day, equity=equity
+                id=uuid.uuid4(), backtest_run_id=run.id, ts=ts, date=day, equity=equity
             )
-            for day, equity in replay.equity_curve
+            for ts, day, equity in replay.equity_curve
         ]
     )
     session.add_all(
@@ -382,8 +479,10 @@ def _persist_children(session: AsyncSession, run: BacktestRun, replay: _Replay) 
                 id=uuid.uuid4(),
                 backtest_run_id=run.id,
                 side=Side.BUY.value,
+                entry_ts=trade.entry_ts,
                 entry_date=trade.entry_date,
                 entry_price=trade.entry_price,
+                exit_ts=trade.exit_ts,
                 exit_date=trade.exit_date,
                 exit_price=trade.exit_price,
                 quantity=trade.quantity,
@@ -408,6 +507,8 @@ async def run_strategy_backtest(
     bar_provider: HistoricalBarProvider,
     risk_limits: RiskLimits,
     portfolio_limits: PortfolioLimits | None,
+    cost_model: CostModel,
+    quantity_precision: int = QUANTITY_PRECISION_WHOLE_UNITS,
     requested_by_user_id: uuid.UUID | None,
 ) -> BacktestRun:
     """Runs `strategy_version` over `[start_date, end_date]` and returns the
@@ -433,6 +534,15 @@ async def run_strategy_backtest(
     and hands the row back - `run_backfill_job`'s posture (Phase 53/D070),
     not v1's.
 
+    **`cost_model` is REQUIRED and has no default** (Phase 70, D088).
+    Giving it one would mean some caller, somewhere, silently runs a
+    frictionless backtest - and a frictionless result is the most
+    flattering one available, so it must never be what a caller gets by
+    forgetting. `CostModel.frictionless()` exists and is perfectly
+    legitimate to pass; what it is not is something you can reach by
+    accident. The two rates are copied onto the run row so the result stays
+    interpretable after the settings that produced it change.
+
     `portfolio_limits` is optional for exactly the reason
     `run_backtest`'s and `oms.service.submit_trade`'s are (D029): omitting
     it skips the Portfolio Manager and cannot make a simulated trade less
@@ -451,6 +561,14 @@ async def run_strategy_backtest(
         end_date=end_date,
         starting_cash=starting_cash,
         status=BacktestRunStatus.RUNNING,
+        # Recorded up front, alongside the window and the starting cash, and
+        # NOT only on success: a FAILED run is still a record of what was
+        # asked for, and the assumptions it was asked for under are part of
+        # that. Copied from the model rather than read back from settings
+        # later, so an operator editing a rate mid-flight cannot change the
+        # meaning of a run already in progress.
+        fee_bps=cost_model.fee_bps,
+        slippage_bps=cost_model.slippage_bps,
     )
     session.add(run)
     # Flushed before any work so the row - and its id - exist for the whole
@@ -476,6 +594,8 @@ async def run_strategy_backtest(
             starting_cash=starting_cash,
             risk_limits=risk_limits,
             portfolio_limits=portfolio_limits,
+            cost_model=cost_model,
+            quantity_precision=quantity_precision,
         )
     except Exception as exc:
         # Broad on purpose. Every failure here - a data gap, a vendor error,
@@ -503,10 +623,12 @@ async def run_strategy_backtest(
         starting_cash=starting_cash, final_equity=replay.final_equity
     )
     run.max_drawdown_pct = compute_max_drawdown_pct(
-        [equity for _day, equity in replay.equity_curve]
+        [equity for _ts, _day, equity in replay.equity_curve]
     )
     run.win_rate_pct = compute_win_rate_pct(replay.round_trips)
     run.num_trades = len(replay.round_trips)
+    run.total_fees = replay.total_fees
+    run.total_slippage = replay.total_slippage
     run.status = BacktestRunStatus.SUCCEEDED
     run.completed_at = datetime.now(UTC)
     _persist_children(session, run, replay)

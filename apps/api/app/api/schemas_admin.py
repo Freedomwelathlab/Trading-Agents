@@ -3,11 +3,11 @@ in any response - CreateUserResponse deliberately has no such field."""
 
 import uuid
 from datetime import date, datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from apps.api.app.db.models import BrokerKind
+from apps.api.app.marketdata.bar_provider import BarInterval
 
 
 class CreateUserRequest(BaseModel):
@@ -160,7 +160,7 @@ class CreateMarketDataBackfillRequest(BaseModel):
     apps/api/app/marketdata/ingestion/backfill.py's module docstring."""
 
     symbol: str = Field(min_length=1, max_length=32)
-    bar_interval: Literal["1d"] = "1d"
+    bar_interval: BarInterval = "1d"
     """Only daily bars are ingested in Phase 53 - the market_data_bars
     column exists for future intraday intervals, but nothing populates
     them yet, so any other value is a 422, not a silently-ignored request."""

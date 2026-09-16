@@ -22,6 +22,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.app.db.models import MarketDataBar
 from apps.api.app.marketdata.bar_provider import Bar
 
+_COLUMNS_PER_BAR = 9
+"""Columns bound per row by `upsert_bars` - symbol, bar_interval, ts, open,
+high, low, close, volume, source. Kept beside the limit below so the two
+cannot drift if a column is ever added."""
+
+_POSTGRES_MAX_BIND_PARAMS = 32_767
+"""Hard ceiling in the Postgres wire protocol on bind parameters in one
+statement. Not a tunable - exceeding it is a driver-level error, not slow."""
+
+_MAX_BARS_PER_INSERT = _POSTGRES_MAX_BIND_PARAMS // _COLUMNS_PER_BAR
+"""3,640 bars per statement. Derived rather than hardcoded so that adding a
+column to `market_data_bars` shrinks the chunk automatically instead of
+silently reintroducing the overflow."""
+
 
 def _start_of_day_utc(day: date) -> datetime:
     return datetime.combine(day, time.min, tzinfo=UTC)
@@ -139,17 +153,40 @@ class MarketDataStore:
             }
             for bar in bars
         ]
-        stmt = pg_insert(MarketDataBar).values(values)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[MarketDataBar.symbol, MarketDataBar.bar_interval, MarketDataBar.ts],
-            set_={
-                "open": stmt.excluded.open,
-                "high": stmt.excluded.high,
-                "low": stmt.excluded.low,
-                "close": stmt.excluded.close,
-                "volume": stmt.excluded.volume,
-                "source": stmt.excluded.source,
-            },
-        )
-        await self._session.execute(stmt)
+
+        # CHUNKED (Phase 71, D089). A single multi-row INSERT binds
+        # `_COLUMNS_PER_BAR` parameters per bar, and Postgres' wire protocol
+        # caps one statement at 32767 of them - so a write of more than
+        # ~3640 bars fails outright with "the number of query arguments
+        # cannot exceed 32767".
+        #
+        # Phase 53 never hit this because only DAILY bars were ever
+        # ingested: a decade of them is under 3700 rows. Intraday makes it
+        # ordinary - 185 days of hourly BTC is 4,440 bars, and 180 days of
+        # 5-minute bars is over 50,000 - so the ceiling is now reached by a
+        # completely routine backfill rather than an exotic one.
+        #
+        # Every chunk goes through the SAME session and therefore the same
+        # transaction, so this stays atomic: a failure partway through rolls
+        # the whole backfill back rather than leaving a half-ingested window
+        # that later looks like a real data gap.
+        for start in range(0, len(values), _MAX_BARS_PER_INSERT):
+            chunk = values[start : start + _MAX_BARS_PER_INSERT]
+            stmt = pg_insert(MarketDataBar).values(chunk)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[
+                    MarketDataBar.symbol,
+                    MarketDataBar.bar_interval,
+                    MarketDataBar.ts,
+                ],
+                set_={
+                    "open": stmt.excluded.open,
+                    "high": stmt.excluded.high,
+                    "low": stmt.excluded.low,
+                    "close": stmt.excluded.close,
+                    "volume": stmt.excluded.volume,
+                    "source": stmt.excluded.source,
+                },
+            )
+            await self._session.execute(stmt)
         return len(values)

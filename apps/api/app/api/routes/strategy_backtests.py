@@ -48,27 +48,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.app.api.routes.strategies import _load_owned_strategy, _load_version
 from apps.api.app.api.schemas_strategy_backtests import (
     BacktestEquityPointResponse,
+    BacktestHistoryEntry,
     BacktestRunDetailResponse,
     BacktestRunSummary,
     BacktestTradeResponse,
     CreateBacktestRunRequest,
+    ListBacktestHistoryResponse,
     ListBacktestRunsResponse,
 )
 from apps.api.app.auth.dependencies import get_current_user, require_permission
 from apps.api.app.auth.permissions import Permission
-from apps.api.app.backtesting.engine_v2 import run_strategy_backtest
+from apps.api.app.backtesting.costs import CostModel
+from apps.api.app.backtesting.engine_v2 import (
+    QUANTITY_PRECISION_FRACTIONAL,
+    QUANTITY_PRECISION_WHOLE_UNITS,
+    run_strategy_backtest,
+)
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import (
     BacktestEquityPoint,
     BacktestRun,
+    BacktestRunStatus,
     BacktestTrade,
     Strategy,
     StrategyVersion,
     StrategyVersionStatus,
     User,
 )
+from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.marketdata.store import MarketDataStore
 from apps.api.app.portfolio_manager.models import PortfolioLimits
 from apps.api.app.risk.models import RiskLimits
@@ -126,6 +135,44 @@ def _portfolio_limits(settings: Settings) -> PortfolioLimits:
     )
 
 
+def _cost_model(settings: Settings) -> CostModel:
+    """Phase 70 (D088). Built from `Settings.backtest_*_bps`, and shared by
+    every entry point that runs a v2 backtest - the plain backtest route,
+    walk-forward, robustness and universe scan all import THIS function
+    rather than building their own.
+
+    That sharing matters for the same reason `_risk_limits`'s does: a
+    walk-forward whose windows were costed differently from the baseline
+    backtest they are compared against would not be measuring consistency,
+    it would be measuring the difference between two cost assumptions.
+    """
+    return CostModel(
+        fee_bps=settings.backtest_fee_bps,
+        slippage_bps=settings.backtest_slippage_bps,
+    )
+
+
+def _quantity_precision(symbol: str) -> int:
+    """How finely this symbol may be traded (Phase 71, D089).
+
+    Crypto is FRACTIONAL; equities are whole shares. This is not a
+    refinement - it is what makes trading Bitcoin possible at all. One unit
+    of BTC costs several times a $10,000 account, so flooring to a whole
+    unit made every entry size to zero, and every BTC backtest reported 0
+    trades and a 0.00% return while the asset itself moved 17%. An absence
+    of trades is indistinguishable from a strategy that never triggered,
+    which is what made this silent.
+
+    The crypto test is the ROUTER's, not a second copy of it, so "what
+    counts as a crypto symbol" has exactly one definition in this codebase.
+    """
+    return (
+        QUANTITY_PRECISION_FRACTIONAL
+        if BarBackfillRouter.is_crypto_symbol(symbol)
+        else QUANTITY_PRECISION_WHOLE_UNITS
+    )
+
+
 def _run_summary(run: BacktestRun) -> BacktestRunSummary:
     return BacktestRunSummary(
         id=run.id,
@@ -144,6 +191,10 @@ def _run_summary(run: BacktestRun) -> BacktestRunSummary:
         error_detail=run.error_detail,
         created_at=run.created_at,
         completed_at=run.completed_at,
+        fee_bps=run.fee_bps,
+        slippage_bps=run.slippage_bps,
+        total_fees=run.total_fees,
+        total_slippage=run.total_slippage,
     )
 
 
@@ -258,6 +309,8 @@ async def create_backtest_run(
         bar_provider=MarketDataStore(session),
         risk_limits=_risk_limits(settings),
         portfolio_limits=_portfolio_limits(settings),
+        cost_model=_cost_model(settings),
+        quantity_precision=_quantity_precision(payload.symbol),
         requested_by_user_id=current_user.id,
     )
     # The engine already committed - both on success and on failure - so
@@ -357,3 +410,67 @@ async def get_backtest_run(
         raise HTTPException(status_code=403, detail=f"Backtest run {run_id} is not yours.")
 
     return await _run_detail(session, run)
+
+
+@runs_router.get("", response_model=ListBacktestHistoryResponse)
+async def list_backtest_history(
+    symbol: str | None = Query(None, max_length=32),
+    status_filter: BacktestRunStatus | None = Query(None, alias="status"),
+    limit: int = Query(DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ListBacktestHistoryResponse:
+    """Every backtest the caller owns, newest first, across ALL strategies
+    (Phase 71, D089).
+
+    **Why this exists alongside the nested listing.** The per-version route
+    answers "what has THIS version done", which is the right question while
+    iterating on one strategy and the wrong one afterwards: comparing a new
+    idea against everything tried before meant knowing each strategy id in
+    advance and issuing a request per version. A backtest is only useful as
+    evidence if the earlier ones are still findable, so the history is a
+    first-class surface rather than something reconstructed client-side.
+
+    **Ownership is enforced by the JOIN, not by filtering afterwards.**
+    The query reaches run -> version -> strategy and constrains
+    `owner_user_id` in SQL, so another user's run is never loaded and then
+    discarded - the same posture `GET /backtest-runs/{id}` states, applied
+    to a list.
+
+    FAILED runs are included and are not second-class. A run that could not
+    complete is a real record of what was attempted and why it could not be
+    answered, and hiding it would make the history a record only of the
+    attempts that happened to work.
+    """
+    conditions = [Strategy.owner_user_id == current_user.id]
+    if symbol:
+        conditions.append(BacktestRun.symbol == symbol.strip().upper())
+    if status_filter is not None:
+        conditions.append(BacktestRun.status == status_filter)
+
+    rows = (
+        await session.execute(
+            select(BacktestRun, Strategy.id, Strategy.name, StrategyVersion.version_number)
+            .join(StrategyVersion, StrategyVersion.id == BacktestRun.strategy_version_id)
+            .join(Strategy, Strategy.id == StrategyVersion.strategy_id)
+            .where(*conditions)
+            .order_by(BacktestRun.created_at.desc(), BacktestRun.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+
+    return ListBacktestHistoryResponse(
+        items=[
+            BacktestHistoryEntry(
+                **_run_summary(run).model_dump(),
+                strategy_id=strategy_id,
+                strategy_name=strategy_name,
+                version_number=version_number,
+            )
+            for run, strategy_id, strategy_name, version_number in rows
+        ],
+        limit=limit,
+        offset=offset,
+    )

@@ -15,9 +15,40 @@ date-range parameter and no notion of a window that doesn't end "now").
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator
+
+BarInterval = Literal["1m", "5m", "15m", "30m", "1h", "1d"]
+"""The bar intervals this system recognizes (Phase 70, D088).
+
+**One definition, imported everywhere.** Before this phase each request
+schema carried its own `Literal["1d"]`, which was correct while `1d` was
+genuinely the only thing that existed but meant six places had to be
+edited in lockstep to add an interval - and a missed one would be a 422 on
+an interval the rest of the system supported perfectly.
+
+The vocabulary is CLOSED for the same reason the indicator vocabulary is:
+`market_data_bars.bar_interval` is a plain string column (migration 0016,
+deliberately not a Postgres enum, so adding an interval needs no
+`ALTER TYPE`), which by itself would accept `"1 day"`, `"daily"` and `"1D"`
+as three distinct intervals that never match each other on read. These six
+strings are the spellings, and `MarketDataStore` matches them exactly and
+never coerces.
+
+**Listed here does not mean ingested.** An interval is available for a
+given symbol only if bars have actually been backfilled for that exact
+`(symbol, bar_interval)` pair. Asking for a window with no bars is not a
+schema error and is no longer refused as one - it produces a real,
+persisted FAILED run whose `error_detail` names the missing range, which
+says considerably more than a 422 on the interval itself would.
+
+**Vendor support is per-provider and is asserted nowhere here.** This type
+says what this system can store and evaluate. Whether a particular vendor
+returns 5m candles for a particular symbol is that adapter's business, and
+`LongbridgeBarBackfillProvider` refuses an interval it cannot map rather
+than quietly substituting a daily one.
+"""
 
 
 class Bar(BaseModel):

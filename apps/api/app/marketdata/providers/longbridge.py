@@ -142,6 +142,71 @@ class LongbridgeHistoryCandlestickClient(Protocol):
     ) -> Awaitable[Sequence[object]]: ...
 
 
+_SDK_PERIOD_BY_INTERVAL: dict[str, str] = {
+    "1m": "Min_1",
+    "5m": "Min_5",
+    "15m": "Min_15",
+    "30m": "Min_30",
+    "1h": "Min_60",
+    "1d": "Day",
+}
+"""Our `BarInterval` vocabulary -> the attribute name on the SDK's `Period`
+enum (Phase 70, D088).
+
+**Attribute NAMES, resolved with `getattr`, rather than the enum members
+themselves.** `longport.openapi` is imported lazily inside the methods that
+need it - never at module level - so that tests and every non-Longbridge
+code path run without the vendor package installed. A dict of real
+`Period` members would force that import to module scope and undo it.
+
+Verified against the installed longport package (v4.3.7) by direct
+introspection of `Period`, not assumed from documentation: the enum
+exposes `Min_1`, `Min_5`, `Min_15`, `Min_30`, `Min_60` and `Day` among
+others. `1h` maps to `Min_60` because the SDK has no `Hour` member - the
+two name the same hour-long candle.
+
+The SDK offers more periods than this maps (`Min_2`, `Min_45`, `Week`,
+`Quarter`...). They are deliberately absent: an interval belongs here only
+once it is in `BarInterval`, so that what this system can INGEST can never
+outrun what it can store and evaluate.
+
+**Nothing in this map has been verified against live vendor data.** The
+Longbridge credentials available while Phase 70 was written had an expired
+token, so only the `Day` mapping has ever made a real round trip - it is
+the one Phase 53 shipped and has been exercising since. The five intraday
+mappings are correct by introspection of the enum and are covered by tests
+against a stub client, which proves this adapter asks for the right period;
+it does not prove the vendor returns intraday candles for any particular
+symbol or entitlement. The first real intraday backfill is the thing that
+would establish that, and until one runs, this is documented as unverified
+rather than described as working.
+"""
+
+
+def _sdk_period(bar_interval: str, period_enum: "type[Period]") -> "type[Period]":
+    """The SDK `Period` member for one of our intervals.
+
+    Raises `ValueError` for an interval this adapter cannot map. Refusing is
+    the whole point: the alternative - falling back to `Period.Day` - would
+    persist DAILY bars under a `bar_interval` of `"5m"`, and every later
+    reader (backtest, deployment, chart) would treat them as five-minute
+    data. That is fabricated market data in the most damaging form, because
+    nothing downstream could detect it.
+    """
+    # Annotated `type[Period]` to match this file's existing
+    # `LongbridgeHistoryCandlestickClient` Protocol, which declares the SDK's
+    # period parameter that way. `getattr` is what keeps the vendor import
+    # lazy - see the map's own docstring.
+    name = _SDK_PERIOD_BY_INTERVAL.get(bar_interval)
+    if name is None:
+        allowed = ", ".join(sorted(_SDK_PERIOD_BY_INTERVAL))
+        raise ValueError(
+            f"LongbridgeBarBackfillProvider cannot map bar_interval "
+            f"{bar_interval!r} to a vendor period - supported intervals are: {allowed}."
+        )
+    return getattr(period_enum, name)
+
+
 class LongbridgeBarBackfillProvider:
     """Phase 53 (docs/DECISIONS.md D070): real OHLCV bars over an arbitrary
     historical date range, for ingestion into market_data_bars - closes the
@@ -167,17 +232,13 @@ class LongbridgeBarBackfillProvider:
     async def get_bars(
         self, symbol: str, *, bar_interval: str, start_date: date, end_date: date
     ) -> list[Bar]:
-        if bar_interval != "1d":
-            raise ValueError(
-                f"LongbridgeBarBackfillProvider only supports bar_interval='1d' in "
-                f"Phase 53, got {bar_interval!r}."
-            )
-
         from longport.openapi import AdjustType, Period
+
+        period = _sdk_period(bar_interval, Period)
 
         try:
             candles = await self._client.history_candlesticks_by_date(
-                symbol, Period.Day, AdjustType.NoAdjust, start_date, end_date
+                symbol, period, AdjustType.NoAdjust, start_date, end_date
             )
         except Exception as exc:
             raise VendorError(

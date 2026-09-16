@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
+from apps.api.app.backtesting.costs import CostModel
 from apps.api.app.backtesting.walk_forward import (
     MIN_WINDOWS,
     compute_windows,
@@ -122,6 +123,8 @@ async def _run(returns: list[str | None], *, window_days: int, end: date):
             bar_provider=SimpleNamespace(),  # type: ignore[arg-type]
             risk_limits=_risk_limits(),
             portfolio_limits=None,
+            cost_model=CostModel.frictionless(),
+            quantity_precision=0,
             requested_by_user_id=None,
         )
     return session, run, fake, results
@@ -332,6 +335,8 @@ async def test_an_unexpected_failure_mid_run_resolves_the_row_rather_than_raisin
             bar_provider=SimpleNamespace(),  # type: ignore[arg-type]
             risk_limits=_risk_limits(),
             portfolio_limits=None,
+            cost_model=CostModel.frictionless(),
+            quantity_precision=0,
             requested_by_user_id=None,
         )
 

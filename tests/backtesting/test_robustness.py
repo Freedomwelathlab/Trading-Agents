@@ -28,13 +28,14 @@ connection, and the perturbation rows it collects are asserted on directly.
 """
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from apps.api.app.backtesting.costs import CostModel
 from apps.api.app.backtesting.errors import InsufficientHistoryError
 from apps.api.app.backtesting.robustness import run_robustness_test
 from apps.api.app.db.models import (
@@ -127,6 +128,11 @@ def _perturbation(period: int, direction: str) -> Perturbation:
     )
 
 
+def _as_ts(day) -> datetime:
+    """Midnight UTC for a fixture date - see `_replay`."""
+    return datetime.combine(day, time.min, tzinfo=UTC)
+
+
 def _replay(final_equity: Decimal, *, trough: Decimal | None = None):
     """A stand-in for one `_Replay`. `run_robustness_test` reads only
     `final_equity` and `equity_curve` off it (the latter solely to hand to the
@@ -138,10 +144,15 @@ def _replay(final_equity: Decimal, *, trough: Decimal | None = None):
     it the curve rises straight from `STARTING_CASH` and the drawdown really
     is 0.
     """
-    curve = [(START, STARTING_CASH)]
+    # Three-tuples since Phase 71 (D089): `_Replay.equity_curve` carries the
+    # bar's own TIMESTAMP alongside its date, because an hourly backtest has
+    # 24 points per calendar day and a day alone can no longer identify one.
+    # The timestamps here are midnight of each date - these are daily-shaped
+    # fixtures, and nothing in this test reads the instant.
+    curve = [(_as_ts(START), START, STARTING_CASH)]
     if trough is not None:
-        curve.append((START, trough))
-    curve.append((END, final_equity))
+        curve.append((_as_ts(START), START, trough))
+    curve.append((_as_ts(END), END, final_equity))
     return SimpleNamespace(
         equity_curve=curve, round_trips=[], trades=[], final_equity=final_equity
     )
@@ -206,6 +217,8 @@ async def _run(
             bar_provider=SimpleNamespace(),  # type: ignore[arg-type]
             risk_limits=_risk_limits(),
             portfolio_limits=None,
+            cost_model=CostModel.frictionless(),
+            quantity_precision=0,
             requested_by_user_id=None,
         )
     return session, run, warmup_calls

@@ -149,7 +149,17 @@ export default function StrategyBacktestsPage() {
   }
 
   useEffect(() => {
-    if (selectedVersionId) void loadRuns(selectedVersionId);
+    if (!selectedVersionId) return;
+    // Deferred by one microtask so the loader's first `setState` lands
+    // AFTER this effect returns rather than during it - calling it
+    // synchronously re-renders from inside the effect React is still
+    // committing, which `react-hooks` flags as a cascading render. The id
+    // is captured so a fast version switch cannot apply the wrong one.
+    const versionId = selectedVersionId;
+    void Promise.resolve().then(() => loadRuns(versionId));
+    // Re-runs on the SELECTED VERSION changing, deliberately not on
+    // `loadRuns` changing: it is redefined every render, so depending on
+    // it would refetch on each one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedVersionId]);
 

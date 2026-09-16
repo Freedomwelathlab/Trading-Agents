@@ -113,8 +113,15 @@ def test_unknown_indicator_type_raises_value_error() -> None:
     # Cannot happen for a definition that passed validate_definition; it
     # fails loudly rather than returning an all-None series that would be
     # indistinguishable from a real data gap.
+    #
+    # The example was `ema` until Phase 70 added it to the vocabulary, at
+    # which point this test silently stopped testing anything. What it
+    # asserts is the REFUSAL of an unknown type, not any particular type's
+    # absence, so it now uses a name nobody is likely to implement.
     with pytest.raises(ValueError, match="unknown indicator type"):
-        compute_indicator_series(_bars(SERIES), {"id": "x", "type": "ema", "period": 3})
+        compute_indicator_series(
+            _bars(SERIES), {"id": "x", "type": "not_a_real_indicator", "period": 3}
+        )
 
 
 # ------------------------------------------------------------------ operands

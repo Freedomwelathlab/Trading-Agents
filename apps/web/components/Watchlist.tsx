@@ -116,7 +116,11 @@ export default function Watchlist({ className }: { className?: string } = {}) {
   }, []);
 
   useEffect(() => {
-    void loadLists();
+    // Deferred by one microtask so the loader's first `setState` lands
+    // AFTER this effect returns rather than during it - calling it
+    // synchronously re-renders from inside the effect React is still
+    // committing, which `react-hooks` flags as a cascading render.
+    void Promise.resolve().then(loadLists);
     // Load once on mount; every later load is an explicit user action.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

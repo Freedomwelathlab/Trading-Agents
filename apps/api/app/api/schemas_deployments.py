@@ -18,6 +18,7 @@ from apps.api.app.db.models import (
     StrategyDeploymentRunStatus,
     StrategyDeploymentStatus,
 )
+from apps.api.app.marketdata.bar_provider import BarInterval
 
 
 class CreateDeploymentRequest(BaseModel):
@@ -36,7 +37,7 @@ class CreateDeploymentRequest(BaseModel):
 
     broker_id: uuid.UUID
     symbols: list[str] = Field(min_length=1, max_length=50)
-    bar_interval: Literal["1d"] = "1d"
+    bar_interval: BarInterval = "1d"
     mode: Literal["paper", "live"] = "paper"
 
 
