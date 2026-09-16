@@ -10098,3 +10098,137 @@ parses the field back through `Decimal(str(...))` (see
 
 Status: Implemented, verified against real data, 7 tests covering the
 discipline rather than the outcome.
+
+---
+
+## D091 — Phase 73: an intraday engine for TQQQ, and what the data said about the playbook
+
+The brief supplied a 26-section TQQQ intraday reversal playbook and asked
+for the best strategies from it, both directions, with real risk
+management and testing. Almost none of it was expressible in the existing
+platform, and four separate defects had to be found before a single
+honest number existed — three of them in code that had been shipping
+plausible-looking results for weeks.
+
+### 1. Why this could not be a strategy definition
+
+A `StrategyVersion` is a list of indicators, one entry rule, one exit
+rule and a sizing fraction, evaluated long-only by `engine_v2` (whose own
+docstring records "every trade row carries side=buy" as a known limit).
+The playbook's priority-10 setup needs a swept previous-day low, a
+reclaim, a market-structure shift, a retest, an ATR-buffered structural
+stop, 1R/2R partials with a trailed runner, a short side, and a 15-minute
+regime filter running beside 5-minute execution. None of that is a
+comparison between two indicator series.
+
+So `intraday_engine.py` stands beside `engine.py` and `engine_v2.py`
+rather than replacing either, reusing `CostModel` and the new session and
+structure modules. The two existing engines model *a rule that decides
+long or flat*; this one models *a structural event that opens a
+risk-defined bracket in either direction, flat by the close*.
+
+### 2. Longbridge was silently returning 7% of every intraday request
+
+`history_candlesticks_by_date` caps a response at 1,000 candles and
+serves the most RECENT ones, with the requested `start` having no effect
+beyond that. For daily bars the ceiling is about four years and never
+bit. For 5-minute bars it is roughly 13 trading days, so the playbook's
+minimum 180-day window returned 13 of 124 sessions — with no error, no
+truncation flag, and a job row recording SUCCEEDED. Every statistic
+computed from it would have been arithmetically correct and about the
+wrong period.
+
+Replaced with backward paging via `history_candlesticks_by_offset`,
+which turns the same request into 23,808 bars over 124 sessions. Window
+filtering afterwards is mandatory rather than tidying: paging backward
+overshoots by up to a page.
+
+### 3. The vendor's timestamps are local time, and the container hid it
+
+The SDK converts its epochs to the running process's timezone and returns
+a NAIVE datetime. `_as_utc` did `replace(tzinfo=UTC)` — asserting that
+whatever the local clock said was UTC.
+
+That is true on a UTC host, which the API container is, so it survived
+every test and every production run. On the UTC+8 development machine the
+identical code placed the 09:30 ET open at 21:30 UTC. Daily bars absorbed
+it (their timestamps are midnight ET, so only the instant moved, not the
+date); intraday bars, where the session boundary IS the information, were
+corrupted end to end.
+
+Established by measurement, not inference: the only gap in a run of
+regular-hours 5-minute bars sits at 21:30 local with a 1,055-minute
+span — the 17.5-hour overnight break — and the naive session start shifts
+21:30 → 22:30 exactly when US DST ends, which can only happen if the
+source zone is fixed-offset rather than the market's own. `.astimezone(UTC)`
+reads a naive value as local and undoes the vendor's step on any host.
+
+### 4. Two defects that made the first real results meaningless
+
+Both were found by looking at a result that did not add up, rather than
+by a test.
+
+**R was measured from the wrong price.** `risk_per_share` came from the
+pre-cost signal price while P&L came from the post-cost fill. The error
+scales inversely with stop distance: on a $39 instrument with a $0.05
+stop, a 3bp round trip is about half the entire risk budget. 37 of 239
+trades therefore lost more than a full stop and one reported **−169R**,
+which is not a strategy result at all — it is the denominator being
+wrong. R is now measured from the price actually paid.
+
+**There was no stop-quality test.** Section 16 says to reject a trade
+whose stop is "so tight that normal noise repeatedly hits it", and the
+engine was happily taking setups with a stop distance of 0.00% of price,
+where the outcome is decided by the spread. Now floored and capped in ATR
+units, which rejected 148 of 264 raw signals.
+
+**And the entry was in the wrong place.** The playbook's sequence ends
+*...MSS → RETEST → entry*, and the first implementation entered at the
+structure break. That puts the entry at the top of the move with the stop
+still at the swept extreme, so the whole advance becomes the risk
+distance and a 1R target demands it again. Measured: 15% of trades
+reached the first target while 76% were stopped. The asymmetry was an
+artefact of entry location, not a fact about the market. With the retest
+in place the same setup reaches 26% and stops on 66%.
+
+### 5. What the data actually said
+
+180 calendar days, 124 real TQQQ sessions, 23,808 five-minute bars,
+1bp fee + 2bp slippage on every fill, both directions, flat by the bell.
+
+  * **`sweep_mss` — the playbook's own "best single setup" — is the only
+    one that did not lose money**: 116 trades, 55.2% win rate, expectancy
+    **+0.051R**, profit factor 1.13.
+  * **It is not statistically significant.** t = +0.61 against zero. The
+    honest reading is "indistinguishable from no edge", not "a small
+    edge". Out-of-sample is slightly better than in-sample (+0.099R vs
+    +0.023R), which argues against overfitting but does not create
+    significance.
+  * **The other three setups all lost money**, and the composite of all
+    four is significantly NEGATIVE: 321 trades, **t = −3.32**, profit
+    factor 0.66, −60.86R. Running every setup together is the one result
+    here that clears significance, and it clears it in the wrong
+    direction.
+  * **The scoring gate makes things worse, monotonically.** Section 14
+    proposes trading only at 8/10 and calls the thresholds "starting test
+    values, not empirically proven cutoffs". Tested: 8/10 admits ZERO
+    trades in six months; 7/10 gives −0.27R at t = −1.95; 6/10 gives
+    −0.04R. Every raise of the bar degrades the result. The evidence
+    weights are not ranking setups the way the playbook assumes.
+  * **The edge, such as it is, is one-sided**: longs +0.127R, shorts
+    −0.025R.
+  * **Against buy-and-hold it is not close.** TQQQ ran +51.36% over the
+    window. `sweep_mss` at 0.5% risk per trade returns +2.96% of equity;
+    the composite returns −30.43%.
+
+Nothing here is deployable, and nothing here is being deployed.
+
+### 6. Reusability
+
+No setup references TQQQ. Levels come from the instrument's own sessions
+and every distance is in ATR units, so `IntradayRunConfig(symbol=...)`
+against any symbol with intraday bars runs the same code. TQQQ is what
+these were written FOR, not what they are written AGAINST.
+
+Status: Implemented and verified against real Longbridge data. The
+research result is negative and recorded as negative.

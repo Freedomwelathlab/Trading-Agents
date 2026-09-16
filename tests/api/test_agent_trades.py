@@ -228,6 +228,15 @@ def analysts(
 
 @pytest.mark.asyncio
 async def test_omitting_a_trader_agent_is_400_not_configured():
+    """The absent agent and vendor are stated EXPLICITLY (Phase 73, D091).
+
+    Previously this leaned on the test host having no credentials of any
+    kind. Adding real Longbridge credentials to `.env` wired a market-data
+    vendor and the endpoint stopped reporting NOT_CONFIGURED - a failure
+    caused entirely by the environment rather than by the code under test.
+    """
+    from apps.api.app.api.dependencies import get_market_data_router
+
     async with (
         db_session() as session,
         active_user(session) as (user_id, email),
@@ -235,12 +244,16 @@ async def test_omitting_a_trader_agent_is_400_not_configured():
         broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
-            token = await _get_token(client, email)
-            response = await client.post(
-                f"/brokers/{broker_id}/agent-trades",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"symbol": "AAPL", "directive": "moderate long"},
-            )
+            app.dependency_overrides[get_market_data_router] = lambda: None
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    f"/brokers/{broker_id}/agent-trades",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"symbol": "AAPL", "directive": "moderate long"},
+                )
+            finally:
+                del app.dependency_overrides[get_market_data_router]
 
         assert response.status_code == 400
         assert "NOT_CONFIGURED" in response.json()["detail"]

@@ -23,7 +23,7 @@ vendor boundary so tests need no credentials" structure.
 """
 
 from collections.abc import Awaitable, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     # (only inside the build_* functions below), but the Protocol below
     # needs the real parameter types to structurally match
     # AsyncQuoteContext.candlesticks exactly, not a widened `object`.
-    from longport.openapi import AdjustType, Config, Period
+    from longport.openapi import AdjustType, Config, Period, TradeSessions
 
 
 class LongbridgeQuoteClient(Protocol):
@@ -132,14 +132,37 @@ class LongbridgeHistoryProvider:
 class LongbridgeHistoryCandlestickClient(Protocol):
     # Not `async def`, same reasoning as LongbridgeCandlestickClient.candlesticks
     # above - the real SDK's methods are plain methods returning Awaitables.
-    def history_candlesticks_by_date(
+    def history_candlesticks_by_offset(
         self,
         symbol: str,
         period: "type[Period]",
         adjust_type: "type[AdjustType]",
-        start: date | None,
-        end: date | None,
+        forward: bool,
+        count: int,
+        time: datetime | None,
+        trade_sessions: "type[TradeSessions]",
     ) -> Awaitable[Sequence[object]]: ...
+
+
+_MAX_CANDLES_PER_REQUEST = 1_000
+"""The vendor's hard per-response ceiling, established by measurement
+against the live API (Phase 73, D091) rather than read from documentation:
+asking for 2,000 five-minute TQQQ candles returns exactly 1,000.
+
+It is a ceiling on the RESPONSE, not on the request, and the vendor does
+not report that it truncated - which is what made the previous
+single-request implementation wrong in a way nothing downstream could see.
+"""
+
+_MAX_BACKFILL_PAGES = 400
+"""Safety stop for the paging loop, so a vendor that always returns data
+cannot spin forever. At 1,000 candles a page this is 400,000 bars - about
+14 years of 5-minute US extended-hours sessions - so it bounds a runaway
+loop without capping any window a caller would legitimately request.
+Exceeding it RAISES rather than returning what was collected so far: a
+short series that silently claims to cover the requested window is the
+exact failure this phase exists to remove.
+"""
 
 
 _SDK_PERIOD_BY_INTERVAL: dict[str, str] = {
@@ -207,6 +230,33 @@ def _sdk_period(bar_interval: str, period_enum: "type[Period]") -> "type[Period]
     return getattr(period_enum, name)
 
 
+_INTRADAY_INTERVALS: frozenset[str] = frozenset({"1m", "5m", "15m", "30m", "1h"})
+"""Intervals for which the US extended session is requested (Phase 73, D091).
+
+`TradeSessions.All` widens a US equity day from 78 five-minute bars
+(13:30-19:55 UTC, the 09:30-16:00 ET regular session) to 192 (08:00-23:55
+UTC, 04:00-20:00 ET) - both counts measured against TQQQ.US, not assumed.
+
+Those extra bars are REQUIRED, not a bonus: the intraday playbook this
+feeds prices premarket highs/lows and gaps, which do not exist inside the
+regular session at all. They are stored rather than filtered because the
+bar's own timestamp already determines which session phase it belongs to,
+so deriving the phase at read time keeps one definition of "premarket"
+instead of a stored flag that can drift from it.
+
+Daily bars stay on `Intraday`: a daily candle has no session phase to
+choose, and widening it would change what an existing `1d` bar MEANS for
+every caller that already reads them.
+"""
+
+
+def _sdk_trade_sessions(bar_interval: str, sessions_enum: "type[TradeSessions]") -> Any:
+    """Resolved by attribute name for the same reason `_sdk_period` is - it
+    keeps `longport.openapi` out of module scope."""
+    name = "All" if bar_interval in _INTRADAY_INTERVALS else "Intraday"
+    return getattr(sessions_enum, name)
+
+
 class LongbridgeBarBackfillProvider:
     """Phase 53 (docs/DECISIONS.md D070): real OHLCV bars over an arbitrary
     historical date range, for ingestion into market_data_bars - closes the
@@ -217,11 +267,22 @@ class LongbridgeBarBackfillProvider:
     AsyncQuoteContext.
 
     Verified against the installed longport package (v4.3.7) by direct
-    introspection of openapi.pyi:
-    `AsyncQuoteContext.history_candlesticks_by_date(symbol, period,
-    adjust_type, start, end)` (awaitable, returns a list of the same
+    introspection of openapi.pyi: `AsyncQuoteContext
+    .history_candlesticks_by_offset(symbol, period, adjust_type, forward,
+    count, time, trade_sessions)` (awaitable, returns a list of the same
     `Candlestick` objects `candlesticks()` returns - real `.open`/`.high`/
     `.low`/`.close`/`.volume`/`.timestamp`, not just `.close`).
+
+    **Phase 73 (D091) replaced a single `history_candlesticks_by_date`
+    call with backward paging, because that call silently truncated.**
+    Measured against the live API: it returns at most 1,000 candles and
+    those are the most RECENT 1,000, with the requested `start` having no
+    effect once the range holds more than that. For daily bars the ceiling
+    is ~4 years and the limit rarely bit. For 5-minute bars it is about 13
+    trading days, so a request for the playbook's minimum 180-day window
+    returned roughly 7% of it - with no error, no flag, and a populated
+    job row reporting success. Every statistic computed from such a series
+    would have been arithmetically correct and about the wrong period.
     """
 
     name = "longbridge"
@@ -232,29 +293,80 @@ class LongbridgeBarBackfillProvider:
     async def get_bars(
         self, symbol: str, *, bar_interval: str, start_date: date, end_date: date
     ) -> list[Bar]:
-        from longport.openapi import AdjustType, Period
+        from longport.openapi import AdjustType, Period, TradeSessions
 
         period = _sdk_period(bar_interval, Period)
+        sessions = _sdk_trade_sessions(bar_interval, TradeSessions)
 
-        try:
-            candles = await self._client.history_candlesticks_by_date(
-                symbol, period, AdjustType.NoAdjust, start_date, end_date
-            )
-        except Exception as exc:
-            raise VendorError(
-                f"Longbridge history-candlestick request failed for {symbol!r}: {exc}"
-            ) from exc
+        # Page BACKWARD from the end of the window. The window is half-open
+        # at the top: `end_date + 1 day` at midnight UTC, so the whole of
+        # end_date is included whatever intraday timestamps it carries.
+        window_start = datetime.combine(start_date, time.min, tzinfo=UTC)
+        window_end = datetime.combine(end_date, time.min, tzinfo=UTC) + timedelta(days=1)
 
-        if not candles:
+        collected: dict[datetime, Any] = {}
+        anchor: datetime | None = window_end
+        pages = 0
+
+        while True:
+            if pages >= _MAX_BACKFILL_PAGES:
+                raise VendorError(
+                    f"Longbridge backfill for {symbol!r} ({bar_interval}) exceeded "
+                    f"{_MAX_BACKFILL_PAGES} pages without reaching "
+                    f"{start_date.isoformat()}; refusing to return a series that "
+                    "would look complete but is not."
+                )
+            try:
+                candles = await self._client.history_candlesticks_by_offset(
+                    symbol,
+                    period,
+                    AdjustType.NoAdjust,
+                    False,  # forward=False: walk backward from `anchor`
+                    _MAX_CANDLES_PER_REQUEST,
+                    anchor,
+                    sessions,
+                )
+            except Exception as exc:
+                raise VendorError(
+                    f"Longbridge history-candlestick request failed for {symbol!r}: {exc}"
+                ) from exc
+            pages += 1
+
+            page = [c for c in (candles or []) if _as_utc(c.timestamp) is not None]
+            if not page:
+                break  # Vendor has no more history before `anchor`.
+
+            oldest = min(_as_utc(c.timestamp) for c in page)  # type: ignore[type-var]
+            for candle in page:
+                ts = _as_utc(candle.timestamp)
+                if ts is not None:
+                    collected[ts] = candle
+
+            if oldest <= window_start:
+                break
+            if anchor is not None and oldest >= anchor:
+                # No progress: the vendor returned nothing older than the
+                # anchor it was given. Stopping here reports the history it
+                # actually has, rather than looping on the same page.
+                break
+            anchor = oldest
+
+        if not collected:
             raise DataUnavailableError(
                 f"Longbridge returned no candlesticks for {symbol!r} between "
                 f"{start_date.isoformat()} and {end_date.isoformat()}."
             )
 
-        # Never assume the SDK's ordering - same discipline as
-        # LongbridgeHistoryProvider.get_daily_closes above.
-        rows: list[Any] = list(candles)
-        rows.sort(key=lambda c: c.timestamp)
+        # Filtering is MANDATORY, not tidying. Paging backward overshoots by
+        # up to a page, and the vendor also returns candles outside a
+        # requested range of its own accord, so an unfiltered result would
+        # quietly widen every caller's window.
+        rows = [
+            candle
+            for ts, candle in collected.items()
+            if window_start <= ts < window_end
+        ]
+        rows.sort(key=lambda c: _as_utc(c.timestamp))  # type: ignore[arg-type,return-value]
 
         bars: list[Bar] = []
         for row in rows:
@@ -281,8 +393,8 @@ class LongbridgeBarBackfillProvider:
 
         if not bars:
             raise DataUnavailableError(
-                f"Longbridge returned candlesticks for {symbol!r} but none carried a "
-                "usable timestamp."
+                f"Longbridge returned candlesticks for {symbol!r} but none fell inside "
+                f"{start_date.isoformat()}..{end_date.isoformat()} with a usable timestamp."
             )
         return bars
 
@@ -326,9 +438,29 @@ def _as_utc(raw: object) -> datetime | None:
     epoch seconds in others (the same defensive handling
     LongbridgeMarketDataProvider.get_snapshot already applies to
     SecurityQuote.timestamp). Anything else is treated as absent rather
-    than coerced into a guessed date."""
+    than coerced into a guessed date.
+
+    **A naive datetime from this SDK is LOCAL time, not UTC** (Phase 73,
+    D091). The vendor converts its epochs to the running process's own
+    timezone and drops the tzinfo, so the same candle comes back as
+    `13:30` on a UTC host and `21:30` on a UTC+8 one. `.astimezone(UTC)`
+    reads a naive value as local and converts it, which exactly undoes
+    that step on any host; `.replace(tzinfo=UTC)` - what this did before -
+    instead ASSERTS the local wall-clock reading is UTC.
+
+    That assertion was true only because the API container runs with
+    TZ=UTC, where the two are identical. Anywhere else it silently shifted
+    every bar by the host's offset: on the UTC+8 development machine a
+    09:30 ET open was stored as 21:30 UTC, which parses fine, charts fine,
+    and places the US session in the middle of the night. Daily bars
+    survived it (their timestamps are midnight ET, so only the instant
+    moved, not the date) - it is intraday bars, where the session boundary
+    IS the information, that the old form corrupted.
+    """
     if isinstance(raw, datetime):
-        return raw if raw.tzinfo is not None else raw.replace(tzinfo=UTC)
+        # Correct for both cases: `.astimezone` reads a naive value as
+        # local and converts an aware one by its own offset.
+        return raw.astimezone(UTC)
     if isinstance(raw, int | float) and not isinstance(raw, bool):
         try:
             return datetime.fromtimestamp(raw, tz=UTC)

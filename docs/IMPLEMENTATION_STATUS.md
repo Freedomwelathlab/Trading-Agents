@@ -24,6 +24,80 @@ Nothing below claims the platform is "production ready" or "fully secure"
 beyond what each phase actually verified, and nothing below is a claim that
 any strategy makes money.
 
+- Phase 73: an intraday engine for the TQQQ reversal playbook, and a
+  negative research result (2026-09-16, D091). The brief supplied a
+  26-section playbook and asked for its best strategies on TQQQ, both
+  directions, with real risk management and testing. **Almost none of it
+  was expressible**: a `StrategyVersion` is indicators plus one entry rule,
+  one exit rule and a sizing fraction, evaluated long-only, while the
+  playbook's priority-10 setup needs a swept previous-day low, a reclaim,
+  a market-structure shift, a retest, an ATR-buffered structural stop,
+  1R/2R partials with a trailed runner, a short side and a 15-minute
+  regime filter beside 5-minute execution. So `intraday_engine.py` stands
+  BESIDE `engine.py` and `engine_v2.py`, neither replacing nor modifying
+  them, reusing `CostModel` and the new `sessions.py` / `structure.py`.
+
+  **Longbridge was silently returning 7% of every intraday request.**
+  `history_candlesticks_by_date` caps at 1,000 candles and serves the most
+  RECENT ones regardless of `start`. For daily bars that ceiling is ~4
+  years and never bit; for 5-minute bars it is ~13 trading days, so a
+  180-day request returned 13 of 124 sessions with **no error and a job
+  row recording SUCCEEDED**. Backward paging via
+  `history_candlesticks_by_offset` turns the same request into **23,808
+  bars over 124 sessions**.
+
+  **The vendor's timestamps are local time, and the container hid it.**
+  The SDK converts epochs to the running process's timezone and returns a
+  naive datetime; `_as_utc` asserted that reading was UTC. True on a UTC
+  host - which the API container is - and eight hours wrong on the UTC+8
+  development machine, where it placed the 09:30 ET open at 21:30 UTC.
+  Daily bars absorbed it (midnight-ET timestamps, so only the instant
+  moved); intraday bars, where the session boundary IS the information,
+  were corrupted. Established by measurement: the only gap in a run of
+  regular-hours bars is the 17.5-hour overnight one, and the naive session
+  start shifts 21:30 -> 22:30 exactly at the US DST boundary, which can
+  only happen if the source zone is fixed-offset.
+
+  **Two defects that made the first real results meaningless**, both found
+  by reading a result that did not add up rather than by a test. R was
+  measured from the pre-cost signal price while P&L used the post-cost
+  fill - an error that scales inversely with stop distance, so 37 of 239
+  trades lost more than a full stop and one reported **-169R**. And there
+  was no stop-quality test, so setups with a stop distance of 0.00% of
+  price were being taken, where the spread decides the outcome. A third,
+  separate gap was fidelity rather than correctness: entering at the
+  structure shift instead of at the playbook's retest put the entry at the
+  top of the move with the stop still at the swept extreme, giving 15%
+  TP1 against 76% stopped - an artefact of entry location, not a fact
+  about the market. With the retest: 26% and 66%.
+
+  **What the data said, on 124 real sessions with costs, both directions,
+  flat by the bell.** `sweep_mss` - the playbook's own "best single setup"
+  - is the only one that did not lose money: 116 trades, 55.2% win rate,
+  expectancy **+0.051R**, profit factor 1.13. **It is not statistically
+  significant** (t = +0.61); out-of-sample is slightly better than
+  in-sample (+0.099R vs +0.023R), which argues against overfitting but
+  does not create an edge. The other three setups all lost money, and the
+  composite of all four is significantly NEGATIVE (321 trades, **t =
+  -3.32**, PF 0.66) - the one result here that clears significance clears
+  it in the wrong direction. Section 14's scoring gate degrades results
+  monotonically and its proposed 8/10 threshold admits **zero trades in
+  six months**. Against buy-and-hold it is not close: TQQQ ran **+51.36%**
+  over the window; the best strategy returns +2.96% of equity at 0.5%
+  risk per trade, the composite -30.43%. **Nothing is deployable and
+  nothing was deployed.**
+
+  Not TQQQ-specific: every level derives from the instrument's own
+  sessions and every distance is in ATR units, so the same config runs
+  against any symbol with intraday bars. New modules: `marketdata/ohlcv.py`
+  (one shared bar Protocol, replacing three local duck types),
+  `marketdata/sessions.py`, `marketdata/structure.py`,
+  `backtesting/brackets.py`, `backtesting/setups.py`,
+  `backtesting/intraday_engine.py`, `backtesting/intraday_metrics.py`.
+  `tzdata` is now a declared dependency under a `sys_platform == 'win32'`
+  marker - `zoneinfo` has no bundled database on Windows and every session
+  boundary raises without it.
+
 - Phases 71-72: real BTC/USD data, and an improvement loop built not to
   fool itself (2026-09-15, D089/D090). **Longbridge cannot price spot BTC**
   - `BTCUSD.BKKT` answers `301600 invalid symbol` while live AAPL quotes

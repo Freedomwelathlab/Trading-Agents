@@ -532,9 +532,23 @@ async def test_missing_mark_for_an_existing_position_is_a_400_not_a_guess():
 
 @pytest.mark.asyncio
 async def test_omitting_estimated_price_with_no_vendor_wired_is_400_not_configured():
-    """No vendor is wired in the test environment (no Longbridge
-    credentials configured), so app.state.market_data_router is already
-    None - the realistic 'no override needed' case."""
+    """The absent vendor is stated EXPLICITLY, not inherited from the
+    environment (Phase 73, D091).
+
+    This test used to rely on the test host simply having no Longbridge
+    credentials, so `market_data_router` was already None. That held for
+    as long as the platform had never been configured with any - and
+    stopped holding the moment real credentials were added to `.env`,
+    at which point the endpoint returned a genuine quote and the test
+    failed for a reason that had nothing to do with the behaviour it
+    describes.
+
+    A test of "what happens when no vendor is wired" must wire no vendor
+    itself. Now it means the same thing on a machine with credentials and
+    on one without.
+    """
+    from apps.api.app.api.dependencies import get_market_data_router
+
     async with (
         db_session() as session,
         active_user(session) as (user_id, email),
@@ -542,12 +556,21 @@ async def test_omitting_estimated_price_with_no_vendor_wired_is_400_not_configur
         broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
         async with api_client() as client:
-            token = await _get_token(client, email)
-            response = await client.post(
-                f"/brokers/{broker_id}/trades",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"symbol": "AAPL", "side": "buy", "quantity": "10", "stop_price": "95"},
-            )
+            app.dependency_overrides[get_market_data_router] = lambda: None
+            try:
+                token = await _get_token(client, email)
+                response = await client.post(
+                    f"/brokers/{broker_id}/trades",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "quantity": "10",
+                        "stop_price": "95",
+                    },
+                )
+            finally:
+                del app.dependency_overrides[get_market_data_router]
 
         assert response.status_code == 400
         assert "NOT_CONFIGURED" in response.json()["detail"]
