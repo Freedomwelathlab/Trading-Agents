@@ -24,6 +24,83 @@ Nothing below claims the platform is "production ready" or "fully secure"
 beyond what each phase actually verified, and nothing below is a claim that
 any strategy makes money.
 
+- Phase 74: the Markets terminal — live charts, watchlist, order book and
+  session levels (2026-09-16, D092). The TradingView-shaped surface the
+  brief asked for, built on THIS platform's own bars rather than an
+  embedded widget showing someone else's. New page `/markets` (nav entry
+  "Markets"), new endpoints `GET /market-data/{symbol}/depth` and
+  `GET /market-data/{symbol}/session-levels`, and `PriceChart` gains an
+  additive `priceLines` prop so the backtest page that already uses it is
+  untouched.
+
+  **The one part that was not assembly work: the vendor answers "no book"
+  WITH a book.** `depth("TQQQ.US")` returns HTTP 200 and a structurally
+  valid order book whose single bid and single ask carry `price=None` and
+  `volume=0`; `700.HK` returns genuine levels on the same call. Read
+  positionally that becomes a ladder of `0.00 x 0` rows and a spread of
+  `0.00` — which renders beautifully and is the most dangerous reading
+  available, because a zero bid is a PRICE and a zero spread is a NUMBER,
+  and both are things a strategy will act on. Levels without a real price
+  are now dropped at the adapter, and a response with nothing left becomes
+  404 DATA_UNAVAILABLE.
+
+  **Two explanations fit and neither is asserted.** The account holds LV1
+  for US (generally no depth ladder), but the measurement was taken at
+  01:33 ET with the US closed and Hong Kong open. One observation cannot
+  separate "this entitlement has no book" from "this market has no book
+  right now", so the error message names both and the UI repeats them.
+  The endpoint keeps three distinct statuses — 503 no vendor, 404 vendor
+  answered with nothing, 200 a real book — and the proxy passes all three
+  through rather than flattening them.
+
+  **Session levels are computed, not fetched.** PDH/PDL/PDC, premarket
+  extremes, the opening range and session VWAP with ±2σ bands, derived from
+  `market_data_bars` through Phase 73's `sessions.py`. No vendor publishes
+  these — they are facts about where a bar sits on the exchange clock — and
+  computing them server-side means the endpoint answers when the market is
+  closed, which is when levels get marked. The three VWAP figures are
+  quantized to six decimals (what `market_data_bars` stores): VWAP is a
+  division, so `Decimal` returned `68.26864187763813456219701391`, which
+  claims precision its inputs do not have. Levels read straight off a bar
+  are passed through unrounded, so the API cannot disagree with the bar.
+
+  **"Live" means polled, and the page says so.** No websocket exists in
+  this platform; the quote and book refresh every 5s and every panel
+  carries the timestamp of what it is showing.
+
+  **`lib/useKeyedFetch.ts`** tags each stored value with the key it was
+  fetched for and DERIVES freshness during render, rather than clearing
+  state in an effect — which `react-hooks/set-state-in-effect` refuses, and
+  four panels doing it would compound. A slow response for an abandoned
+  symbol arrives and is simply not selected, so there is no torn state.
+
+  **A hydration bug worth recording.** Reading `?symbol=` via a lazy
+  `useState` initializer on `window.location.search` looks like the
+  effect-free way and is not: the server has no `window`, so it rendered
+  `TQQQ.US` while the browser rendered `700.HK`. Resolved in the server
+  component, which already receives `searchParams`, and passed down.
+
+  **Verified against the live vendor, both the populated and the absent
+  path.** TQQQ.US: 1,152 bars drawn, 10 session levels on the chart, quote
+  `67.900 · longbridge`, order book DATA_UNAVAILABLE with its reason.
+  700.HK: a real ladder — spread `0.200`, ask `433.800 x 24,800` (49
+  orders), bid `433.600 x 17,500` (28 orders) — with the chart and levels
+  panel both correctly reporting DATA_UNAVAILABLE because no HK bars are
+  ingested. The states that show nothing are the ones a fabricating
+  implementation would fill in, so they are verified too.
+
+  Verified 2026-09-16 at migration head `0030` (no migration this phase):
+  **1367 backend tests** (1360 -> 1367, +7), **336 frontend tests**
+  (325 -> 336, +11), ruff / mypy (156 files) / eslint (0 errors) / `tsc` /
+  secret scan all clean. Both figures are from complete runs watched to
+  completion.
+
+  Also fixed here: five mypy errors in Phase 73's paging block, which the
+  previous phase's narrower per-file check had not covered (`mypy apps` now
+  clean across 156 files), and `vitest` `testTimeout` raised from 5s to 15s
+  — two Recharts suites take ~500ms in isolation and ~5.5s under full-suite
+  worker contention, and were failing the default while being correct.
+
 - Phase 73: an intraday engine for the TQQQ reversal playbook, and a
   negative research result (2026-09-16, D091). The brief supplied a
   26-section playbook and asked for its best strategies on TQQQ, both

@@ -294,7 +294,10 @@ async def test_intraday_asks_for_the_extended_session_and_daily_does_not():
         client = FakeHistoryCandlestickClient(results=[candle])
         provider = LongbridgeBarBackfillProvider(client)
         await provider.get_bars(
-            "TQQQ.US", bar_interval=interval, start_date=date(2026, 8, 10), end_date=date(2026, 8, 10)
+            "TQQQ.US",
+            bar_interval=interval,
+            start_date=date(2026, 8, 10),
+            end_date=date(2026, 8, 10),
         )
         sessions = client.calls[0][6]
         assert getattr(sessions, "name", str(sessions)).endswith(expected), interval

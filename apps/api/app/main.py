@@ -76,6 +76,7 @@ from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.marketdata.providers.coinbase import build_coinbase_bar_provider
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_bar_backfill_provider,
+    build_longbridge_depth_provider,
     build_longbridge_fundamentals_provider,
     build_longbridge_history_provider,
     build_longbridge_news_provider,
@@ -100,6 +101,9 @@ async def lifespan(app: FastAPI):
     # capability (a price series, not one quote) - see
     # apps/api/app/marketdata/history_provider.py.
     app.state.history_provider = build_longbridge_history_provider(settings)
+    # Depth is a separate capability from quotes on purpose: the vendor
+    # can serve a quote and still have no order book (D092).
+    app.state.depth_provider = build_longbridge_depth_provider(settings)
     # Phase 44 (D059): two more capabilities from the SAME already-
     # credentialed Longbridge relationship - company fundamentals and
     # recent news. Same all-or-nothing credential gate, same
@@ -264,6 +268,7 @@ async def lifespan(app: FastAPI):
         live_broker=("longbridge" if app.state.live_broker_adapter else "NOT_CONFIGURED"),
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
         history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
+        depth_provider="longbridge" if app.state.depth_provider else "NOT_CONFIGURED",
         fundamentals_provider=(
             "longbridge" if app.state.fundamentals_provider else "NOT_CONFIGURED"
         ),

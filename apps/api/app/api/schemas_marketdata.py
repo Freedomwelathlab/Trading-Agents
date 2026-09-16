@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel
@@ -53,3 +53,56 @@ class BarsResponse(BaseModel):
     bar_interval: BarInterval
     count: int
     bars: list[BarResponse]
+
+
+class DepthLevelResponse(BaseModel):
+    """One priced level. Every level that reaches the wire has a real
+    price - levels the vendor returned without one are dropped at the
+    adapter, never sent as a zero (Phase 74, D092)."""
+
+    price: Decimal
+    volume: int
+    order_count: int | None = None
+
+
+class OrderBookResponse(BaseModel):
+    """Both sides of the book, best price first.
+
+    `spread` is null unless BOTH sides are present. A one-sided book has
+    no spread, and a substituted zero is a number a reader would act on.
+    """
+
+    symbol: str
+    bids: list[DepthLevelResponse]
+    asks: list[DepthLevelResponse]
+    spread: Decimal | None
+    as_of: datetime
+    source: str
+
+
+class SessionLevelsResponse(BaseModel):
+    """The session-anchored locations an intraday chart is read against
+    (Phase 74, D092).
+
+    Every field is nullable and a null means "the stored bars do not
+    support this level", never zero. The first session in a window has no
+    previous day; a session whose premarket never traded has no premarket
+    high. A zero previous-low is below every price, which would make
+    "price swept the previous low" permanently true.
+    """
+
+    symbol: str
+    bar_interval: str
+    session_date: date
+    previous_high: Decimal | None
+    previous_low: Decimal | None
+    previous_close: Decimal | None
+    premarket_high: Decimal | None
+    premarket_low: Decimal | None
+    opening_range_high: Decimal | None
+    opening_range_low: Decimal | None
+    regular_open: Decimal | None
+    vwap: Decimal | None
+    vwap_upper_2sigma: Decimal | None
+    vwap_lower_2sigma: Decimal | None
+    bars_in_session: int

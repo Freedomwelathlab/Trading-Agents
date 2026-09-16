@@ -22,6 +22,7 @@ from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerGrant, User
 from apps.api.app.execution.live_broker import LiveBrokerAdapter
 from apps.api.app.marketdata.bar_router import BarBackfillRouter
+from apps.api.app.marketdata.depth_provider import DepthProvider
 from apps.api.app.marketdata.fundamentals_provider import FundamentalsProvider
 from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.news_provider import NewsProvider
@@ -40,6 +41,13 @@ def get_history_provider(request: Request) -> HistoryProvider | None:
     real indicator can't be computed, never a reason to block a trade or
     fabricate a value."""
     return request.app.state.history_provider
+
+
+def get_depth_provider(request: Request) -> DepthProvider | None:
+    """`None` when no vendor is wired, matching every other optional
+    provider here: its absence is reported as NOT_CONFIGURED rather than
+    standing in for an empty book (Phase 74, D092)."""
+    return request.app.state.depth_provider
 
 
 def get_trader_agent(request: Request) -> TraderAgent | None:

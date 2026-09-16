@@ -10232,3 +10232,115 @@ these were written FOR, not what they are written AGAINST.
 
 Status: Implemented and verified against real Longbridge data. The
 research result is negative and recorded as negative.
+
+---
+
+## D092 — Phase 74: the Markets terminal, and the book that is not there
+
+The brief asked for "live charts view, indicators, watchlist, orderbook,
+signals" — a TradingView-shaped surface. Most of it was assembly work over
+what Phases 70-73 already built. One part was not, and it is the only part
+worth a decision record.
+
+### 1. The vendor answers "no book" with a book
+
+`QuoteContext.depth("TQQQ.US")` returns HTTP 200 and a structurally valid
+order book: one bid level, one ask level, each with `price = None` and
+`volume = 0`. Measured on this account:
+
+    TQQQ.US   1 bid, 1 ask, top bid None x 0
+    AAPL.US   1 bid, 1 ask, top bid None x 0
+    700.HK    1 bid, 1 ask, top bid 434.200 x 5700
+
+A positional read of that response produces a ladder of `0.00 x 0` rows and
+a spread of `0.00`. It renders beautifully. It is also the most dangerous
+reading available, because a zero bid is a PRICE and a zero spread is a
+NUMBER — both are things a human or a strategy will act on, and neither
+exists.
+
+**Two explanations fit the observation and this codebase deliberately
+chooses neither.** The account holds `LV1 Real-time Quotes` for US, and an
+LV1 entitlement generally carries no depth ladder; but the measurement was
+taken at 01:33 ET with the US market closed and Hong Kong open at 13:33.
+One observation cannot separate "this entitlement has no book" from "this
+market has no book right now". Asserting either would be a guess wearing
+the clothes of a finding, so the error message names both possibilities
+and the UI repeats them.
+
+It does not need to be separated, because the handling is identical: **a
+level whose price is absent is not a level.** The adapter drops it, and a
+response with nothing left becomes `DataUnavailableError` → 404, exactly
+like a quote the vendor could not supply. The distinction the endpoint
+preserves is between three genuinely different facts — 503 (no vendor
+wired), 404 (a vendor answered with nothing), 200 (a real book) — and the
+proxy passes all three through verbatim rather than flattening them.
+
+### 2. Session levels are computed here, not fetched
+
+`GET /market-data/{symbol}/session-levels` returns PDH/PDL/PDC, premarket
+extremes, the opening range and session VWAP with its 2σ bands, derived
+from `market_data_bars` via Phase 73's `sessions.py`. No vendor publishes
+these: they are facts about where each bar sits on the exchange's clock.
+Computing them server-side also means the endpoint answers when the market
+is closed, which is precisely when a trader marks levels for tomorrow.
+
+**The derived figures are quantized to six decimals and the stored ones
+are not.** VWAP is a division, so `Decimal` hands back the context's full
+28 significant digits — a session VWAP rendered as
+`68.26864187763813456219701391`, which is not a price anyone can act on and
+claims precision its six-decimal inputs do not have. Levels that come
+straight off a bar are passed through untouched, because rounding a stored
+price would make the API disagree with the bar it came from.
+
+### 3. Polling, and saying so
+
+There is no websocket anywhere in this platform. The quote and the book
+refresh on a five-second interval, every panel carries the timestamp of the
+data it is showing, and the page says in as many words that this is polling.
+Calling it "real-time streaming" would be a latency claim the system does
+not meet.
+
+### 4. Freshness derived, not restored
+
+Four panels needed the same thing: when the symbol changes, stop showing
+the previous symbol's data. The obvious `useEffect(() => { setData(null);
+load(); }, [symbol])` is what `react-hooks/set-state-in-effect` refuses,
+and the rule is right — that reset is a second render pass triggered by the
+first, and four of them compound.
+
+`lib/useKeyedFetch.ts` instead TAGS each stored value with the key it was
+fetched for and DERIVES freshness during render. Stale data is never shown
+because it is never selected, not because something raced to clear it. A
+slow response for an abandoned symbol still arrives and is simply not
+selected, so there is no torn state where the header says one symbol and
+the table shows another.
+
+### 5. A hydration bug worth recording, because the fix is not obvious
+
+The symbol was first read from `?symbol=` with a lazy `useState`
+initializer reading `window.location.search`. That looks like the
+effect-free way to do it, and it produced a hydration mismatch: the server
+has no `window`, so it rendered the default symbol while the browser
+rendered the URL's. Observed directly — the page rendered `TQQQ.US`
+server-side and `700.HK` client-side.
+
+The fix is to resolve the query in the SERVER component, which already
+receives `searchParams`, and pass it down as a prop. Both passes then agree
+because the value is known before the first byte.
+
+### What was verified, and how
+
+Both the populated and the absent path, against the live vendor:
+
+  * **TQQQ.US** — 1,152 bars drawn, 10 session levels drawn on the chart,
+    quote `67.900 · longbridge`, and the order book showing
+    DATA_UNAVAILABLE with its reason.
+  * **700.HK** — a real ladder: spread `0.200`, ask `433.800 x 24,800` (49
+    orders), bid `433.600 x 17,500` (28 orders) — and, correctly, a chart
+    and a levels panel both reporting DATA_UNAVAILABLE, because no HK bars
+    have been ingested.
+
+The second half of that matters as much as the first: the states that show
+nothing are the ones a fabricating implementation would fill in.
+
+Status: Implemented and verified against live vendor data.

@@ -13,6 +13,21 @@ export default defineConfig({
     // those files up: they are a deliberately separate suite (D044), and its
     // default `**/*.spec.ts` glob would otherwise match them.
     exclude: ["node_modules/**", "e2e/**", ".next/**"],
+    // Raised from Vitest's 5s default (Phase 74, D092).
+    //
+    // The Recharts suites render a full SVG chart in jsdom, which is slow
+    // and - more to the point - slows down superlinearly under parallel
+    // worker contention. Measured on this machine: `DrawdownChart`'s
+    // area-render case takes 476ms run on its own and 5,437ms inside the
+    // full suite, and `EquityCurveChart`'s legend case 518ms against
+    // 5,716ms. Both were failing the 5s default while being perfectly
+    // correct.
+    //
+    // This is deliberately NOT a blanket "tests are flaky, give them
+    // longer": a 10x spread between isolated and contended runs is a
+    // resource property, and the isolated timings show there is no hang to
+    // hide. A test that genuinely hangs still fails here, just 15s later.
+    testTimeout: 15_000,
   },
   resolve: {
     alias: {

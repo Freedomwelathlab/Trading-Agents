@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from apps.api.app.core.config import Settings
 from apps.api.app.marketdata.bar_provider import Bar
+from apps.api.app.marketdata.depth_provider import DepthLevel, OrderBook
 from apps.api.app.marketdata.fundamental_metrics import latest_point
 from apps.api.app.marketdata.fundamentals_provider import CompanyFundamentals
 from apps.api.app.marketdata.models import MarketSnapshot
@@ -332,15 +333,23 @@ class LongbridgeBarBackfillProvider:
                 ) from exc
             pages += 1
 
-            page = [c for c in (candles or []) if _as_utc(c.timestamp) is not None]
+            # Timestamped ONCE, into a list of (ts, candle) pairs, rather
+            # than calling `_as_utc` again per use. Re-deriving it invited
+            # the `datetime | None` that a candle with an unusable
+            # timestamp really does carry to leak into the comparisons
+            # below, where `oldest <= window_start` against a None is a
+            # TypeError at runtime and was only ever silenced by a cast.
+            page: list[tuple[datetime, Any]] = []
+            for candle in candles or []:
+                ts = _as_utc(getattr(candle, "timestamp", None))
+                if ts is not None:
+                    page.append((ts, candle))
             if not page:
                 break  # Vendor has no more history before `anchor`.
 
-            oldest = min(_as_utc(c.timestamp) for c in page)  # type: ignore[type-var]
-            for candle in page:
-                ts = _as_utc(candle.timestamp)
-                if ts is not None:
-                    collected[ts] = candle
+            oldest = min(ts for ts, _ in page)
+            for ts, candle in page:
+                collected[ts] = candle
 
             if oldest <= window_start:
                 break
@@ -361,22 +370,19 @@ class LongbridgeBarBackfillProvider:
         # up to a page, and the vendor also returns candles outside a
         # requested range of its own accord, so an unfiltered result would
         # quietly widen every caller's window.
-        rows = [
-            candle
-            for ts, candle in collected.items()
-            if window_start <= ts < window_end
-        ]
-        rows.sort(key=lambda c: _as_utc(c.timestamp))  # type: ignore[arg-type,return-value]
+        # Sorting on the timestamp already resolved above, so ordering can
+        # no longer disagree with filtering.
+        rows = sorted(
+            (
+                (ts, candle)
+                for ts, candle in collected.items()
+                if window_start <= ts < window_end
+            ),
+            key=lambda pair: pair[0],
+        )
 
         bars: list[Bar] = []
-        for row in rows:
-            ts = _as_utc(row.timestamp)
-            if ts is None:
-                # A candle with no usable timestamp cannot be placed on the
-                # bar timeline honestly - skipped, never defaulted to
-                # start_date/end_date/now (same discipline as
-                # LongbridgeNewsProvider.get_recent_headlines above).
-                continue
+        for ts, row in rows:
             bars.append(
                 Bar(
                     symbol=symbol,
@@ -414,6 +420,105 @@ def build_longbridge_bar_backfill_provider(
     from longport.openapi import AsyncQuoteContext
 
     return LongbridgeBarBackfillProvider(AsyncQuoteContext.create(config))
+
+
+
+class LongbridgeDepthClient(Protocol):
+    # Plain method returning an Awaitable, same reasoning as every other
+    # client Protocol in this file.
+    def depth(self, symbol: str) -> Awaitable[object]: ...
+
+
+class LongbridgeDepthProvider:
+    """Order-book depth from the already-credentialed quote context
+    (Phase 74, D092).
+
+    Verified against the installed longport package by direct call, not
+    assumed from documentation: `depth(symbol)` returns an object with
+    `.bids` and `.asks`, each a sequence of levels carrying `.price`,
+    `.volume` and `.order_num`.
+
+    **The whole substance of this adapter is the price filter below.** The
+    vendor answers 200 with a structurally valid book whose levels have
+    `price=None` and `volume=0` when it has nothing to report - see
+    `marketdata/depth_provider.py` for the measurements. Passing those
+    through as zeros would draw a real-looking book with a zero bid and a
+    zero spread, which is a number a strategy can act on.
+    """
+
+    name = "longbridge"
+
+    def __init__(self, client: LongbridgeDepthClient) -> None:
+        self._client = client
+
+    async def get_depth(self, symbol: str) -> OrderBook:
+        try:
+            raw = await self._client.depth(symbol)
+        except Exception as exc:
+            raise VendorError(
+                f"Longbridge depth request failed for {symbol!r}: {exc}"
+            ) from exc
+
+        bids = _depth_levels(getattr(raw, "bids", None))
+        asks = _depth_levels(getattr(raw, "asks", None))
+
+        if not bids and not asks:
+            raise DataUnavailableError(
+                f"Longbridge returned no priced order-book level for {symbol!r}. "
+                "This is the vendor's own empty book - either the market is "
+                "closed or the account's entitlement carries no depth ladder - "
+                "and is reported as unavailable rather than as a book of zeros."
+            )
+
+        return OrderBook(
+            symbol=symbol,
+            bids=bids,
+            asks=asks,
+            as_of=datetime.now(UTC),
+            source=self.name,
+        )
+
+
+def _depth_levels(raw: object) -> tuple[DepthLevel, ...]:
+    """Vendor levels -> our levels, dropping any without a real price.
+
+    Sorted by OUR reading of the side rather than trusting the vendor's
+    ordering, for the same reason the candlestick adapters re-sort: "best
+    first" is what every caller assumes, and a book rendered in the wrong
+    order puts the worst price at the top of the ladder.
+    """
+    if not isinstance(raw, Sequence):
+        return ()
+    levels: list[DepthLevel] = []
+    for item in raw:
+        price = _optional_decimal(getattr(item, "price", None))
+        if price is None or price <= 0:
+            # Not a level. A zero or absent price is the vendor saying it
+            # has nothing here, not a bid at zero.
+            continue
+        volume = getattr(item, "volume", None)
+        order_num = getattr(item, "order_num", None)
+        levels.append(
+            DepthLevel(
+                price=price,
+                volume=int(volume) if volume is not None else 0,
+                order_count=int(order_num) if order_num is not None else None,
+            )
+        )
+    return tuple(levels)
+
+
+def build_longbridge_depth_provider(
+    settings: Settings,
+) -> LongbridgeDepthProvider | None:
+    """Same all-or-nothing credential gate as every other builder here."""
+    config = _longbridge_config(settings)
+    if config is None:
+        return None
+
+    from longport.openapi import AsyncQuoteContext
+
+    return LongbridgeDepthProvider(AsyncQuoteContext.create(config))
 
 
 def _optional_decimal(raw: object) -> Decimal | None:

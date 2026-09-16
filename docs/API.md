@@ -2183,3 +2183,55 @@ against the row that will actually be used. See `docs/DECISIONS.md` D085.
 
 Nothing else is implemented. Do not document endpoints that don't exist yet
 — add them here as they ship, not in advance.
+
+### `GET /market-data/{symbol}/depth`
+
+The live order book. Requires an authenticated session.
+
+Three statuses, each a different fact — a client must not collapse them:
+
+| Status | Meaning |
+|---|---|
+| `503` | `NOT_CONFIGURED` — no market-data vendor is wired at all. |
+| `404` | `DATA_UNAVAILABLE` — a vendor answered and had **no priced level**. Ordinary for a closed market, and also what an entitlement without a depth ladder looks like. One response cannot separate the two, and this endpoint does not claim to. |
+| `200` | A real book, best price first. |
+
+**A vendor's empty book never becomes a 200 with zero-priced levels.**
+Measured on this account: `depth("TQQQ.US")` returns one bid and one ask
+whose price is null and whose volume is zero, while `700.HK` returns
+genuine levels. Levels without a real price are dropped at the adapter, so
+every level on the wire has one.
+
+```json
+{
+  "symbol": "700.HK",
+  "bids": [{"price": "434.600", "volume": 9500, "order_count": 16}],
+  "asks": [{"price": "434.800", "volume": 23600, "order_count": 41}],
+  "spread": "0.200",
+  "as_of": "2026-09-16T06:10:18.834370Z",
+  "source": "longbridge"
+}
+```
+
+`spread` is **null** unless both sides are present — a one-sided book has
+no spread, and a substituted zero is a number a reader would act on.
+
+### `GET /market-data/{symbol}/session-levels`
+
+Session-anchored levels for the most recent stored session, computed from
+`market_data_bars` rather than requested from a vendor. Optional
+`bar_interval` (default `5m`).
+
+Returns PDH/PDL/PDC, premarket extremes, the opening range, the regular
+open, and session VWAP with its ±2σ bands. **Every level is nullable and a
+null means the stored bars do not support it — never zero.** The previous
+day is the previous session PRESENT IN THE DATA, so a Monday reads Friday
+and a post-holiday session reads the last day that traded.
+
+`404 DATA_UNAVAILABLE` when no bars are stored for the symbol in the last
+ten days; the message names the backfill endpoint. An absent series is a
+gap to fill, never a session of nulls.
+
+The three VWAP figures are quantized to six decimals — the precision
+`market_data_bars` stores. Levels taken straight from a bar are passed
+through unrounded so the API cannot disagree with the bar it read.

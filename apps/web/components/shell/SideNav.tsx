@@ -17,6 +17,7 @@ import { usePathname } from "next/navigation";
 type Item = {
   href:
     | "/dashboard"
+    | "/markets"
     | "/strategies"
     | "/strategies/history"
     | "/strategies/leaderboard"
@@ -40,6 +41,25 @@ function IconTerminal() {
       <path d="M3 5.5h18v13H3z" />
       <path d="m7 10 2.5 2L7 14" />
       <path d="M12.5 14.5H17" />
+    </svg>
+  );
+}
+
+function IconCandles() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4 shrink-0"
+      aria-hidden="true"
+    >
+      <path d="M7 3v4M7 17v4M17 3v7M17 18v3" />
+      <rect x="4.5" y="7" width="5" height="10" rx="1" />
+      <rect x="14.5" y="10" width="5" height="8" rx="1" />
     </svg>
   );
 }
@@ -123,6 +143,7 @@ function IconShield() {
 
 const ITEMS: Item[] = [
   { href: "/dashboard", label: "Trading desk", icon: <IconTerminal /> },
+  { href: "/markets", label: "Markets", icon: <IconCandles /> },
   { href: "/strategies", label: "Strategy Lab", icon: <IconFlask /> },
   { href: "/strategies/history", label: "Backtest history", icon: <IconClock /> },
   { href: "/strategies/leaderboard", label: "Leaderboard", icon: <IconTrophy /> },

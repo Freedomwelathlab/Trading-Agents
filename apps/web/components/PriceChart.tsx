@@ -21,6 +21,15 @@ export type PriceBar = {
   source: string;
 };
 
+export type PriceLine = {
+  /** Decimal string, exactly as the backend sent it. */
+  price: string;
+  label: string;
+  /** One of the semantic roles below, not a raw colour — the component
+   *  resolves it against the live theme so the line reads in both. */
+  tone: "prior" | "premarket" | "opening" | "vwap" | "band";
+};
+
 export type SignalMarker = {
   /** The bar this signal landed on, as an ISO date (`YYYY-MM-DD`). */
   date: string;
@@ -70,6 +79,18 @@ function readThemeColors(el: HTMLElement) {
     inkFaint: token("--ink-faint", "#64748b"),
     grid: token("--grid", "#e2e8f0"),
     surface: token("--surface", "#ffffff"),
+    // Session levels, keyed by ROLE rather than by colour, so a caller
+    // names what a line means and this decides how it reads (Phase 74).
+    // Each falls back to a literal only if the token is missing, which
+    // keeps the chart legible even on a page that never loaded the
+    // dashboard's stylesheet.
+    levels: {
+      prior: token("--ink-faint", "#64748b"),
+      premarket: token("--accent", "#7c3aed"),
+      opening: token("--level-opening", "#b45309"),
+      vwap: token("--level-vwap", "#0369a1"),
+      band: token("--grid", "#cbd5e1"),
+    },
   };
 }
 
@@ -155,10 +176,21 @@ export function toMarkers(
 export function PriceChart({
   bars,
   signals = [],
+  priceLines = [],
   height = 360,
 }: {
   bars: PriceBar[];
   signals?: SignalMarker[];
+  /**
+   * Session-anchored levels drawn as horizontal lines (Phase 74, D092).
+   *
+   * Additive and defaulted to empty, so the backtest detail page that
+   * already renders this chart is unchanged. A level the backend reported
+   * as null must simply not be in this array — there is no "draw it at
+   * zero" path, because a previous-day low at zero sits below every candle
+   * and reads as a level price never reached.
+   */
+  priceLines?: PriceLine[];
   height?: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -217,6 +249,22 @@ export function PriceChart({
     });
     series.setData(candles);
 
+    for (const line of priceLines) {
+      const price = Number(line.price);
+      // A level that is not a finite number is not drawn. Charting `NaN`
+      // silently produces a line at an arbitrary position rather than an
+      // error, which is the worst of both outcomes.
+      if (!Number.isFinite(price)) continue;
+      series.createPriceLine({
+        price,
+        color: colors.levels[line.tone],
+        lineWidth: 1,
+        lineStyle: line.tone === "vwap" ? 0 : 2,
+        axisLabelVisible: true,
+        title: line.label,
+      });
+    }
+
     const markers = toMarkers(
       signals,
       candles.map((c) => c.time),
@@ -233,7 +281,7 @@ export function PriceChart({
     // props; depending on the derived arrays instead would rebuild the
     // chart on every render, since they are new identities each time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bars, signals, height]);
+  }, [bars, signals, priceLines, height]);
 
   if (bars.length === 0) {
     return (
