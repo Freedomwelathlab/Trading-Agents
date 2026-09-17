@@ -10344,3 +10344,47 @@ The second half of that matters as much as the first: the states that show
 nothing are the ones a fabricating implementation would fill in.
 
 Status: Implemented and verified against live vendor data.
+
+---
+
+## D093 — Phase 75: an options foundation that keeps "modeled" visible
+
+The TQQQ options playbook asks for defined-risk option structures selected
+by delta/DTE/liquidity/IV. The platform had no options code at all. The
+hard constraint shaping this phase is not the math — it is honesty:
+
+**There is no historical option-chain data.** Longbridge serves live
+option quotes and Greeks (with OPRA permission) for forward use, but
+nothing supplies PAST option prices. So a backtest of a spread over
+historical underlying bars must SYNTHESIZE each leg from the underlying
+with a pricing model. This phase builds that model and wraps it so the
+synthetic origin can never be mistaken for a fill:
+
+- `options/pricing.py` — Black-Scholes-Merton price + Greeks, every
+  function named `theoretical_*`, floats (a float model, not false
+  `Decimal` precision), theta per calendar day and vega per vol-point (the
+  conventions a screen shows). Verified against the textbook ATM value
+  (7.9656), put-call parity, delta bounds and the expiry collapse to
+  intrinsic. `implied_delta_strike` inverts the playbook's delta-band
+  selection back to a strike by monotone bisection.
+- `options/structures.py` — the four verticals (bull call / bear put debit,
+  bull put / bear call credit). Money becomes `Decimal` in ONE place, at
+  this boundary, because here it is real capital-at-risk. The constructor
+  REFUSES any structure whose modeled loss is not bounded and positive —
+  the "never naked, always defined-risk" rule enforced in code, not left to
+  the caller. `contracts_for_risk` is the playbook's
+  floor(risk / max-loss) with max-loss as the exact denominator.
+- `options/selection.py` — §2's universal gates as pure predicates
+  (liquidity spread caps 10% single / 5% multi, DTE bands, delta bands, IV
+  regime), each returning a reason. These run on REAL quotes live; a
+  model-priced backtest records that the liquidity gate was not applied
+  rather than faking a pass.
+
+Not built this phase, and deliberately: the model-priced spread backtest
+that rides the intraday signals, the live option-chain read, and the
+multi-leg paper path. Iron condor/calendar stay execution-disabled until
+Longbridge multi-leg capability is verified (it natively supports
+verticals/straddle/strangle/collar, not condor/calendar).
+
+Status: Implemented and verified — 33 tests, ruff/mypy clean. Pure model
+layer; nothing trades.
