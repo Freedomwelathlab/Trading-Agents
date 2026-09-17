@@ -10388,3 +10388,39 @@ verticals/straddle/strangle/collar, not condor/calendar).
 
 Status: Implemented and verified — 33 tests, ruff/mypy clean. Pure model
 layer; nothing trades.
+
+---
+
+## D094 — Phase 76: candlestick patterns from the ASTA course, by their own rules
+
+Task 6 asked to read the Avadhut Sathe Trading Academy course materials
+(SMM/PAPA/GUE/FOME), name and summarize the concepts, and build strategies
+following the material's rules. The named/summarized knowledge is the
+`asta-trading` book-to-skill skill; the mechanizable strategy code is here.
+
+The cleanly mechanizable subset is the **candlestick patterns** — the
+material states them precisely, and imprecision is where a generic library
+diverges from what the course teaches. `marketdata/candles.py` encodes them
+with the material's exact definitions:
+
+- Piercing is separated from Engulf by the boundary the course draws: a
+  close above the prior body's MEDIAN is piercing; above its OPEN is the
+  stronger engulf. The two are mutually exclusive here.
+- Hammer/Shooting-Star require a wick ≥ 2× body (the course's "2-3 times").
+- **The trend-context rule is enforced in code**: "a reversal candle is
+  significant only at the end of a trend." Each pattern carries the trend
+  it requires, and `is_signal_in_context` is the single place that applies
+  it — so shape detection can never be mistaken for a signal on its own.
+
+`detect_at` reports only patterns completing on the current bar, from
+backward windows, so it is causal for replay.
+
+Deliberately NOT built, and said plainly in `docs/ASTA_STRATEGIES.md`:
+Elliott-wave auto-counting (a research problem, not a checklist — only the
+three validity rules and setup checklists are mechanizable), and wiring
+these patterns as intraday entries (blocked on the intraday engine being
+persisted/exposed first, per `docs/AUDIT.md`). FOME's options mechanics are
+already the Phase 75 options layer.
+
+Status: `candles.py` implemented and verified — 12 tests, ruff/mypy clean.
+The book-to-skill skill's generated-skill security scan passed.
