@@ -28,6 +28,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from apps.api.app.marketdata.candles import (
+    PatternDirection,
+    Trend,
+    detect_at,
+)
 from apps.api.app.marketdata.sessions import SessionLevels, VwapPoint
 from apps.api.app.marketdata.structure import (
     Direction,
@@ -437,6 +442,163 @@ def ema_reversal_setup(
     )
 
 
+
+# ---------------------------------------------------------------------------
+# ASTA SMM/PAPA - candlestick reversal at a session level
+# ---------------------------------------------------------------------------
+
+
+def dow_trend(ctx: BarContext) -> Trend:
+    """Trend by the Dow definition the SMM module teaches: an uptrend is
+    higher highs AND higher lows.
+
+    Derived from CONFIRMED swings only, so the trend a setup sees was
+    knowable at this bar - the same discipline `structure.py` enforces for
+    a market-structure shift. With fewer than two confirmed swings of each
+    kind there is no Dow trend to state, and the honest answer is
+    SIDEWAYS: that makes every reversal pattern fail its context gate
+    rather than fire on an unknown trend.
+    """
+    highs = [s for s in ctx.swings if s.kind is SwingKind.HIGH and s.confirmed_ts <= ctx.bar.ts]
+    lows = [s for s in ctx.swings if s.kind is SwingKind.LOW and s.confirmed_ts <= ctx.bar.ts]
+    if len(highs) < 2 or len(lows) < 2:
+        return Trend.SIDEWAYS
+    h1, h2 = highs[-2].price, highs[-1].price
+    l1, l2 = lows[-2].price, lows[-1].price
+    if h2 > h1 and l2 > l1:
+        return Trend.UP
+    if h2 < h1 and l2 < l1:
+        return Trend.DOWN
+    return Trend.SIDEWAYS
+
+
+def _levels_near(
+    ctx: BarContext, tolerance: Decimal
+) -> list[tuple[str, Decimal]]:
+    """Session levels this bar is actually touching, within `tolerance`.
+
+    PAPA's ordering is location first, then the candle signal AT that
+    location - a pattern in open space is explicitly not a setup. Only
+    levels the backend actually reported are considered; a `None` level is
+    absent, never zero.
+    """
+    candidates = [
+        ("PDH", ctx.levels.previous_high),
+        ("PDL", ctx.levels.previous_low),
+        ("PDC", ctx.levels.previous_close),
+        ("premarket_high", ctx.levels.premarket_high),
+        ("premarket_low", ctx.levels.premarket_low),
+        ("opening_range_high", ctx.levels.opening_range_high),
+        ("opening_range_low", ctx.levels.opening_range_low),
+    ]
+    if ctx.vwap is not None:
+        candidates.append(("vwap", ctx.vwap.vwap))
+
+    bar = ctx.bar
+    near: list[tuple[str, Decimal]] = []
+    for name, price in candidates:
+        if price is None:
+            continue
+        # The bar TOUCHED the level if the level sits inside its range,
+        # or within tolerance of either extreme.
+        if _low(bar) - tolerance <= price <= _high(bar) + tolerance:
+            near.append((name, price))
+    return near
+
+
+def candle_reversal_setup(
+    ctx: BarContext,
+    *,
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+    location_tolerance_atr: Decimal = Decimal("0.25"),
+    require_location: bool = True,
+) -> SetupSignal | None:
+    """A candlestick reversal pattern, at a session level, against a trend.
+
+    This is the SMM/PAPA half of the ASTA material wired into the engine.
+    It enforces both of the material's gates rather than trading a shape:
+
+      1. **Trend context** - "a reversal candle is significant only at the
+         end of a trend; ignore it in the middle of a trend or range."
+         `CandlePattern.is_signal_in_context` applies that, against the Dow
+         trend from confirmed swings.
+      2. **Location** - the pattern must occur AT a marked level (previous
+         day's high/low/close, premarket extreme, opening range, or VWAP).
+         A hammer in open space is not a setup.
+
+    The stop goes beyond the pattern's own extreme plus an ATR buffer,
+    which is the structural invalidation: if price trades through the low
+    that produced the hammer, the reading was wrong.
+    """
+    if ctx.index < 2:
+        return None
+    if ctx.bar.open is None:
+        # An intraday bar with no open cannot be read as a candle. Refused
+        # quietly here (rather than raising) because one malformed bar
+        # should not abort a whole replay - the pattern simply is not
+        # detectable, which is the honest answer.
+        return None
+
+    trend = dow_trend(ctx)
+    try:
+        patterns = detect_at(ctx.bars, ctx.index)
+    except ValueError:
+        return None
+    if not patterns:
+        return None
+
+    tolerance = (ctx.atr or Decimal(0)) * location_tolerance_atr
+    near = _levels_near(ctx, tolerance)
+    if require_location and not near:
+        return None
+
+    for pattern in patterns:
+        if pattern.direction is PatternDirection.NEUTRAL:
+            # A doji is indecision, not a direction. It can corroborate a
+            # directional pattern but never carries a trade on its own.
+            continue
+        if not pattern.is_signal_in_context(trend):
+            continue
+
+        direction = (
+            Direction.LONG
+            if pattern.direction is PatternDirection.BULLISH
+            else Direction.SHORT
+        )
+        extreme = _low(ctx.bar) if direction is Direction.LONG else _high(ctx.bar)
+
+        score = 2  # the pattern itself
+        evidence = {"pattern": pattern.name, "trend": trend.value}
+        if near:
+            score += 1
+            evidence["location"] = ", ".join(name for name, _ in near)
+        if ctx.confirm_bias is direction:
+            score += 1
+            evidence["cross_market"] = "confirms"
+        if ctx.rsi is not None:
+            exhausted = (
+                ctx.rsi <= Decimal(35)
+                if direction is Direction.LONG
+                else ctx.rsi >= Decimal(65)
+            )
+            if exhausted:
+                score += 1
+                evidence["rsi"] = str(ctx.rsi.quantize(Decimal("0.1")))
+        if any(p.name == "doji" for p in patterns):
+            evidence["indecision"] = "doji also present"
+
+        return SetupSignal(
+            setup_name="candle_reversal",
+            direction=direction,
+            entry_index=ctx.index,
+            entry_price=ctx.bar.close,
+            stop_price=_stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer),
+            score=score,
+            evidence=evidence,
+        )
+    return None
+
+
 SetupDetector = Callable[[BarContext], SetupSignal | None]
 """What the engine needs from a setup: one bar's context in, an optional
 signal out. Every detector below also takes keyword parameters with
@@ -449,6 +611,7 @@ SETUPS: dict[str, SetupDetector] = {
     "vwap_reversion": vwap_reversion_setup,
     "orb_failure": orb_failure_setup,
     "ema_reversal": ema_reversal_setup,
+    "candle_reversal": candle_reversal_setup,
 }
 """Registry, so a run can name which setups to enable and a caller can
 add one without touching the engine."""

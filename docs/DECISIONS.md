@@ -10424,3 +10424,46 @@ already the Phase 75 options layer.
 
 Status: `candles.py` implemented and verified — 12 tests, ruff/mypy clean.
 The book-to-skill skill's generated-skill security scan passed.
+
+---
+
+## D095 — Phase 77: candlesticks wired into the engine, and what they did
+
+The ASTA candlestick detectors (D094) were a library with no caller. This
+wires them into the intraday engine as a real setup, `candle_reversal`,
+and measures them.
+
+**Both of the material's gates are enforced, and each one is what makes
+the setup honest rather than a shape-matcher:**
+
+  * **Trend context** — "a reversal candle is significant only at the end
+    of a trend; ignore it mid-trend or in a range." The trend is the Dow
+    definition the SMM module teaches (higher highs AND higher lows),
+    derived from **confirmed** swings only, so it was knowable at that bar.
+    Fewer than two confirmed swings of each kind returns SIDEWAYS, which
+    makes every reversal pattern fail its gate rather than fire against an
+    unknown trend.
+  * **Location** — PAPA orders it location first: the pattern must occur AT
+    a marked level (PDH/PDL/PDC, premarket extreme, opening range, VWAP)
+    within an ATR-scaled tolerance. A hammer in open space is not a setup.
+    A `None` level is absent and never read as a price of zero.
+
+A doji never carries a trade: it is indecision, recorded as corroborating
+evidence only. A close-only bar is skipped rather than aborting the replay.
+
+### What it did on real data
+
+124 real TQQQ sessions, 5-minute bars, costed, both directions:
+
+**274 trades, 42.3% win rate, expectancy −0.241R, t = −3.45, profit
+factor 0.62.** That is significant in the WRONG direction — not noise. For
+comparison, on the identical data `sweep_mss` is +0.051R at t = +0.61
+(insignificant) and the other three setups are all negative.
+
+This is the second independent negative result on TQQQ intraday. The
+engineering is sound and now measurable; the edge is not there. Recording
+it because a setup that loses significantly is a finding, and a platform
+that only remembers its positive backtests is worthless.
+
+Status: Implemented and verified — 10 wiring tests; result negative and
+reported as negative.
