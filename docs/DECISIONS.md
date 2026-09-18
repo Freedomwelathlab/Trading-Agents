@@ -10467,3 +10467,61 @@ that only remembers its positive backtests is worthless.
 
 Status: Implemented and verified — 10 wiring tests; result negative and
 reported as negative.
+
+## D096 — Option strategy layer: the playbook's decision rules, enforced (Phase 78)
+
+`apps/api/app/options/strategies.py` turns an underlying signal into a
+defined-risk option structure, or refuses. It is the decision layer above
+Phase 75's pricing/structures/selection foundation, built from
+`TQQQ_Longbridge_Auto_Options_Strategies.md`.
+
+**What is enforced rather than advised**
+
+- **§5 score, 0–12**, using the playbook's own weights (sweep +2, MSS +2,
+  and eight one-point confirmations). Evidence is kept as named booleans, not
+  a bare integer, so a recorded plan shows *which* evidence produced its
+  score — a 9 built from a sweep plus a structure shift is a different trade
+  from a 9 built from four soft confirmations.
+- **§16 hard floor: score < 8 refuses.** "Watchlist" grade (6–7) is
+  explicitly not tradeable. This is a typed `TradeRefusal`, never a silent
+  `None` — "why did it not trade" is the question an operator actually asks.
+- **§10A dual path.** A directional edge routes to a DEBIT vertical; a range
+  with IV rank ≥ 0.50 routes to a defined-risk CREDIT vertical. A directional
+  edge wins ties, matching the playbook's rule against opening an opposing
+  premium position at the same level. **Neither path can produce a naked
+  short** — the protective wing is structural, enforced in `build_vertical`.
+- **§3 sizing tiers** (A+ 0.50%, normal 0.35%, 0DTE ≤ 0.20%), sized off the
+  structure's exact max loss. 0DTE is capped at the speculative tier
+  *regardless of grade*: the playbook gives it its own ceiling because
+  gamma/theta make it a different risk, not a better trade. When the budget
+  cannot buy one contract the answer is a refusal, not a rounded-up contract.
+
+**Two findings worth recording**
+
+1. **A literal 0 DTE cannot be modeled.** With zero time to expiry there is
+   no time value, delta becomes a step function, and the modeled spread
+   collapses to `max_loss = 0` — which would size an unbounded number of
+   contracts. The playbook's "0DTE" means *expiring today*, with hours of the
+   session left, so a 0DTE plan is modeled with the hours actually remaining
+   (`zero_dte_hours_remaining`, default 4h as a placeholder for a live
+   clock). Passing a true zero raises rather than returning a zero-risk plan.
+2. **Strike selection is delta-first, then snapped.** The playbook picks legs
+   by delta but a chain is quoted by strike, so `implied_delta_strike`
+   inverts it and the result is rounded to the strike grid. If rounding
+   collapses both legs onto one strike the short leg is pushed one increment
+   out — a zero-width "spread" is not a structure and divides by zero in the
+   risk math.
+
+**What this does NOT claim.** The option layer converts a signal into a
+defined-risk structure; it does not create edge. The underlying TQQQ
+intraday signals measured **significantly negative** over 124 sessions of
+real 5m data (composite t = −3.32; `candle_reversal` t = −3.45; best single
+setup `sweep_mss` t = +0.61, not significant) — see D095. Everything here is
+priced by **model** (Black-Scholes), because no historical option-chain data
+exists; every plan carries a `priced: MODEL` note and live use must re-price
+against real quotes before submitting. Iron condor / calendar / double
+calendar from the playbook's Premium Collection path are **not built**: they
+are multi-leg structures whose execution depends on Longbridge multi-leg
+capability that has not been verified, and building an order path we cannot
+submit would be the fabrication this project forbids. 22 tests; ruff/mypy
+clean.

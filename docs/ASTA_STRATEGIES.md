@@ -38,10 +38,10 @@ IV, defined-risk structures) are the pricing/structures/selection layer.
 
 ## What is specified but not yet wired (scoped next builds)
 
-1. **Candle patterns → intraday signals.** `candles.py` produces patterns;
-   wiring them as entries on the intraday engine needs that engine to be
-   persisted/exposed first (see `docs/AUDIT.md` gap B). Then a
-   candle-pattern setup joins the `SETUPS` registry.
+1. ~~**Candle patterns → intraday signals.**~~ **DONE (Phase 77, D095)** —
+   `candle_reversal` is in the `SETUPS` registry, gated on Dow trend context
+   AND proximity to a marked level. Measured on 124 real sessions it is
+   **significantly negative** (274 trades, t = −3.45); see D095.
 2. **Elliott wave rule validators.** The three hard rules (W2 ≤ 100% W1;
    W4 ∉ W1 territory; W3 not shortest) are pure predicates over a labeled
    5-wave count — cheap to implement and test. What is genuinely hard and
