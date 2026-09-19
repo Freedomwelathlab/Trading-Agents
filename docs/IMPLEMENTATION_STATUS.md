@@ -24,6 +24,32 @@ Nothing below claims the platform is "production ready" or "fully secure"
 beyond what each phase actually verified, and nothing below is a claim that
 any strategy makes money.
 
+- Phases 79–82: owner bootstrap, watchlist rail, the Autotrade Bot, and
+  the missing admin controls (2026-09-19, D097/D098).
+  - **79 (D097)** `OWNER_BOOTSTRAP_EMAIL` / `scripts/grant_owner.py`:
+    widen one EXISTING account to every permission and every broker,
+    demote other admins. Never creates an account.
+  - **80** the watchlist lives in the left rail on every page (prices
+    every 10 s, add/remove, click-through to Markets). Fixed the Phase 74
+    Markets rail, which read `payload.items` for a response carrying
+    `watchlists` / `quotes` and had never rendered.
+  - **81 (D098)** the Autotrade Bot: tables 0031, package
+    `apps/api/app/autotrade/`, routes `/autotrade/*`, page `/autotrade`,
+    runner on by default (paper brokers only, human approval per bot).
+    Scans the intraday setups with the backtest engine's own context,
+    ranks by score, opens within the operator's limits, manages
+    stop / trailing stop / take profit / trailing take profit, flat at
+    session end, per-setup learning loop with visible demotions. Verified
+    against the rebuilt local API: a live Longbridge-fed scan found and
+    correctly declined a short `sweep_mss` signal in pre-market.
+  - **82** Administration gains Emergency stop (D039) and Load market
+    data (D070) panels; `docs/USER_GUIDE.md` documents the twelve
+    operator flows against the controls that exist.
+  - Not built, stated: live-broker bots, shorts, any broker adapter
+    beyond paper + Longbridge, streaming quotes. The setups the bot runs
+    measured negative on real data (D095) — the bot is machinery for
+    running them on paper, not a claim that they pay.
+
 - Phase 74: the Markets terminal — live charts, watchlist, order book and
   session levels (2026-09-16, D092). The TradingView-shaped surface the
   brief asked for, built on THIS platform's own bars rather than an
