@@ -76,8 +76,9 @@ async def test_target_becomes_owner_with_every_permission_and_every_broker():
     async with db_session() as session, users_and_broker(session) as (ids, emails):
         target_id, other_id, broker_id = ids
         target_email, other_email = emails
+        # Flushed, never committed: `demote_others` would otherwise strip
+        # admin from every real admin account in the shared dev database.
         report = await grant_owner(session, email=target_email.upper(), demote_others=True)
-        await session.commit()
 
         assert report.found
         target = (await session.execute(select(User).where(User.id == target_id))).scalar_one()
@@ -102,16 +103,17 @@ async def test_target_becomes_owner_with_every_permission_and_every_broker():
         ).scalar_one()
         assert other_role.name == TRADER_ROLE
         assert Permission.ADMIN.value not in other_role.permissions
-        assert report.demoted == [other_email]
+        assert other_email in report.demoted
+        await session.rollback()
 
 
 @pytest.mark.asyncio
 async def test_running_twice_changes_nothing_the_second_time():
     async with db_session() as session, users_and_broker(session) as (_ids, emails):
         first = await grant_owner(session, email=emails[0], demote_others=True)
-        await session.commit()
         assert first.changed
+        # Same transaction, so the second call sees the first's flushed state.
         second = await grant_owner(session, email=emails[0], demote_others=True)
-        await session.commit()
         assert not second.changed
         assert second.demoted == []
+        await session.rollback()
