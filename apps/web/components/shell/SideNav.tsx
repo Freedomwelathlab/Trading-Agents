@@ -21,6 +21,7 @@ type Item = {
     | "/strategies"
     | "/strategies/history"
     | "/strategies/leaderboard"
+    | "/autotrade"
     | "/admin";
   label: string;
   icon: React.ReactNode;
@@ -141,12 +142,31 @@ function IconShield() {
   );
 }
 
+function IconBot() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4 shrink-0"
+      aria-hidden="true"
+    >
+      <rect x="4" y="8" width="16" height="11" rx="2.5" />
+      <path d="M12 8V4.5M9 13h.01M15 13h.01M9 16.5h6" />
+    </svg>
+  );
+}
+
 const ITEMS: Item[] = [
   { href: "/dashboard", label: "Trading desk", icon: <IconTerminal /> },
   { href: "/markets", label: "Markets", icon: <IconCandles /> },
   { href: "/strategies", label: "Strategy Lab", icon: <IconFlask /> },
   { href: "/strategies/history", label: "Backtest history", icon: <IconClock /> },
   { href: "/strategies/leaderboard", label: "Leaderboard", icon: <IconTrophy /> },
+  { href: "/autotrade", label: "Autotrade", icon: <IconBot /> },
   { href: "/admin", label: "Administration", icon: <IconShield /> },
 ];
 

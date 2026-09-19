@@ -425,9 +425,17 @@ async def run_bot_cycle(
         )
 
     store = MarketDataStore(session)
+    paper = await load_paper_broker(
+        session, bot.broker_id, default_starting_cash=settings.paper_broker_starting_cash
+    )
+    # Refresh the bot's own symbols AND anything else the broker holds (a
+    # position opened by hand on the same broker): the risk engine values
+    # the whole account before it approves an order, and the honest
+    # alternative to fetching a held symbol's bar is refusing the cycle.
+    held_extra = [s for s in paper.positions if s not in bot.symbols]
     await _refresh_bars(
-        store, bar_router, bot.symbols, bar_interval=bot.bar_interval, as_of=now,
-        notes=outcome.notes,
+        store, bar_router, [*bot.symbols, *held_extra], bar_interval=bot.bar_interval,
+        as_of=now, notes=outcome.notes,
     )
 
     bars_by_symbol: dict[str, list] = {}
@@ -435,10 +443,6 @@ async def run_bot_cycle(
         bars_by_symbol[symbol] = await store.get_latest_bars(
             symbol, bar_interval=bot.bar_interval, count=BARS_TO_LOAD
         )
-
-    paper = await load_paper_broker(
-        session, bot.broker_id, default_starting_cash=settings.paper_broker_starting_cash
-    )
 
     # Marks for everything the broker holds (bot positions and anything
     # placed by hand on the same broker). A held symbol with no bar cannot

@@ -12,6 +12,7 @@ import {
   ChangeBrokerModeForm,
   CreateBrokerForm,
 } from "@/components/admin/BrokerModeAdmin";
+import { EmergencyStopPanel, MarketDataBackfillPanel } from "@/components/admin/SafetyAdmin";
 import AppShell from "@/components/shell/AppShell";
 import { Alert, SectionHeading } from "@/components/ui/primitives";
 import {
@@ -46,7 +47,7 @@ export default function AdminPage() {
   return (
     <AppShell
       title="Administration"
-      subtitle="Users, roles and broker grants."
+      subtitle="Safety switch, market data, users, roles and broker grants."
       statusStrip={
         <Alert tone="warn" role="status" className="max-w-3xl">
           Requires the <code className="font-mono">admin:manage</code> permission.
@@ -56,6 +57,16 @@ export default function AdminPage() {
       }
     >
       <div className="flex flex-col gap-5">
+        <SectionHeading note="read on every order path, never liquidates">
+          Safety
+        </SectionHeading>
+        <EmergencyStopPanel />
+
+        <SectionHeading note="charts, backtests and the bot need stored bars">
+          Market data
+        </SectionHeading>
+        <MarketDataBackfillPanel />
+
         <SectionHeading>Users</SectionHeading>
         <div className="grid gap-5 lg:grid-cols-2">
           <CreateUserForm />
