@@ -10525,3 +10525,82 @@ are multi-leg structures whose execution depends on Longbridge multi-leg
 capability that has not been verified, and building an order path we cannot
 submit would be the fabrication this project forbids. 22 tests; ruff/mypy
 clean.
+
+## D097 — Owner bootstrap from an environment variable (Phase 79)
+
+`OWNER_BOOTSTRAP_EMAIL` on the API, and `scripts/grant_owner.py`, share
+`apps/api/app/auth/bootstrap.py`: widen ONE existing account to an
+`owner` role holding every `Permission`, grant it every broker, and (with
+`--demote-others` / always at startup) move every other `admin:manage`
+holder to a `trader` role.
+
+**Why an env var.** The account that needs widening is by definition the
+one that cannot call `/admin/*` yet (D013), and the production operator
+has a Railway variables tab but no shell and no local copy of the
+database URL. An email is not a secret; setting it is the same act as
+setting any other variable, and the API applies it on the next start.
+
+**What it refuses.** It never creates an account: an unknown email is
+logged and nothing is written, so a typo — or anyone who can set env
+vars — can only widen an account that already exists, which is no more
+power than they already hold over the database. It rewrites only the two
+roles it owns (`owner`, `trader`), never a custom role. Idempotent.
+
+Live PERMISSION is not live EXECUTION: the three execution gates
+(`TRADING_MODE`, `LIVE_TRADING_ENABLED`,
+`STRATEGY_LIVE_AUTO_EXECUTION_ENABLED`) are untouched.
+
+## D098 — The Autotrade Bot (Phase 81/82)
+
+An operator-configured intraday robot: symbols (from a watchlist), market
+phase, positions open at once, trades per day, capital per trade,
+strategy mode, stop-loss / trailing stop, take-profit / trailing take
+profit, news blackout. Tables `autotrade_bots`, `autotrade_bot_runs`,
+`autotrade_bot_trades` (migration 0031); package `apps/api/app/autotrade/`;
+routes `/autotrade/*`; page `/autotrade`.
+
+**Why not a strategy deployment.** A deployment runs one closed-vocabulary
+definition on daily bars, long/flat, sized by that definition. The bot
+runs the *intraday setup detectors* on 5-minute bars across many symbols,
+ranks signals, and manages a bracket per position every cycle. Only the
+order path is shared — `submit_trade_and_record`, unchanged. Everything
+above it is different, so it is its own subsystem rather than nullable
+columns on the deployment tables.
+
+**The scanner reuses the backtest's context verbatim.** Session levels,
+swings, VWAP, indicator windows and the detector registry come from
+`intraday_engine.py` / `setups.py`, so the live bot cannot fire on a
+signal the backtest could not, and D095's measurements apply to it
+unchanged. That is the point: those measurements are **negative**
+(composite t = −3.32 over 124 real sessions), and the bot is machinery
+for running them on paper and reading its own numbers, not a claim that
+they pay.
+
+**What "learning" means here, exactly.** `learning.py` computes per-setup
+count / win rate / expectancy-R / total-R over the bot's own closed
+trades; in `auto` mode a setup with ≥ 20 trades and expectancy < −0.10R
+is demoted (not run) until its numbers recover. Nothing tunes a
+detector's parameters: a loop that re-fit detectors to the last few dozen
+trades would be D090's overfitting machine at a sample size where noise
+dominates. Every demotion is visible on the run row (`setups_active`).
+
+**Refusals are typed.** Each cycle writes exactly one run row whose
+status says why nothing happened when nothing did: not active, emergency
+stop, market phase closed, no vendor (`NOT_CONFIGURED`, never a trade on
+stale bars), live broker. A held symbol that cannot be marked fails the
+cycle rather than being priced from memory.
+
+**Scope stated, not implied.** Paper brokers only — a live broker gets
+`skipped_live_not_supported` before any market data or order path is
+touched; D087's separately-armed live path is not reachable from here.
+Long only (the paper broker cannot hold a short). Flat by the end of the
+traded phase. `Stop` never liquidates (same reasoning as D087's
+breakers). The runner defaults ON — a departure from the other loops,
+justified by where the gate sits: a bot cannot act without a person
+approving it, and with no vendor the loop writes nothing.
+
+**Also in this phase (82).** Emergency stop (D039) and market-data
+backfill (D070) gain admin panels; both had existed only as endpoints.
+The Markets watchlist rail was reading `payload.items` for a response
+that carries `watchlists` / `quotes` and had never rendered — fixed, and
+the watchlist now lives in the left rail on every page.

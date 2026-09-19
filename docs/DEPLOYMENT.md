@@ -60,7 +60,23 @@ as locally.
 
 ---
 
-## 3. Create the first production admin
+## 3. Make your account the owner (existing account)
+
+If you already sign in but see `Missing required permission` errors, the
+account exists with a narrow role. Set ONE more variable on Railway →
+`Trading-Agents` → **Variables**:
+
+    OWNER_BOOTSTRAP_EMAIL=you@example.com
+
+On the next deploy the API gives that account every permission and every
+broker, and removes `admin:manage` from every other account (D097). It
+never creates an account and is safe to leave set. Sign out and back in.
+
+The same thing from a shell: `python scripts/grant_owner.py --email
+you@example.com --demote-others` with `DATABASE_URL` pointed at the
+Railway Postgres.
+
+## 3b. Create the first production admin (empty database)
 
 Production has no public registration. On a fresh production database,
 insert the first admin directly. `DATABASE_URL` is on Railway → service

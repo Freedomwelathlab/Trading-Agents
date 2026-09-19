@@ -2264,3 +2264,61 @@ which permissions the new account will therefore lack.
 `strategy:approve_live_deployment`. Off by default. It grants the
 PERMISSION only: `TRADING_MODE` and `LIVE_TRADING_ENABLED` gate execution
 independently and this script touches neither.
+
+---
+
+## Autotrade Bot — `/autotrade/*` (Phase 81, D098)
+
+All routes require authentication. `strategy:deploy` to create / pause /
+resume / stop / run; `strategy:approve_deployment` to approve; ownership
+(or `admin:manage`) on every read and action.
+
+### `GET /autotrade/setups`
+`{ "setups": ["candle_reversal", "ema_reversal", "orb_failure", "sweep_mss", "vwap_reversion"] }` — the registered intraday detectors.
+
+### `POST /autotrade/bots` → 201
+```json
+{
+  "name": "TQQQ intraday", "broker_id": "<paper broker uuid>",
+  "watchlist_id": "<uuid or null>", "symbols": ["TQQQ.US", "QQQ.US"],
+  "market_type": "regular | auto | pre_market | post_market",
+  "bar_interval": "5m",
+  "max_trades_per_session": 2, "max_trades_per_day": 4,
+  "capital_per_trade": "2500",
+  "strategy_mode": "auto | single | multi", "setups": [], "min_score": 3,
+  "stop_loss_mode": "auto | max", "stop_loss_max_pct": "1.5",
+  "trailing_stop_pct": "1", "take_profit_mode": "auto | min",
+  "take_profit_min_pct": null, "trailing_take_profit_pct": "0.5",
+  "news_blackout_minutes": 30
+}
+```
+Empty `symbols` with a `watchlist_id` snapshots every symbol on that list.
+Percentages are percent figures (1.5 = 1.5%). Refusals carry a code
+prefix in `detail`: `NO_BROKER_GRANT` (403), `NO_SUCH_BROKER` /
+`NO_SUCH_WATCHLIST` (404), `BAD_LIMITS`, `STOP_MAX_REQUIRED`,
+`TP_MIN_REQUIRED`, `UNKNOWN_SETUP`, `SINGLE_MEANS_ONE`, `NO_SYMBOLS`,
+`BAD_PERCENT` (400). The bot is created `pending_approval`.
+
+### `GET /autotrade/bots`, `GET /autotrade/bots/{id}`
+The caller's bots / one bot. Every numeric field is a JSON string.
+
+### `POST /autotrade/bots/{id}/approve | pause | resume | stop`
+Lifecycle. `pause` takes `{ "reason": "..." }`. Wrong-state transitions
+are 409 (`NOT_PENDING_APPROVAL`, `NOT_ACTIVE`, `NOT_PAUSED`,
+`ALREADY_STOPPED`). `stop` is terminal and never liquidates.
+
+### `POST /autotrade/bots/{id}/run`
+One cycle now, under the runner's lock, writing the same run row the
+scheduled loop writes. Response:
+`{ status: "ran" | "skipped_lock_held" | "skipped_not_configured", detail, run_status, run_detail, symbols_scanned, signals_found, trades_opened, trades_closed }`.
+
+### `GET /autotrade/bots/{id}/runs?limit&offset`
+`{ runs: [{ id, status, started_at, completed_at, symbols_scanned, signals_found, signals_skipped, trades_opened, trades_closed, setups_active, detail }] }`.
+`status` ∈ `succeeded | failed | skipped_not_active | skipped_emergency_stop | skipped_market_closed | skipped_lock_held | skipped_not_configured | skipped_live_not_supported`.
+
+### `GET /autotrade/bots/{id}/trades?limit&offset`
+`{ trades: [{ id, symbol, session_date, setup_name, score, evidence, quantity, entry_price, initial_stop_price, stop_price, take_profit_price, peak_price, take_profit_armed, opened_at, closed_at, exit_price, exit_reason, realized_pnl, r_multiple, entry_order_id, exit_order_id }] }`.
+`exit_reason` ∈ `stop_loss | trailing_stop | take_profit | trailing_take_profit | session_end | operator`.
+
+### `GET /autotrade/bots/{id}/stats`
+`{ bot_id, strategy_mode, configured_setups, active_setups, setups: [{ setup_name, trades, wins, win_rate, expectancy_r, total_r, total_pnl, demoted }], closed_trades, total_r, total_pnl }` — the learning loop's inputs and its verdict.
