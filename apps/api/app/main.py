@@ -56,6 +56,7 @@ from apps.api.app.api.routes.walk_forward import (
     runs_router as walk_forward_runs_router,
 )
 from apps.api.app.api.routes.watchlists import router as watchlists_router
+from apps.api.app.auth.bootstrap import grant_owner
 from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.auth.routes.password_reset import router as password_reset_router
 from apps.api.app.auth.routes.session import router as session_router
@@ -126,6 +127,26 @@ async def lifespan(app: FastAPI):
         equity_provider=build_longbridge_bar_backfill_provider(settings),
         crypto_provider=build_coinbase_bar_provider(),
     )
+
+    # Phase 79 (D097): owner bootstrap from env. Runs before any scheduler
+    # so the operator's first request after a deploy already carries the
+    # widened role. Idempotent; a missing account is logged, never created.
+    if settings.owner_bootstrap_email:
+        async with get_session_factory()() as session:
+            report = await grant_owner(
+                session, email=settings.owner_bootstrap_email, demote_others=True
+            )
+            if not report.found:
+                logger.warning("owner_bootstrap_no_such_account", email=report.email)
+            else:
+                await session.commit()
+                logger.info(
+                    "owner_bootstrap_applied",
+                    email=report.email,
+                    changed=report.changed,
+                    brokers_granted=len(report.brokers_granted),
+                    demoted=len(report.demoted),
+                )
 
     # Phase 43 (D058): the LIVE broker adapter. Returns None - and
     # therefore constructs no trade context and opens no connection -

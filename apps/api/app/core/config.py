@@ -498,6 +498,14 @@ class Settings(BaseSettings):
     them. This mirrors docs/TRADING_SAFETY.md's standing pattern of
     auditing before acting."""
 
+    owner_bootstrap_email: str | None = None
+    """Phase 79 (D097). If set, startup widens this EXISTING account to the
+    `owner` role (every permission) and grants it every broker, then demotes
+    every other `admin:manage` holder to `trader`. It never creates an
+    account. Exists for deployments where the operator can set an env var
+    but has no shell (Railway); the same code path is
+    `scripts/grant_owner.py`. Idempotent — safe to leave set."""
+
     longport_app_key: str | None = None
     longport_app_secret: str | None = None
     longport_access_token: str | None = None
