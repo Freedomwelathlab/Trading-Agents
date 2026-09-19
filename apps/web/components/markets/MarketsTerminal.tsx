@@ -280,15 +280,15 @@ function WatchlistRail({
   const [activeList, setActiveList] = useState<string | null>(null);
 
   const classifyLists = useMemo(
-    () => classifyWithAbsences<{ items: WatchlistSummary[] }>([404], "No watchlists."),
+    () => classifyWithAbsences<{ watchlists: WatchlistSummary[] }>([404], "No watchlists."),
     [],
   );
-  const { data: listsPayload } = useKeyedFetch<{ items: WatchlistSummary[] }>({
+  const { data: listsPayload } = useKeyedFetch<{ watchlists: WatchlistSummary[] }>({
     key: "watchlists",
     url: "/api/watchlists",
     classify: classifyLists,
   });
-  const lists = listsPayload?.items ?? null;
+  const lists = listsPayload?.watchlists ?? null;
 
   // The selected list is DERIVED from what came back, with the explicit
   // choice taking precedence when it is still present. Storing the default
@@ -300,16 +300,16 @@ function WatchlistRail({
     null;
 
   const classifyQuotes = useMemo(
-    () => classifyWithAbsences<{ items: WatchlistQuote[] }>([404], "No quotes."),
+    () => classifyWithAbsences<{ quotes: WatchlistQuote[] }>([404], "No quotes."),
     [],
   );
-  const { data: quotesPayload } = useKeyedFetch<{ items: WatchlistQuote[] }>({
+  const { data: quotesPayload } = useKeyedFetch<{ quotes: WatchlistQuote[] }>({
     key: selected ?? "none",
     url: selected ? `/api/watchlists/${selected}/quotes` : "",
     classify: classifyQuotes,
     enabled: selected !== null,
   });
-  const quotes = quotesPayload?.items ?? [];
+  const quotes = quotesPayload?.quotes ?? [];
 
   if (lists !== null && lists.length === 0) {
     return (

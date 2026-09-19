@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import SideNav from "@/components/shell/SideNav";
+import SideWatchlist from "@/components/shell/SideWatchlist";
 import SessionStatus from "@/components/SessionStatus";
 import LogoutButton from "@/components/LogoutButton";
 
@@ -43,6 +44,7 @@ export default function AppShell({
       <aside className="flex shrink-0 flex-col gap-6 border-b border-line bg-surface px-4 py-4 lg:h-screen lg:w-60 lg:border-b-0 lg:border-r lg:sticky lg:top-0 lg:py-6">
         <BrandMark />
         <SideNav />
+        <SideWatchlist />
         <div className="mt-auto flex flex-col gap-3 border-t border-line pt-4">
           <SessionStatus />
           <LogoutButton />
