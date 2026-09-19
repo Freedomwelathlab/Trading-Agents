@@ -464,6 +464,24 @@ class Settings(BaseSettings):
     only, not a fabricated exchange calendar; disable to run the cycle every
     interval regardless of day."""
 
+    autotrade_runner_enabled: bool = True
+    """Phase 81 (D098): the Autotrade Bot loop. Defaults TRUE — a departure
+    from the other background loops, justified by where the gate sits: a
+    bot cannot act until a person creates AND approves it, and the runner
+    runs on PAPER brokers only (a live broker is refused with its own run
+    status before any market data or order path is touched). With no
+    approved bot the loop does nothing; with no market-data vendor it logs
+    and writes nothing. Set false to switch the loop off entirely."""
+
+    autotrade_runner_interval_seconds: int = 60
+    """Seconds between bot cycles. The bot trades 5-minute bars and manages
+    stops every cycle, so a minute is the useful granularity; a much
+    shorter interval only re-reads the same bar."""
+
+    autotrade_runner_cycle_lock_enabled: bool = True
+    """Same cross-worker advisory-lock discipline as the deployment runner,
+    on the bot runner's own key."""
+
     strategy_drift_min_round_trips: int = 10
     """Phase 66 (D084): a deployment's own closed round trips must reach
     this count before `evaluate_deployment_drift` will render a verdict at
@@ -769,6 +787,10 @@ class Settings(BaseSettings):
                 "STRATEGY_RUNNER_INTERVAL_SECONDS must be positive. A zero or negative "
                 "interval would busy-loop the deployment runner against the database and "
                 "the paper broker (Phase 63, D081)."
+            )
+        if self.autotrade_runner_interval_seconds <= 0:
+            raise ValueError(
+                "AUTOTRADE_RUNNER_INTERVAL_SECONDS must be positive (Phase 81, D098)."
             )
         if self.strategy_drift_min_round_trips <= 0:
             raise ValueError(

@@ -484,6 +484,13 @@ class Order(Base):
     docstring already anticipated an order-creation path with no
     authenticated human behind it)."""
 
+    autotrade_bot_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("autotrade_bot_runs.id", ondelete="SET NULL")
+    )
+    """Phase 81 (migration 0031). Set when an Autotrade Bot cycle placed
+    this order - same attribution idea as `deployment_run_id`, for the
+    other automated order source."""
+
 
 class Fill(Base):
     """One row per fill. A 1:1 relationship with Order today because the
@@ -2116,6 +2123,230 @@ class StrategyImprovementStep(Base):
     """Set only for an ACCEPTED candidate: a search persists a new
     `StrategyVersion` for a winner and for nothing else, so a rejected
     variant leaves no strategy behind to be deployed by mistake."""
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 81 (D098): the Autotrade Bot
+# ---------------------------------------------------------------------------
+
+
+class AutotradeBotStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy/JSON interop)
+    """Same four-state lifecycle as `StrategyDeploymentStatus`, for the same
+    reason: a bot that places orders on a timer must pass the mandatory
+    human gate first (`PENDING_APPROVAL` -> `ACTIVE` only by an explicit
+    approval action), can be stepped out of the rotation reversibly
+    (`PAUSED`), and ends terminally (`STOPPED`)."""
+
+    PENDING_APPROVAL = "pending_approval"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    STOPPED = "stopped"
+
+
+class AutotradeBotRunStatus(str, enum.Enum):  # noqa: UP042
+    """Why one bot cycle did or did not act. Exhaustive so "ran and found
+    nothing" is never confused with "did not run"."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED_NOT_ACTIVE = "skipped_not_active"
+    SKIPPED_EMERGENCY_STOP = "skipped_emergency_stop"
+    SKIPPED_MARKET_CLOSED = "skipped_market_closed"
+    SKIPPED_LOCK_HELD = "skipped_lock_held"
+    SKIPPED_NOT_CONFIGURED = "skipped_not_configured"
+    """No market-data vendor is wired: the bot cannot see prices, so it does
+    nothing and says so, rather than trading on stale stored bars."""
+    SKIPPED_LIVE_NOT_SUPPORTED = "skipped_live_not_supported"
+    """The bot's broker is `kind=live`. v1 of the bot runs on PAPER brokers
+    only; the live path is a separate, separately-gated build (D087 for
+    strategy deployments) and is deliberately NOT reachable from here."""
+
+
+class AutotradeExitReason(str, enum.Enum):  # noqa: UP042
+    STOP_LOSS = "stop_loss"
+    TRAILING_STOP = "trailing_stop"
+    TAKE_PROFIT = "take_profit"
+    TRAILING_TAKE_PROFIT = "trailing_take_profit"
+    SESSION_END = "session_end"
+    OPERATOR = "operator"
+
+
+def _str_enum(python_enum: type[enum.Enum], length: int) -> Enum:
+    """A Python enum stored as a plain VARCHAR of its `.value` — no Postgres
+    enum type, so a new member never needs an `ALTER TYPE` migration."""
+    return Enum(
+        python_enum,
+        native_enum=False,
+        length=length,
+        values_callable=lambda e: [m.value for m in e],
+    )
+
+
+class AutotradeBot(Base):
+    """One operator-configured intraday robot (Phase 81, migration 0031).
+
+    The operator fills the inputs; the bot scans the symbols with the
+    intraday setups (`backtesting/setups.py`), ranks the signals by score,
+    opens up to the allowed number of positions through the ONE sanctioned
+    RISK -> PORTFOLIO -> BROKER path, then manages each open position's
+    stop / trailing stop / take profit / trailing take profit every cycle,
+    and closes everything at session end.
+    """
+
+    __tablename__ = "autotrade_bots"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    broker_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[AutotradeBotStatus] = mapped_column(
+        _str_enum(AutotradeBotStatus, 24),
+        nullable=False,
+        default=AutotradeBotStatus.PENDING_APPROVAL,
+    )
+
+    # --- operator inputs -------------------------------------------------
+    watchlist_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("watchlists.id", ondelete="SET NULL")
+    )
+    symbols: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False)
+    """Snapshot of the symbols at creation. `watchlist_id` records where
+    they came from; the bot trades this list, not the live watchlist, so a
+    symbol added to the list mid-session is not silently traded."""
+    market_type: Mapped[str] = mapped_column(String(16), nullable=False, default="regular")
+    """auto | regular | pre_market | post_market. `auto` means any session
+    phase the vendor serves bars for."""
+    bar_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="5m")
+    max_trades_per_session: Mapped[int] = mapped_column(Integer, nullable=False)
+    """Maximum positions OPEN at once ("trades in live")."""
+    max_trades_per_day: Mapped[int] = mapped_column(Integer, nullable=False)
+    capital_per_trade: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    strategy_mode: Mapped[str] = mapped_column(String(8), nullable=False, default="auto")
+    """auto | single | multi. `auto` runs every registered setup and lets
+    the learning loop demote the ones that measure negative on this bot's
+    own closed trades; `single`/`multi` run exactly `setups`."""
+    setups: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False)
+    min_score: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    stop_loss_mode: Mapped[str] = mapped_column(String(8), nullable=False, default="auto")
+    """auto = the setup's own structural stop; max = the tighter of the
+    structural stop and `stop_loss_max_pct` below entry."""
+    stop_loss_max_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    trailing_stop_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    take_profit_mode: Mapped[str] = mapped_column(String(8), nullable=False, default="auto")
+    """auto = 2R from the entry (the playbook's TP2); min = at least
+    `take_profit_min_pct` above entry."""
+    take_profit_min_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    trailing_take_profit_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    """Once price has reached the take-profit level, give back at most this
+    much from the peak before exiting — lets a winner run past the target."""
+    news_blackout_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    """§12 event filter: no NEW entry on a symbol with a headline inside
+    this window. 0 disables the check."""
+
+    # --- lifecycle -------------------------------------------------------
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_reason: Mapped[str | None] = mapped_column(String(500))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AutotradeBotRun(Base):
+    """One cycle of one bot: what it scanned, what it did, or why it did
+    nothing. Append-only, one row per cycle, same posture as
+    `strategy_deployment_runs`."""
+
+    __tablename__ = "autotrade_bot_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    bot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("autotrade_bots.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[AutotradeBotRunStatus] = mapped_column(
+        _str_enum(AutotradeBotRunStatus, 40), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    symbols_scanned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    signals_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    signals_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trades_opened: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trades_closed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    setups_active: Mapped[list[str]] = mapped_column(
+        ARRAY(String(32)), nullable=False, server_default="{}"
+    )
+    """Which setups were allowed to fire this cycle, AFTER the learning loop
+    applied its demotions — so a reader can see the loop acting."""
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AutotradeBotTrade(Base):
+    """One position the bot opened: entry, the bracket it is managed
+    under, its trailing state, and — once closed — the exit and outcome.
+    Entry/exit orders are ordinary `orders` rows placed through the OMS;
+    this row is the bot's own ledger linking them."""
+
+    __tablename__ = "autotrade_bot_trades"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    bot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("autotrade_bots.id", ondelete="CASCADE"), nullable=False
+    )
+    open_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("autotrade_bot_runs.id", ondelete="SET NULL")
+    )
+    close_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("autotrade_bot_runs.id", ondelete="SET NULL")
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    setup_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    entry_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("orders.id", ondelete="SET NULL")
+    )
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    initial_stop_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    stop_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    """Current stop — ratchets up under a trailing stop, never down."""
+    take_profit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    peak_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    """Highest close seen since entry; the reference for both trails."""
+    take_profit_armed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    """True once price has touched the take-profit level under a trailing
+    take profit — from then on the exit is the trail from the peak."""
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("orders.id", ondelete="SET NULL")
+    )
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    exit_reason: Mapped[str | None] = mapped_column(String(32))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    r_multiple: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

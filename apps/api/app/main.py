@@ -9,6 +9,7 @@ from apps.api.app.agents.strategy_research_assistant import build_strategy_resea
 from apps.api.app.agents.technical_analyst import build_technical_analyst
 from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
+from apps.api.app.api.routes.autotrade import router as autotrade_router
 from apps.api.app.api.routes.backtests import router as backtests_router
 from apps.api.app.api.routes.brokers import router as brokers_router
 from apps.api.app.api.routes.deployments import (
@@ -60,6 +61,10 @@ from apps.api.app.auth.bootstrap import grant_owner
 from apps.api.app.auth.routes.login import router as auth_router
 from apps.api.app.auth.routes.password_reset import router as password_reset_router
 from apps.api.app.auth.routes.session import router as session_router
+from apps.api.app.autotrade.runner import (
+    AutotradeBotRunner,
+    build_autotrade_runner_cycle_lock,
+)
 from apps.api.app.core.config import get_settings
 from apps.api.app.core.logging import configure_logging, get_logger
 from apps.api.app.core.request_id import RequestIDMiddleware
@@ -272,6 +277,26 @@ async def lifespan(app: FastAPI):
         deployment_runner.start()
         app.state.strategy_deployment_runner = deployment_runner
 
+    # Phase 81 (D098): the Autotrade Bot runner - the fourth loop, on its
+    # own advisory-lock objid. Enabled by default because its gate is on
+    # the bot (human approval per bot) rather than on the loop, and because
+    # it runs on PAPER brokers only; with no approved bot or no vendor it
+    # does nothing.
+    app.state.autotrade_bot_runner = None
+    if settings.autotrade_runner_enabled:
+        bot_runner = AutotradeBotRunner(
+            get_session_factory(),
+            settings=settings,
+            interval_seconds=settings.autotrade_runner_interval_seconds,
+            bar_router=app.state.market_data_bar_backfill_provider,
+            news_provider=app.state.news_provider,
+            cycle_lock=build_autotrade_runner_cycle_lock(
+                enabled=settings.autotrade_runner_cycle_lock_enabled
+            ),
+        )
+        bot_runner.start()
+        app.state.autotrade_bot_runner = bot_runner
+
     logger.info(
         "trading_os_startup",
         trading_mode=settings.trading_mode.value,
@@ -364,6 +389,8 @@ async def lifespan(app: FastAPI):
     # still mid-way through committing a paper order when this returns.
     if app.state.strategy_deployment_runner is not None:
         await app.state.strategy_deployment_runner.stop()
+    if app.state.autotrade_bot_runner is not None:
+        await app.state.autotrade_bot_runner.stop()
 
     # The engine created at import time in apps/api/app/db/base.py owns a
     # live asyncpg connection pool. Process exit reclaims those sockets
@@ -412,6 +439,7 @@ app.include_router(brokers_router)
 # market-data router it shares a resolution path with rather than with the
 # /brokers routes it shares no scoping rule with.
 app.include_router(watchlists_router)
+app.include_router(autotrade_router)
 # Phase 54: user-scoped like the watchlists router above (owned by one
 # user, never gated on a BrokerGrant), so it is registered next to it
 # rather than with the broker-scoped routers - the difference from
