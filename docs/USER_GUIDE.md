@@ -41,6 +41,13 @@ The alternative to `OWNER_BOOTSTRAP_EMAIL` is running
 
 ---
 
+## 0b. Sessions (Phase 84)
+
+You are signed out after **15 minutes with no input**. While you are
+actually using the screen — mouse, keyboard or scroll — the app renews
+your session silently, so an active screen never logs you out. A hard
+**12-hour** ceiling runs from each sign-in regardless of activity.
+
 ## 1. How to create an account
 
 There is **no public sign-up** — accounts are created by an admin.
@@ -117,9 +124,24 @@ Left rail → **Markets** (or click a symbol in the rail watchlist).
 - **Order book** — Longbridge depth. US symbols on an LV1 account come
   back empty (a vendor entitlement, not a bug); HK symbols show a ladder.
 - **Session levels** panel — the numbers behind the chart lines.
+- **Setup signals** — tick *Setup signals* under the chart to draw B/S
+  markers for the last 5 sessions, with a **score table** above the chart.
+  Hover a row to see why that signal fired (the detector's own evidence),
+  its proposed entry and its stop. Read `docs/RESEARCH_5M.md` before
+  trusting any of them: every one of these setups measured at or below
+  zero expectancy over 128 sessions. They are instrumentation.
 - Trading desk → **Quote lookup** for a one-off quote, and the **Agent
   trade** panel gives you the LLM analysts' read (technical, fundamental,
   news) as a *proposal* that still goes through the risk engine.
+
+### Managing watchlists (left rail)
+
+- **✎** renames the active list in place.
+- **+** creates another list; the rail's dropdown switches between them.
+- **🗑** deletes the active list — only when it is empty, so a list is
+  never lost with its symbols in it.
+- Drag the bottom-right corner of the symbol list to make it **taller**
+  (up to 70% of the window) when you follow many tickers.
 
 ## 5. How to find opportunity tickers across a pool
 
@@ -217,6 +239,22 @@ via the Administration page or `scripts/backfill_prod.py`).
 The intraday setups are backtested by `scripts`/`intraday_engine.py`
 today, not from the UI (`docs/AUDIT.md` gap B) — the numbers in §8 are
 from that engine.
+
+## 9b. Limit orders and cancelling (Phase 84)
+
+The trade form has an **Order type** of `market` or `limit`.
+
+- **Paper broker.** A limit only fills if it is *marketable* (a buy at or
+  above the current price, a sell at or below) and it fills at the
+  market — which is what a marketable limit gets at a real venue. A
+  non-marketable limit is refused with `409 ORDER_WOULD_REST`, because
+  this simulator has no order book to rest it in and a pretend later fill
+  would be fabricated.
+- **Live broker.** A real limit order goes to Longbridge and may rest
+  unfilled. It is recorded `submitted_unconfirmed`, and **Trade history**
+  shows a **Cancel** button on it. Cancel asks the venue and records the
+  venue's answer — a cancel that races a fill is recorded as the fill,
+  never as the cancel you wanted.
 
 ## 10. How to reduce or exit a position
 
