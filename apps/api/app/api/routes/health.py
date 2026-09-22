@@ -97,6 +97,23 @@ async def health() -> dict[str, Any]:
             if settings.live_order_reconciler_enabled
             else "DISABLED"
         ),
+        # Phase 83: whether the equity market-data credential trio is
+        # present. A boolean read of Settings — no value, no I/O — so an
+        # operator can tell "vendor not wired" from "vendor wired, market
+        # closed" without a session. The same all-or-nothing rule the
+        # provider builders apply (D015).
+        "market_data": (
+            "configured"
+            if settings.longport_app_key
+            and settings.longport_app_secret
+            and settings.longport_access_token
+            else "NOT_CONFIGURED"
+        ),
+        "autotrade_runner": (
+            f"enabled:{settings.autotrade_runner_interval_seconds}s"
+            if settings.autotrade_runner_enabled
+            else "DISABLED"
+        ),
     }
 
 
