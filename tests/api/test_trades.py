@@ -464,9 +464,18 @@ async def test_emergency_stop_blocks_the_trade():
         paper_broker_row(session) as broker_id,
         broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
+        # D039: once ANY row exists in emergency_stop_events the persisted
+        # state is authoritative and `settings.emergency_stop_active` is
+        # only a bootstrap default. A shared dev database always has rows
+        # by the time this runs, so flip the real switch rather than the
+        # default that is no longer consulted.
+        from apps.api.app.safety.emergency_stop import set_emergency_stop
+
         settings = get_settings()
         original = settings.emergency_stop_active
         settings.emergency_stop_active = True
+        await set_emergency_stop(session, active=True, reason="test", actor_user_id=None)
+        await session.commit()
         try:
             async with api_client() as client:
                 token = await _get_token(client, email)
@@ -483,6 +492,10 @@ async def test_emergency_stop_blocks_the_trade():
                 )
         finally:
             settings.emergency_stop_active = original
+            await set_emergency_stop(
+                session, active=False, reason="test teardown", actor_user_id=None
+            )
+            await session.commit()
 
         assert response.status_code == 200
         body = response.json()

@@ -415,7 +415,15 @@ async def test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicat
     make a real LLM call. That is the whole fix for the flake this test
     was carrying: D024's duplicate window is wall-clock, and a slow real
     provider used to stretch the gap between the two POSTs past it, making
-    the second come back `filled` instead of `rejected`."""
+    the second come back `filled` instead of `rejected`.
+
+    Phase 85: the same flake returned under a loaded full-suite run, where
+    two POSTs through the real ASGI stack can be more than five wall-clock
+    seconds apart even with no network in the path. Stubbing the analysts
+    removed one source of delay but not the dependency on wall-clock
+    speed, so the window itself is widened here. What is under test is
+    that the agent route CONSULTS the duplicate check, not how many
+    seconds D024 happens to use in production."""
     from apps.api.app.marketdata.router import MarketDataRouter
 
     fake_agent = TraderAgent(
@@ -432,6 +440,11 @@ async def test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicat
         paper_broker_row(session) as broker_id,
         broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
+        from apps.api.app.core.config import get_settings
+
+        settings = get_settings()
+        original_window = settings.risk_duplicate_order_window_seconds
+        settings.risk_duplicate_order_window_seconds = 300
         async with api_client() as client:
             app.dependency_overrides[get_trader_agent] = lambda: fake_agent
             app.dependency_overrides[get_market_data_router] = lambda: fake_market_data
@@ -448,6 +461,7 @@ async def test_an_identical_agent_trade_submitted_twice_is_blocked_as_a_duplicat
             finally:
                 del app.dependency_overrides[get_trader_agent]
                 del app.dependency_overrides[get_market_data_router]
+                settings.risk_duplicate_order_window_seconds = original_window
 
         assert first.status_code == 200
         assert first.json()["status"] == "filled"
