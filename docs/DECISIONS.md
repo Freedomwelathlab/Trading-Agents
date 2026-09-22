@@ -10604,3 +10604,42 @@ backfill (D070) gain admin panels; both had existed only as endpoints.
 The Markets watchlist rail was reading `payload.items` for a response
 that carries `watchlists` / `quotes` and had never rendered — fixed, and
 the watchlist now lives in the left rail on every page.
+
+## D099 — The learning loop, second pass (Phase 83)
+
+Three additions to D098's loop, chosen because each turns a number the
+bot already produces into something an operator can act on, and none of
+them re-fits a detector.
+
+**Adverse excursion.** `autotrade_bot_trades.trough_price` joins
+`peak_price`. Together they answer the question a stop-out on its own
+cannot: did the trade reach +1R and give it back (a management question)
+or go straight to the stop (an entry question)? Backfilled to the entry
+price for pre-existing rows — the honest value for a path that was not
+recorded.
+
+**Per-symbol demotion.** `active_setups_for_symbol` applies the D098
+demotion rule at (setup, symbol) granularity when that pair has reached
+the 20-trade floor, else falls back to the setup's overall verdict. A
+setup that loses on TQQQ and wins on QQQ is switched off on TQQQ only; a
+symbol with no history inherits the overall verdict rather than a blank
+slate. Explicit `single`/`multi` modes remain untouched by statistics.
+
+**The journal.** `autotrade_bot_insights` gets one row per bot per
+session, written by the engine on the cycle that ends the session (and
+for any older session still missing one). It holds the day's aggregate
+and `findings`: deterministic sentences, each carrying its sample size,
+produced only when a threshold is met — "62% of the 13 losing trades
+reached +1R before losing", "score-3 signals average −0.4R over 12
+trades while score-4+ average +0.5R over 15", "sweep_mss opened in the
+15:00 ET hour averages −0.5R over 6 trades", "58% of exits were
+session-end flats". **Findings are recorded, never applied.** The one
+automatic consequence in the whole loop is still setup demotion. A loop
+that raised `min_score` or tightened stops by itself from a few dozen
+trades would be optimising on noise (D090) with real orders as the cost
+of being wrong; a person reading the sentence with the numbers in view
+is the right decision-maker at these sample sizes.
+
+`GET /health` now reports `market_data: configured|NOT_CONFIGURED` and
+the autotrade runner state, so an operator can distinguish "vendor not
+wired" from "vendor wired, market closed" without a session.

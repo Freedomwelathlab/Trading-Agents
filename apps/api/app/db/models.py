@@ -2334,7 +2334,12 @@ class AutotradeBotTrade(Base):
     """Current stop — ratchets up under a trailing stop, never down."""
     take_profit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
     peak_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
-    """Highest close seen since entry; the reference for both trails."""
+    """Highest high seen since entry; the reference for both trails and
+    the trade's maximum favourable excursion."""
+    trough_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    """Lowest low seen since entry — maximum adverse excursion (Phase 83).
+    With `peak_price` this is what lets the learning loop ask whether a
+    stopped trade first went the right way."""
     take_profit_armed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     """True once price has touched the take-profit level under a trailing
     take profit — from then on the exit is the trail from the peak."""
@@ -2347,6 +2352,39 @@ class AutotradeBotTrade(Base):
     exit_reason: Mapped[str | None] = mapped_column(String(32))
     realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     r_multiple: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AutotradeBotInsight(Base):
+    """One session's lessons for one bot (Phase 83, D099, migration 0032).
+
+    Written by the engine once the session it describes has ended. The
+    aggregate is arithmetic on the day's closed trades; `findings` are
+    deterministic, thresholded sentences the operator reads and acts on
+    — the loop records them, it does not apply them."""
+
+    __tablename__ = "autotrade_bot_insights"
+    __table_args__ = (
+        UniqueConstraint("bot_id", "session_date", name="uq_autotrade_insight_bot_session"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    bot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("autotrade_bots.id", ondelete="CASCADE"), nullable=False
+    )
+    session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    trades: Mapped[int] = mapped_column(Integer, nullable=False)
+    wins: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_r: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    total_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    best_setup: Mapped[str | None] = mapped_column(String(32))
+    worst_setup: Mapped[str | None] = mapped_column(String(32))
+    findings: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    demoted_setups: Mapped[list[str]] = mapped_column(
+        ARRAY(String(32)), nullable=False, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

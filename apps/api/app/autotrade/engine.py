@@ -47,7 +47,14 @@ from apps.api.app.autotrade.brackets import (
     initial_bracket,
     manage,
 )
-from apps.api.app.autotrade.learning import active_setups, setup_stats
+from apps.api.app.autotrade.learning import (
+    active_setups,
+    active_setups_for_symbol,
+    closed_trades,
+    stats_by_setup,
+    stats_by_setup_symbol,
+    write_pending_insights,
+)
 from apps.api.app.autotrade.scanner import ScanHit, scan_latest_bar
 from apps.api.app.backtesting.brackets import BracketPlan
 from apps.api.app.core.config import Settings
@@ -238,6 +245,7 @@ async def _manage_open_trades(
         )
         trade.stop_price = decision.state.stop_price
         trade.peak_price = decision.state.peak_price
+        trade.trough_price = min(trade.trough_price, low)
         trade.take_profit_armed = decision.state.take_profit_armed
         if not decision.should_exit:
             continue
@@ -490,8 +498,10 @@ async def run_bot_cycle(
     )
 
     # 5. Scan.
-    stats = await setup_stats(session, bot.id)
-    setups = active_setups(list(bot.setups), strategy_mode=bot.strategy_mode, stats=stats)
+    history = await closed_trades(session, bot.id)
+    by_setup = stats_by_setup(history)
+    by_pair = stats_by_setup_symbol(history)
+    setups = active_setups(list(bot.setups), strategy_mode=bot.strategy_mode, stats=by_setup)
     outcome.setups_active = setups
 
     hits: list[ScanHit] = []
@@ -499,8 +509,14 @@ async def run_bot_cycle(
         if symbol in open_symbols:
             continue
         outcome.symbols_scanned += 1
+        # Phase 83: the per-symbol refinement — a setup demoted on THIS
+        # ticker's own evidence is skipped here even if fine elsewhere.
+        symbol_setups = active_setups_for_symbol(
+            list(bot.setups), strategy_mode=bot.strategy_mode, symbol=symbol,
+            by_setup=by_setup, by_pair=by_pair,
+        )
         scan = scan_latest_bar(
-            symbol, bars_by_symbol.get(symbol) or [], setups=setups,
+            symbol, bars_by_symbol.get(symbol) or [], setups=symbol_setups,
             market_type=bot.market_type, min_score=bot.min_score, plan=plan,
         )
         if scan.hit is None:
@@ -602,6 +618,7 @@ async def run_bot_cycle(
                 stop_price=bracket.stop_price,
                 take_profit_price=bracket.take_profit_price,
                 peak_price=fill.fill_price,
+                trough_price=fill.fill_price,
                 take_profit_armed=False,
                 opened_at=fill.filled_at,
             )
@@ -610,6 +627,24 @@ async def run_bot_cycle(
         allowance -= 1
 
     await save_paper_broker(session, bot.broker_id, paper)
+
+    # Phase 83: the journal. Sessions before today that still have no
+    # insight row get one now; today's is written on the cycle that ends
+    # the session (every position is flat by then, so the day is final).
+    ending_today = any(
+        bars_by_symbol.get(s) and session_ending(
+            bars_by_symbol[s][-1].ts, market_type=bot.market_type, bar_interval=bot.bar_interval
+        )
+        for s in bot.symbols
+    )
+    written = await write_pending_insights(
+        session, bot.id, min_score=bot.min_score, before=today,
+        include=today if ending_today else None,
+    )
+    if written:
+        outcome.notes.append(
+            "insights written for " + ", ".join(w.session_date.isoformat() for w in written)
+        )
     bot.last_evaluated_at = clock()
     detail = "; ".join(outcome.notes) if outcome.notes else None
     return _finish(run, outcome, AutotradeBotRunStatus.SUCCEEDED, detail, clock)

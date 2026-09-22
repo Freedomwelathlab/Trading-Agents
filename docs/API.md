@@ -2322,3 +2322,9 @@ scheduled loop writes. Response:
 
 ### `GET /autotrade/bots/{id}/stats`
 `{ bot_id, strategy_mode, configured_setups, active_setups, setups: [{ setup_name, trades, wins, win_rate, expectancy_r, total_r, total_pnl, demoted }], closed_trades, total_r, total_pnl }` — the learning loop's inputs and its verdict.
+
+### `GET /autotrade/bots/{id}/stats` (extended, Phase 83)
+Adds `by_symbol` and `by_hour` (same row shape as `setups`, with `symbol` / `hour` set) and per-row `avg_mfe_r` / `avg_mae_r` (mean best / worst excursion per trade, in R).
+
+### `GET /autotrade/bots/{id}/insights?limit`
+`{ insights: [{ id, session_date, trades, wins, total_r, total_pnl, best_setup, worst_setup, findings: [string], demoted_setups, created_at }] }` — the journal, newest first. Written by the engine after each session; findings are recorded, not applied (D099).

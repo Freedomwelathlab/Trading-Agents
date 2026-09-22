@@ -37,7 +37,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.auth.dependencies import get_current_user, require_permission
 from apps.api.app.auth.permissions import Permission
-from apps.api.app.autotrade.learning import active_setups, setup_stats
+from apps.api.app.autotrade.learning import (
+    active_setups,
+    closed_trades,
+    stats_by_setup,
+    stats_by_setup_hour,
+    stats_by_setup_symbol,
+)
 from apps.api.app.autotrade.runner import run_autotrade_cycle
 from apps.api.app.autotrade.service import (
     AutotradeError,
@@ -53,6 +59,7 @@ from apps.api.app.core.config import get_settings
 from apps.api.app.db.base import get_session, get_session_factory
 from apps.api.app.db.models import (
     AutotradeBot,
+    AutotradeBotInsight,
     AutotradeBotRun,
     AutotradeBotTrade,
     User,
@@ -204,6 +211,10 @@ class SetupStatsResponse(BaseModel):
     total_r: Decimal
     total_pnl: Decimal
     demoted: bool
+    symbol: str | None = None
+    hour: int | None = None
+    avg_mfe_r: Decimal | None = None
+    avg_mae_r: Decimal | None = None
 
 
 class BotStatsResponse(BaseModel):
@@ -212,9 +223,29 @@ class BotStatsResponse(BaseModel):
     configured_setups: list[str]
     active_setups: list[str]
     setups: list[SetupStatsResponse]
+    by_symbol: list[SetupStatsResponse]
+    by_hour: list[SetupStatsResponse]
     closed_trades: int
     total_r: Decimal
     total_pnl: Decimal
+
+
+class BotInsightResponse(BaseModel):
+    id: uuid.UUID
+    session_date: date
+    trades: int
+    wins: int
+    total_r: Decimal
+    total_pnl: Decimal
+    best_setup: str | None
+    worst_setup: str | None
+    findings: list[str]
+    demoted_setups: list[str]
+    created_at: datetime
+
+
+class ListBotInsightsResponse(BaseModel):
+    insights: list[BotInsightResponse]
 
 
 class RunNowResponse(BaseModel):
@@ -502,22 +533,59 @@ async def get_autotrade_bot_stats(
     session: AsyncSession = Depends(get_session),
 ) -> BotStatsResponse:
     bot = await _load_owned_bot(session, bot_id, current_user)
-    stats = await setup_stats(session, bot.id)
+    history = await closed_trades(session, bot.id)
+    stats = stats_by_setup(history)
     active = active_setups(list(bot.setups), strategy_mode=bot.strategy_mode, stats=stats)
+
+    def _row(s) -> SetupStatsResponse:
+        return SetupStatsResponse(
+            setup_name=s.setup_name, trades=s.trades, wins=s.wins, win_rate=s.win_rate,
+            expectancy_r=s.expectancy_r, total_r=s.total_r, total_pnl=s.total_pnl,
+            demoted=s.demoted, symbol=s.symbol, hour=s.hour,
+            avg_mfe_r=s.avg_mfe_r, avg_mae_r=s.avg_mae_r,
+        )
+
     return BotStatsResponse(
         bot_id=bot.id,
         strategy_mode=bot.strategy_mode,
         configured_setups=list(bot.setups),
         active_setups=active,
-        setups=[
-            SetupStatsResponse(
-                setup_name=s.setup_name, trades=s.trades, wins=s.wins, win_rate=s.win_rate,
-                expectancy_r=s.expectancy_r, total_r=s.total_r, total_pnl=s.total_pnl,
-                demoted=s.demoted,
-            )
-            for s in stats
-        ],
+        setups=[_row(s) for s in stats],
+        by_symbol=[_row(s) for s in stats_by_setup_symbol(history)],
+        by_hour=[_row(s) for s in stats_by_setup_hour(history)],
         closed_trades=sum(s.trades for s in stats),
         total_r=sum((s.total_r for s in stats), Decimal(0)),
         total_pnl=sum((s.total_pnl for s in stats), Decimal(0)),
+    )
+
+
+@router.get("/bots/{bot_id}/insights", response_model=ListBotInsightsResponse)
+async def list_autotrade_bot_insights(
+    bot_id: uuid.UUID,
+    limit: int = Query(default=30, ge=1, le=MAX_LIST_LIMIT),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ListBotInsightsResponse:
+    """Phase 83 (D099): the bot's journal — one row per session, newest
+    first, each with the day's aggregate and the findings the loop
+    recorded for the operator to act on."""
+    await _load_owned_bot(session, bot_id, current_user)
+    rows = (
+        await session.execute(
+            select(AutotradeBotInsight)
+            .where(AutotradeBotInsight.bot_id == bot_id)
+            .order_by(AutotradeBotInsight.session_date.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return ListBotInsightsResponse(
+        insights=[
+            BotInsightResponse(
+                id=r.id, session_date=r.session_date, trades=r.trades, wins=r.wins,
+                total_r=r.total_r, total_pnl=r.total_pnl, best_setup=r.best_setup,
+                worst_setup=r.worst_setup, findings=list(r.findings or []),
+                demoted_setups=list(r.demoted_setups or []), created_at=r.created_at,
+            )
+            for r in rows
+        ]
     )
