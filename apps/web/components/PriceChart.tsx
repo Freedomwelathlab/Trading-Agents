@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CandlestickSeries,
   createChart,
@@ -173,14 +173,32 @@ export function toMarkers(
   return markers.sort((a, b) => (a.time as number) - (b.time as number));
 }
 
+/**
+ * A scored setup signal drawn on the chart (Phase 85, D102). `evidence`
+ * is the detector's own reasoning, shown in the hover box — the point of
+ * the box is that a marker can be interrogated rather than trusted.
+ */
+export type ScoredSignal = {
+  ts: string;
+  setup: string;
+  side: "B" | "S";
+  price: string;
+  stop_price: string;
+  score: number;
+  evidence: Record<string, string>;
+};
+
 export function PriceChart({
   bars,
   signals = [],
+  scoredSignals = [],
   priceLines = [],
   height = 360,
 }: {
   bars: PriceBar[];
   signals?: SignalMarker[];
+  /** Setup signals with scores; drawn as B/S markers with a hover box. */
+  scoredSignals?: ScoredSignal[];
   /**
    * Session-anchored levels drawn as horizontal lines (Phase 74, D092).
    *
@@ -195,6 +213,9 @@ export function PriceChart({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const [hovered, setHovered] = useState<{ x: number; y: number; items: ScoredSignal[] } | null>(
+    null,
+  );
 
   const { candles, skipped } = toCandles(bars);
 
@@ -265,11 +286,46 @@ export function PriceChart({
       });
     }
 
-    const markers = toMarkers(
-      signals,
-      candles.map((c) => c.time),
-    );
+    const times = candles.map((c) => c.time);
+    const markers = toMarkers(signals, times);
+
+    // Phase 85 (D102): one marker per scored signal. Several setups can
+    // fire on the same bar, so they are grouped and the marker text shows
+    // the count; the hover box lists each one with its own score.
+    const byTime = new Map<number, ScoredSignal[]>();
+    for (const sig of scoredSignals) {
+      const t = Math.floor(new Date(sig.ts).getTime() / 1000);
+      if (!Number.isFinite(t)) continue;
+      const group = byTime.get(t);
+      if (group) group.push(sig);
+      else byTime.set(t, [sig]);
+    }
+    for (const [t, group] of byTime) {
+      const buys = group.filter((g) => g.side === "B").length;
+      const isBuy = buys >= group.length - buys;
+      const best = group.reduce((a, b) => (b.score > a.score ? b : a));
+      markers.push({
+        time: t as UTCTimestamp,
+        position: isBuy ? "belowBar" : "aboveBar",
+        shape: isBuy ? "arrowUp" : "arrowDown",
+        color: isBuy ? "#047857" : "#b91c1c",
+        text: group.length > 1 ? `${isBuy ? "B" : "S"}×${group.length}` : `${isBuy ? "B" : "S"} ${best.score}`,
+      });
+    }
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (markers.length > 0) createSeriesMarkers(series, markers);
+
+    if (byTime.size > 0) {
+      chart.subscribeCrosshairMove((param) => {
+        const t = param.time as number | undefined;
+        const group = t === undefined ? undefined : byTime.get(t);
+        if (!group || !param.point) {
+          setHovered(null);
+          return;
+        }
+        setHovered({ x: param.point.x, y: param.point.y, items: group });
+      });
+    }
 
     chart.timeScale().fitContent();
 
@@ -281,7 +337,7 @@ export function PriceChart({
     // props; depending on the derived arrays instead would rebuild the
     // chart on every render, since they are new identities each time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bars, signals, priceLines, height]);
+  }, [bars, signals, scoredSignals, priceLines, height]);
 
   if (bars.length === 0) {
     return (
@@ -304,11 +360,49 @@ export function PriceChart({
 
   return (
     <div className="flex flex-col gap-2">
-      <div
-        ref={containerRef}
-        data-testid="price-chart"
-        style={{ width: "100%", height }}
-      />
+      <div className="relative">
+        <div
+          ref={containerRef}
+          data-testid="price-chart"
+          style={{ width: "100%", height }}
+        />
+        {/* Phase 85 (D102): the score box. Shown only while the crosshair
+            is on a bar that actually produced a signal, so it never
+            invents a reading for a bar that had none. */}
+        {hovered ? (
+          <div
+            data-testid="signal-score-box"
+            className="pointer-events-none absolute z-10 w-64 rounded-md border border-line bg-surface/95 p-2 shadow-lg backdrop-blur"
+            style={{
+              left: Math.min(hovered.x + 12, 9999),
+              top: Math.max(hovered.y - 12, 4),
+            }}
+          >
+            {hovered.items.map((sig, n) => (
+              <div key={`${sig.setup}-${n}`} className={n > 0 ? "mt-2 border-t border-line pt-2" : ""}>
+                <p className="flex items-center justify-between text-xs font-semibold">
+                  <span className={sig.side === "B" ? "text-pos" : "text-neg"}>
+                    {sig.side === "B" ? "BUY" : "SELL"} · {sig.setup}
+                  </span>
+                  <span className="font-mono">score {sig.score}</span>
+                </p>
+                <p className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                  entry {Number(sig.price).toFixed(2)} · stop {Number(sig.stop_price).toFixed(2)}
+                </p>
+                {Object.entries(sig.evidence).length > 0 ? (
+                  <ul className="mt-1 text-[11px] leading-snug text-ink-muted">
+                    {Object.entries(sig.evidence).map(([k, v]) => (
+                      <li key={k}>
+                        <span className="text-ink-faint">{k}:</span> {v}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
       {skipped > 0 && (
         <p className="text-xs" style={{ color: "var(--ink-faint)" }}>
           {skipped} of {bars.length} bar(s) omitted: close-only records with no open/high/low.

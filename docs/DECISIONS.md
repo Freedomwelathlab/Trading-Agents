@@ -10643,3 +10643,48 @@ is the right decision-maker at these sample sizes.
 `GET /health` now reports `market_data: configured|NOT_CONFIGURED` and
 the autotrade runner state, so an operator can distinguish "vendor not
 wired" from "vendor wired, market closed" without a session.
+
+## D102 — Reading 5-minute candles: three setups, and what they measured (Phase 85)
+
+`scripts/research_5m_structure.py` measures the structure the brief asked
+about; `docs/RESEARCH_5M.md` records every figure. Three setups follow from
+it — `quiet_pullback`, `volume_climax_reversal`, `gap_fade` — plus
+`GET /market-data/{symbol}/signals` and the chart's B/S markers with a
+score table (items 6-7).
+
+**The measurement error that shaped everything.** The first run found a
+large reversal edge at swing points (−0.81 ATR after a swing high, 66%
+reversal). It was look-ahead: a fractal pivot is defined by the three bars
+either side of it and is therefore not knowable until three bars later,
+which `SwingPoint.confirmed_ts` already records. Measured from the
+confirmation bar the edge is −0.02 ATR and 48%. Recorded here because the
+same error, left in, would have produced three confident strategies and a
+backtest that agreed with them.
+
+**What the data says, over 128 sessions of TQQQ and QQQ 5-minute bars.**
+Reversals at swing extremes: 48-50%, mean within ±0.15 ATR. Volume does
+not split them. Location (PDH/PDL/premarket/opening range/VWAP±2σ) does
+not split them — a level made a reversal slightly LESS likely (44% vs
+50%). Gaps ≥ 1 ATR faded 46-49%. The only asymmetry with a consistent sign
+on both symbols was a ~0.15 ATR CONTINUATION tilt after a pullback on
+falling volume — the opposite of catching a top.
+
+**So the three setups are instrumentation, not a trading plan.** Backtested
+through the existing bracket engine with real costs (1bp + 2bps):
+`quiet_pullback` −0.099R (t=−1.51) on TQQQ and −0.384R (t=−5.74) on QQQ;
+`gap_fade` −0.143R / −0.332R (t=−3.10); `volume_climax_reversal` produced
+4 and 11 trades — no sample, and loosening its gates until it traded would
+have been fitting, not measuring. Raising the score threshold made results
+WORSE (−0.099 → −0.147), the same monotonic degradation D095 found.
+
+`gap_fade` initially produced ZERO trades: it gated on ATR, and ATR(14) is
+not computable inside the first 12 bars of a session, which is the only
+window it looks at. It now measures the gap in percent of the previous
+close. A detector that can never fire is worse than one that fires and
+loses — it looks like caution.
+
+**The markers carry their own caveat.** Every `/signals` response includes
+a `note` field saying these are measurement rather than advice, and the UI
+renders it under the score table. The score box exists for the same
+reason: a marker on a chart invites belief, and being able to read WHY it
+appeared is the difference between an instrument and an oracle.

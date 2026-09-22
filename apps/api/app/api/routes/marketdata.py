@@ -12,6 +12,8 @@ from apps.api.app.api.dependencies import get_depth_provider, get_market_data_ro
 from apps.api.app.api.schemas_marketdata import (
     BarResponse,
     BarsResponse,
+    ChartSignal,
+    ChartSignalsResponse,
     DepthLevelResponse,
     OrderBookResponse,
     QuoteResponse,
@@ -27,6 +29,7 @@ from apps.api.app.marketdata.resolution import resolve_quote
 from apps.api.app.marketdata.router import MarketDataRouter
 from apps.api.app.marketdata.sessions import (
     build_session_levels,
+    group_by_session,
     session_date,
     session_vwap,
 )
@@ -276,4 +279,125 @@ async def get_session_levels(
         vwap_upper_2sigma=_price(upper),
         vwap_lower_2sigma=_price(lower),
         bars_in_session=len(session_bars),
+    )
+
+
+SIGNAL_NOTE = (
+    "Markers are produced by replaying this platform's own detectors over its own "
+    "stored bars, with no look-ahead. They are measurement, not advice: every one of "
+    "these setups measured at or below zero expectancy on 128 sessions "
+    "(docs/RESEARCH_5M.md)."
+)
+
+
+@router.get("/{symbol}/signals", response_model=ChartSignalsResponse)
+async def get_chart_signals(
+    symbol: str,
+    bar_interval: BarInterval = Query("5m"),
+    days: int = Query(5, ge=1, le=60),
+    setups: str | None = Query(None, description="Comma-separated; default is every setup."),
+    min_score: int = Query(0, ge=0, le=10),
+    session: AsyncSession = Depends(get_session),
+    _current_user: User = Depends(get_current_user),
+) -> ChartSignalsResponse:
+    """Replay the intraday detectors over the stored bars and return the
+    B/S markers with their scores (Phase 85, D102).
+
+    The context handed to each detector is built exactly as
+    `intraday_engine.run_intraday_backtest` builds it — same session
+    levels, same swings, same VWAP, same indicator windows — so a marker
+    drawn here is a signal the backtest and the bot would have seen, not a
+    second opinion computed differently.
+    """
+    from apps.api.app.autotrade.scanner import MIN_SESSION_BARS, _indicator
+    from apps.api.app.backtesting.setups import SETUPS, BarContext
+    from apps.api.app.marketdata.indicators import atr as _atr
+    from apps.api.app.marketdata.indicators import ema as _ema
+    from apps.api.app.marketdata.indicators import rsi as _rsi
+    from apps.api.app.marketdata.sessions import is_regular_hours
+    from apps.api.app.marketdata.structure import Direction, find_swings
+
+    names = (
+        [n.strip() for n in setups.split(",") if n.strip() in SETUPS]
+        if setups
+        else sorted(SETUPS)
+    )
+    if not names:
+        raise HTTPException(
+            status_code=400,
+            detail=f"UNKNOWN_SETUP: known setups are {sorted(SETUPS)}.",
+        )
+
+    store = MarketDataStore(session)
+    end = date.today()
+    bars = await store.get_bars(
+        symbol,
+        bar_interval=bar_interval,
+        start_date=end - timedelta(days=days * 2 + 5),
+        end_date=end,
+    )
+    if not bars:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"DATA_UNAVAILABLE: no {bar_interval} bars stored for {symbol!r}. "
+                "Backfill via POST /admin/market-data/backfill first."
+            ),
+        )
+
+    levels_by_day = build_session_levels(bars)
+    by_day = group_by_session(bars)
+    days_to_scan = sorted(by_day)[-days:]
+
+    out: list[ChartSignal] = []
+    scanned = 0
+    for day in days_to_scan:
+        day_bars = by_day[day]
+        regular = [b for b in day_bars if is_regular_hours(b.ts)]
+        levels = levels_by_day.get(day)
+        if levels is None or len(regular) < MIN_SESSION_BARS:
+            continue
+        vwap_points = {p.ts: p for p in session_vwap(day_bars)}
+        swings = find_swings(regular, strength=3)
+        scanned += len(regular)
+
+        for i in range(len(regular)):
+            window = regular[max(0, i - 80) : i + 1]
+            closes = [b.close for b in window]
+            ctx = BarContext(
+                bars=regular[: i + 1],
+                index=i,
+                levels=levels,
+                swings=swings,
+                vwap=vwap_points.get(regular[i].ts),
+                atr=_indicator(_atr, window, 14),
+                rsi=_indicator(_rsi, closes, 14),
+                ema_fast=_indicator(_ema, closes, 9),
+                ema_slow=_indicator(_ema, closes, 21),
+            )
+            for name in names:
+                signal = SETUPS[name](ctx)
+                if signal is None or signal.score < min_score:
+                    continue
+                out.append(
+                    ChartSignal(
+                        ts=regular[i].ts,
+                        setup=signal.setup_name,
+                        side="B" if signal.direction is Direction.LONG else "S",
+                        direction=signal.direction.value,
+                        price=signal.entry_price,
+                        stop_price=signal.stop_price,
+                        score=signal.score,
+                        evidence=dict(signal.evidence),
+                    )
+                )
+
+    return ChartSignalsResponse(
+        symbol=symbol,
+        bar_interval=bar_interval,
+        setups=names,
+        signals=out,
+        bars_scanned=scanned,
+        sessions=len(days_to_scan),
+        note=SIGNAL_NOTE,
     )

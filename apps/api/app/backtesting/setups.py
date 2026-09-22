@@ -606,12 +606,279 @@ defaults, which is compatible with this - and naming the type keeps the
 registry from widening to `object`, where a caller of `SETUPS[name]`
 loses every guarantee about what it is calling."""
 
+# ---------------------------------------------------------------------------
+# Phase 85 (D102): three setups derived from measuring 5-minute structure
+# (`scripts/research_5m_structure.py`, `docs/RESEARCH_5M.md`).
+#
+# READ THIS BEFORE USING THEM. The measurement over 128 sessions of real
+# TQQQ and QQQ 5-minute bars found NO edge in reversing at swing highs or
+# lows: once a pivot is measured from the bar it actually becomes knowable
+# on (three bars after it prints), the forward hour is 48-50% either way
+# with a mean within ±0.15 ATR. The one asymmetry that survived, on both
+# symbols, was small and in the CONTINUATION direction: a pullback on
+# falling volume resumed 51% of the time against 47-49% for one on rising
+# volume.
+#
+# These three encode exactly that, and nothing more optimistic than that.
+# ---------------------------------------------------------------------------
+
+
+def _volume(bar) -> Decimal:
+    return Decimal(bar.volume or 0)
+
+
+def _avg_volume(ctx: BarContext, start: int, end: int) -> Decimal | None:
+    window = [b for b in ctx.bars[max(0, start) : end] if b.volume]
+    if not window:
+        return None
+    return sum((_volume(b) for b in window), Decimal(0)) / len(window)
+
+
+def quiet_pullback_setup(
+    ctx: BarContext,
+    *,
+    impulse_bars: int = 6,
+    pullback_bars: int = 3,
+    min_impulse_atr: Decimal = Decimal("1.0"),
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+) -> SetupSignal | None:
+    """Trend continuation after a pullback on FALLING volume.
+
+    The only asymmetry the 5-minute study found with a consistent sign on
+    both symbols, and it is small: 51% continuation against 47-49% for a
+    pullback on rising volume, a mean difference of about 0.15 ATR over
+    ~2,900 samples. Traded here with the trend, never against it.
+
+    Three conditions, all of which must hold:
+      1. an impulse of at least `min_impulse_atr` over `impulse_bars`;
+      2. the last `pullback_bars` moved AGAINST that impulse;
+      3. average volume in the pullback is below the impulse's.
+
+    The stop is the pullback's own extreme plus an ATR buffer: if price
+    takes out the low the pullback made, the pullback was a reversal.
+    """
+    i = ctx.index
+    if i < impulse_bars + pullback_bars + 1 or ctx.atr is None or ctx.atr <= 0:
+        return None
+
+    impulse_start = i - impulse_bars - pullback_bars
+    impulse_end = i - pullback_bars
+    leg = ctx.bars[impulse_end].close - ctx.bars[impulse_start].close
+    if abs(leg) < min_impulse_atr * ctx.atr:
+        return None
+
+    pull = ctx.bar.close - ctx.bars[impulse_end].close
+    if leg > 0 and pull >= 0:
+        return None
+    if leg < 0 and pull <= 0:
+        return None
+
+    impulse_vol = _avg_volume(ctx, impulse_start, impulse_end)
+    pull_vol = _avg_volume(ctx, impulse_end, i + 1)
+    if impulse_vol is None or pull_vol is None or pull_vol >= impulse_vol:
+        return None
+
+    direction = Direction.LONG if leg > 0 else Direction.SHORT
+    window = ctx.bars[impulse_end : i + 1]
+    extreme = min(_low(b) for b in window) if leg > 0 else max(_high(b) for b in window)
+    stop = _stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer)
+
+    score = 2
+    evidence = {
+        "impulse_atr": f"{abs(leg) / ctx.atr:.2f}",
+        "pullback_volume_ratio": f"{pull_vol / impulse_vol:.2f}",
+    }
+    if ctx.higher_tf_bias is direction:
+        score += 1
+        evidence["higher_tf_bias"] = direction.value
+    if pull_vol < impulse_vol * Decimal("0.7"):
+        score += 1
+        evidence["volume_dry_up"] = "pullback under 70% of impulse volume"
+    if ctx.vwap is not None:
+        above = ctx.bar.close > ctx.vwap.vwap
+        if (direction is Direction.LONG) == above:
+            score += 1
+            evidence["vwap_side"] = "with trend"
+
+    return SetupSignal(
+        setup_name="quiet_pullback",
+        direction=direction,
+        entry_index=i,
+        entry_price=ctx.bar.close,
+        stop_price=stop,
+        score=score,
+        evidence=evidence,
+    )
+
+
+def volume_climax_reversal_setup(
+    ctx: BarContext,
+    *,
+    climax_multiple: Decimal = Decimal("2.0"),
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+    location_tolerance_atr: Decimal = Decimal("0.25"),
+) -> SetupSignal | None:
+    """A session extreme made on CLIMACTIC volume, at a marked level, that
+    the next bar rejects.
+
+    This is the brief's "catch the top / the bottom", written as strictly
+    as the concept allows: the bar must make the session's extreme so far,
+    on at least `climax_multiple` times the session's average volume, sit
+    within a quarter-ATR of a marked level, and be REJECTED by the
+    following bar closing back inside its range.
+
+    **The study found no edge here** (a swing extreme reversed 44-50% of
+    the time whether or not it sat at a level). It is included because the
+    brief asked for a top/bottom strategy and because a strategy that is
+    measured and found wanting is worth more than one that is assumed;
+    every backtest of it must be read with `docs/RESEARCH_5M.md` open.
+    """
+    i = ctx.index
+    if i < 6 or ctx.atr is None or ctx.atr <= 0 or ctx.bar.open is None:
+        return None
+
+    session_avg = _avg_volume(ctx, 0, i)
+    if session_avg is None or session_avg <= 0:
+        return None
+    if _volume(ctx.bar) < climax_multiple * session_avg:
+        return None
+
+    prior_high = max(_high(b) for b in ctx.bars[:i])
+    prior_low = min(_low(b) for b in ctx.bars[:i])
+    bar_high, bar_low = _high(ctx.bar), _low(ctx.bar)
+
+    if bar_high > prior_high:
+        direction = Direction.SHORT
+        extreme = bar_high
+        rejected = ctx.bar.close < (bar_high + bar_low) / 2
+    elif bar_low < prior_low:
+        direction = Direction.LONG
+        extreme = bar_low
+        rejected = ctx.bar.close > (bar_high + bar_low) / 2
+    else:
+        return None
+    if not rejected:
+        return None
+
+    tolerance = ctx.atr * location_tolerance_atr
+    near = _levels_near(ctx, tolerance)
+    if not near:
+        return None
+
+    stop = _stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer)
+    score = 2
+    evidence = {
+        "volume_x_session_avg": f"{_volume(ctx.bar) / session_avg:.2f}",
+        "location": ", ".join(name for name, _ in near),
+        "rejection": "close back inside the bar's own range",
+    }
+    if ctx.rsi is not None and (
+        (direction is Direction.LONG and ctx.rsi < 30)
+        or (direction is Direction.SHORT and ctx.rsi > 70)
+    ):
+        score += 1
+        evidence["rsi"] = f"{ctx.rsi:.1f}"
+    if ctx.confirm_bias is direction:
+        score += 1
+        evidence["confirm_bias"] = direction.value
+
+    return SetupSignal(
+        setup_name="volume_climax_reversal",
+        direction=direction,
+        entry_index=i,
+        entry_price=ctx.bar.close,
+        stop_price=stop,
+        score=score,
+        evidence=evidence,
+    )
+
+
+def gap_fade_setup(
+    ctx: BarContext,
+    *,
+    min_gap_pct: Decimal = Decimal("0.5"),
+    max_bar_index: int = 12,
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+) -> SetupSignal | None:
+    """Fade an opening gap back toward the previous close.
+
+    The gap is this platform's only visible trace of overnight news and
+    corporate actions in bar data — it is NOT a news feed, and this setup
+    does not claim to read news. It fires in the first hour, when a gap of
+    at least `min_gap_pct` has stalled (the bar closes back against the gap
+    direction) and the previous close is still unfilled.
+
+    **The gap is measured in PERCENT, not ATR.** ATR(14) is not computable
+    from fewer than 15 bars, and this setup only ever looks at the first 12
+    bars of a session, so an ATR gate here can never pass — the first
+    version of this detector produced exactly zero trades for that reason.
+    Percent of the previous close is knowable at the open, which is when
+    this decision has to be made.
+
+    **The study found gaps ≥ 1 ATR faded 46-49% of the time** — a coin
+    flip. Included on the same terms as `volume_climax_reversal`.
+    """
+    i = ctx.index
+    if i < 2 or i > max_bar_index:
+        return None
+    prev_close = ctx.levels.previous_close
+    if prev_close is None or prev_close <= 0 or ctx.bars[0].open is None:
+        return None
+
+    gap = ctx.bars[0].open - prev_close
+    if abs(gap) / prev_close * 100 < min_gap_pct:
+        return None
+    # Already filled: nothing left to fade.
+    if (gap > 0 and ctx.bar.close <= prev_close) or (gap < 0 and ctx.bar.close >= prev_close):
+        return None
+
+    direction = Direction.SHORT if gap > 0 else Direction.LONG
+    stalling = (
+        ctx.bar.close < ctx.bar.open if gap > 0 else ctx.bar.close > ctx.bar.open
+    ) if ctx.bar.open is not None else False
+    if not stalling:
+        return None
+
+    window = ctx.bars[: i + 1]
+    extreme = max(_high(b) for b in window) if gap > 0 else min(_low(b) for b in window)
+    stop = _stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer)
+
+    score = 2
+    evidence = {
+        "gap_pct": f"{abs(gap) / prev_close * 100:.2f}",
+        "target": "previous close (unfilled)",
+        "bar_of_session": str(i),
+    }
+    if ctx.vwap is not None:
+        if (direction is Direction.SHORT and ctx.bar.close < ctx.vwap.vwap) or (
+            direction is Direction.LONG and ctx.bar.close > ctx.vwap.vwap
+        ):
+            score += 1
+            evidence["vwap_side"] = "already back through VWAP"
+    if ctx.higher_tf_bias is direction:
+        score += 1
+        evidence["higher_tf_bias"] = direction.value
+
+    return SetupSignal(
+        setup_name="gap_fade",
+        direction=direction,
+        entry_index=i,
+        entry_price=ctx.bar.close,
+        stop_price=stop,
+        score=score,
+        evidence=evidence,
+    )
+
+
 SETUPS: dict[str, SetupDetector] = {
     "sweep_mss": sweep_mss_setup,
     "vwap_reversion": vwap_reversion_setup,
     "orb_failure": orb_failure_setup,
     "ema_reversal": ema_reversal_setup,
     "candle_reversal": candle_reversal_setup,
+    "quiet_pullback": quiet_pullback_setup,
+    "volume_climax_reversal": volume_climax_reversal_setup,
+    "gap_fade": gap_fade_setup,
 }
 """Registry, so a run can name which setups to enable and a caller can
 add one without touching the engine."""

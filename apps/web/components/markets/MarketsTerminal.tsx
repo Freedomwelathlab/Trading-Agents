@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { classifyWithAbsences, useKeyedFetch } from "@/lib/useKeyedFetch";
-import { PriceChart, type PriceBar } from "@/components/PriceChart";
+import { PriceChart, type PriceBar, type ScoredSignal } from "@/components/PriceChart";
+import SignalScoreTable from "@/components/markets/SignalScoreTable";
 import OrderBookPanel from "@/components/markets/OrderBookPanel";
 import SessionLevelsPanel, {
   toPriceLines,
@@ -61,6 +62,11 @@ const LOOKBACK_DAYS: Record<Interval, number> = {
 };
 
 const QUOTE_REFRESH_MS = 5_000;
+
+const SIGNAL_DAYS = 5;
+/** Sessions replayed for the chart's B/S markers. Bounded because the
+ * replay is per-bar work on the server, and five sessions is what fits
+ * legibly on an intraday chart anyway. */
 
 type Quote = { symbol: string; price: string; as_of: string; source: string };
 
@@ -139,6 +145,33 @@ export default function MarketsTerminal({
     classify: classifyBars,
   });
   const bars = barsPayload?.bars ?? [];
+
+  // --- setup signals (Phase 85, D102) ------------------------------------
+  const [showSignals, setShowSignals] = useState(true);
+  const signalsUrl = useMemo(
+    () =>
+      `/api/market-data/${encodeURIComponent(symbol)}/signals?` +
+      new URLSearchParams({ bar_interval: interval, days: String(SIGNAL_DAYS) }),
+    [symbol, interval],
+  );
+  const classifySignals = useMemo(
+    () =>
+      classifyWithAbsences<{ signals: ScoredSignal[]; note: string }>(
+        [404],
+        "No stored bars to scan.",
+      ),
+    [],
+  );
+  const { data: signalsPayload, unavailable: signalsUnavailable } = useKeyedFetch<{
+    signals: ScoredSignal[];
+    note: string;
+  }>({
+    key: `sig:${symbol}|${interval}`,
+    url: signalsUrl,
+    classify: classifySignals,
+    enabled: showSignals && interval !== "1d",
+  });
+  const chartSignals = showSignals ? (signalsPayload?.signals ?? []) : [];
 
   // --- quote ------------------------------------------------------------
   const classifyQuote = useMemo(
@@ -244,7 +277,37 @@ export default function MarketsTerminal({
             </div>
           ) : null}
           {bars.length > 0 ? (
-            <PriceChart bars={bars} priceLines={priceLines} height={420} />
+            <div className="flex flex-col gap-2">
+              {showSignals ? (
+                <SignalScoreTable
+                  signals={chartSignals}
+                  note={signalsPayload?.note}
+                  unavailable={signalsUnavailable}
+                />
+              ) : null}
+              <PriceChart
+                bars={bars}
+                priceLines={priceLines}
+                scoredSignals={chartSignals}
+                height={420}
+              />
+              <div className="flex flex-wrap items-center gap-2 text-xs text-ink-faint">
+                <label className="inline-flex cursor-pointer items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={showSignals}
+                    onChange={(e) => setShowSignals(e.target.checked)}
+                  />
+                  Setup signals
+                </label>
+                {showSignals ? (
+                  <span>
+                    {chartSignals.length} marker(s) over the last {SIGNAL_DAYS} sessions ·
+                    hover a row above for its score and evidence
+                  </span>
+                ) : null}
+              </div>
+            </div>
           ) : null}
         </Panel>
 

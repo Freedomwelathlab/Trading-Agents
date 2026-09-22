@@ -106,3 +106,41 @@ class SessionLevelsResponse(BaseModel):
     vwap_upper_2sigma: Decimal | None
     vwap_lower_2sigma: Decimal | None
     bars_in_session: int
+
+
+class ChartSignal(BaseModel):
+    """One B/S marker for the chart (Phase 85, D102).
+
+    `score` and `evidence` are the setup's own, so the hover box on the
+    chart shows the reasoning that produced the marker rather than a
+    label. `stop_price` is the setup's structural invalidation; it is what
+    makes the marker a proposal rather than an opinion.
+
+    Every marker is produced by replaying the SAME detectors the backtest
+    and the Autotrade bot use, on the same stored bars, with no
+    look-ahead: a detector only ever sees bars up to and including the one
+    it fires on.
+    """
+
+    ts: datetime
+    setup: str
+    side: str
+    """`B` or `S` — what the chart draws."""
+    direction: str
+    price: Decimal
+    stop_price: Decimal
+    score: int
+    evidence: dict[str, str]
+
+
+class ChartSignalsResponse(BaseModel):
+    symbol: str
+    bar_interval: str
+    setups: list[str]
+    """Which detectors ran."""
+    signals: list[ChartSignal]
+    bars_scanned: int
+    sessions: int
+    note: str
+    """Stated on every response: these markers are measurement, not
+    advice. See docs/RESEARCH_5M.md."""
