@@ -17,7 +17,7 @@ import {
   thClass,
   theadRowClass,
 } from "@/components/ui/primitives";
-import type { Bot, BotRun, BotStats, BotTrade, RunNow } from "./types";
+import type { Bot, BotInsight, BotRun, BotStats, BotTrade, RunNow } from "./types";
 
 /**
  * Every bot the caller owns, its lifecycle actions, and — for the selected
@@ -39,6 +39,7 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
   const [runs, setRuns] = useState<BotRun[] | null>(null);
   const [trades, setTrades] = useState<BotTrade[] | null>(null);
   const [stats, setStats] = useState<BotStats | null>(null);
+  const [insights, setInsights] = useState<BotInsight[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -66,14 +67,16 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
       if (!res.ok) return null;
       return (await res.json()) as T;
     };
-    const [r, t, s] = await Promise.all([
+    const [r, t, s, i] = await Promise.all([
       get<{ runs: BotRun[] }>("runs?limit=25"),
       get<{ trades: BotTrade[] }>("trades?limit=50"),
       get<BotStats>("stats"),
+      get<{ insights: BotInsight[] }>("insights?limit=30"),
     ]);
     setRuns(r?.runs ?? []);
     setTrades(t?.trades ?? []);
     setStats(s);
+    setInsights(i?.insights ?? []);
   }, []);
 
   useEffect(() => {
@@ -234,6 +237,106 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
               </div>
             )}
           </Panel>
+
+          <Panel
+            title={`${current.name} — journal`}
+            description="One entry per session, written by the loop after the session ends: the day's result and the findings it drew from every closed trade so far. Findings are questions for you — the loop records them, it never changes your settings from them."
+          >
+            {insights === null ? (
+              <p className="text-sm text-ink-faint">Loading…</p>
+            ) : insights.length === 0 ? (
+              <EmptyNote>No sessions journaled yet — the first entry is written after the first session with closed trades.</EmptyNote>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {insights.map((i) => (
+                  <li key={i.id} className="rounded-md border border-line p-3">
+                    <p className="text-sm">
+                      <span className="font-mono font-semibold">{i.session_date}</span>{" "}
+                      <span className="text-ink-muted">
+                        {i.trades} trade{i.trades === 1 ? "" : "s"}, {i.wins} won ·{" "}
+                        <span className="font-mono">{i.total_r}R</span> ·{" "}
+                        <span className="font-mono">{i.total_pnl}</span>
+                        {i.best_setup ? ` · best ${i.best_setup}` : ""}
+                        {i.worst_setup && i.worst_setup !== i.best_setup ? ` · worst ${i.worst_setup}` : ""}
+                      </span>
+                    </p>
+                    {i.demoted_setups.length > 0 ? (
+                      <p className="mt-1 text-xs text-ink-muted">Demoted at the time: <span className="font-mono">{i.demoted_setups.join(", ")}</span></p>
+                    ) : null}
+                    {i.findings.length > 0 ? (
+                      <ul className="mt-2 list-disc pl-5 text-xs text-ink">
+                        {i.findings.map((f, n) => <li key={n}>{f}</li>)}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-xs text-ink-faint">No finding cleared its minimum sample size.</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
+
+          {stats && (stats.by_symbol.length > 0 || stats.by_hour.length > 0) ? (
+            <Panel
+              title={`${current.name} — by symbol and by hour`}
+              description="The same numbers sliced finer. A setup is switched off on a specific symbol once that pair alone has 20+ trades and a negative expectancy, even if the setup is fine elsewhere. MFE/MAE = average best and worst excursion per trade, in R."
+            >
+              <div className="grid gap-4 lg:grid-cols-2">
+                <TableScroll>
+                  <table className={tableClass}>
+                    <thead>
+                      <tr className={theadRowClass}>
+                        <th className={thClass}>setup</th>
+                        <th className={thClass}>symbol</th>
+                        <th className={thClass}>trades</th>
+                        <th className={thClass}>exp R</th>
+                        <th className={thClass}>MFE</th>
+                        <th className={thClass}>MAE</th>
+                        <th className={thClass}>state</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.by_symbol.map((s) => (
+                        <tr key={`${s.setup_name}-${s.symbol}`} className={tbodyRowClass}>
+                          <td className={tdClass}>{s.setup_name}</td>
+                          <td className={tdClass}>{s.symbol}</td>
+                          <td className={tdClass}>{s.trades}</td>
+                          <td className={tdClass}>{s.expectancy_r ?? "—"}</td>
+                          <td className={tdClass}>{s.avg_mfe_r ?? "—"}</td>
+                          <td className={tdClass}>{s.avg_mae_r ?? "—"}</td>
+                          <td className={tdClass}><Pill tone={s.demoted ? "neg" : "pos"}>{s.demoted ? "demoted" : "active"}</Pill></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </TableScroll>
+                <TableScroll>
+                  <table className={tableClass}>
+                    <thead>
+                      <tr className={theadRowClass}>
+                        <th className={thClass}>setup</th>
+                        <th className={thClass}>hour (ET)</th>
+                        <th className={thClass}>trades</th>
+                        <th className={thClass}>win %</th>
+                        <th className={thClass}>exp R</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.by_hour.map((s) => (
+                        <tr key={`${s.setup_name}-${s.hour}`} className={tbodyRowClass}>
+                          <td className={tdClass}>{s.setup_name}</td>
+                          <td className={tdClass}>{s.hour !== null ? `${String(s.hour).padStart(2, "0")}:00` : "—"}</td>
+                          <td className={tdClass}>{s.trades}</td>
+                          <td className={tdClass}>{s.win_rate !== null ? (Number(s.win_rate) * 100).toFixed(0) : "—"}</td>
+                          <td className={tdClass}>{s.expectancy_r ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </TableScroll>
+              </div>
+            </Panel>
+          ) : null}
 
           <Panel title={`${current.name} — trades`} description="Every position the bot opened, with its bracket and, once closed, the exit and its R.">
             {trades === null ? (

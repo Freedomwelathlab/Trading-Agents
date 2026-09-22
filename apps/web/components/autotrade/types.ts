@@ -57,6 +57,7 @@ export type BotTrade = {
   stop_price: string;
   take_profit_price: string | null;
   peak_price: string;
+  trough_price: string;
   take_profit_armed: boolean;
   opened_at: string;
   closed_at: string | null;
@@ -75,6 +76,10 @@ export type SetupStat = {
   total_r: string;
   total_pnl: string;
   demoted: boolean;
+  symbol: string | null;
+  hour: number | null;
+  avg_mfe_r: string | null;
+  avg_mae_r: string | null;
 };
 
 export type BotStats = {
@@ -83,9 +88,25 @@ export type BotStats = {
   configured_setups: string[];
   active_setups: string[];
   setups: SetupStat[];
+  by_symbol: SetupStat[];
+  by_hour: SetupStat[];
   closed_trades: number;
   total_r: string;
   total_pnl: string;
+};
+
+export type BotInsight = {
+  id: string;
+  session_date: string;
+  trades: number;
+  wins: number;
+  total_r: string;
+  total_pnl: string;
+  best_setup: string | null;
+  worst_setup: string | null;
+  findings: string[];
+  demoted_setups: string[];
+  created_at: string;
 };
 
 export type RunNow = {
