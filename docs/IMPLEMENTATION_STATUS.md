@@ -24,6 +24,14 @@ Nothing below claims the platform is "production ready" or "fully secure"
 beyond what each phase actually verified, and nothing below is a claim that
 any strategy makes money.
 
+- Phase 83: learning loop v2 (2026-09-22, D099). Adverse excursion
+  (`trough_price`) beside the MFE peak; demotion per (setup, symbol) with a
+  setup-level fallback; `autotrade_bot_insights` journal written on the
+  cycle that ends a session, holding thresholded, sample-sized findings
+  that are recorded and never applied. `/health` reports `market_data`
+  and `autotrade_runner`. `skipped_market_closed` rows throttled to one
+  per bot per hour. Production verified: `market_data: configured`.
+
 - Phases 79–82: owner bootstrap, watchlist rail, the Autotrade Bot, and
   the missing admin controls (2026-09-19, D097/D098).
   - **79 (D097)** `OWNER_BOOTSTRAP_EMAIL` / `scripts/grant_owner.py`:
