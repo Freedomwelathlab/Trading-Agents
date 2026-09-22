@@ -316,3 +316,44 @@ async def test_no_vendor_is_a_not_configured_row_not_a_trade_on_stale_bars():
         )
         await session.commit()
         assert out.status is AutotradeBotRunStatus.SKIPPED_NOT_CONFIGURED
+
+
+@pytest.mark.asyncio
+async def test_closed_market_rows_are_throttled_to_one_per_hour():
+    """A bot left ACTIVE overnight must not write a row every minute."""
+    from datetime import timedelta as _td
+
+    from sqlalchemy import func as _func
+
+    from apps.api.app.autotrade.runner import run_bot_isolated
+    from apps.api.app.db.base import get_session_factory
+
+    settings = get_settings()
+    router = StubRouter()
+    closed = datetime(2026, 6, 17, 2, 0, tzinfo=UTC)  # 22:00 ET
+    async with db_session() as session, fixture(session) as (user_id, broker_id, _role):
+        bot = await create_bot(session, spec(broker_id, strategy_mode="auto", setups=[]),
+                               user_id=user_id)
+        await approve_bot(bot, approved_by_user_id=user_id)
+        await session.commit()
+        factory = get_session_factory()
+        kw = dict(settings=settings, bar_router=router, news_provider=None)
+
+        first = await run_bot_isolated(factory, bot.id, clock=lambda: closed, **kw)
+        assert first is not None and first.status is AutotradeBotRunStatus.SKIPPED_MARKET_CLOSED
+        # Ten more "minutes" -> nothing written.
+        for m in range(1, 11):
+            out = await run_bot_isolated(
+                factory, bot.id, clock=lambda m=m: closed + _td(minutes=m), **kw
+            )
+            assert out is None
+        # An hour later -> one more row.
+        later = await run_bot_isolated(factory, bot.id, clock=lambda: closed + _td(hours=1), **kw)
+        assert later is not None
+        n = (
+            await session.execute(
+                select(_func.count()).select_from(AutotradeBotRun)
+                .where(AutotradeBotRun.bot_id == bot.id)
+            )
+        ).scalar_one()
+        assert n == 2

@@ -124,7 +124,7 @@ def _rules(bot: AutotradeBot) -> ExitRules:
     )
 
 
-def _phase_allowed(ts: datetime, market_type: str) -> bool:
+def phase_allowed(ts: datetime, market_type: str) -> bool:
     phase = session_phase(ts)
     if phase is None:
         return False
@@ -139,7 +139,7 @@ def session_ending(last_bar_ts: datetime, *, market_type: str, bar_interval: str
     """True when the bar AFTER this one would fall outside the bot's
     tradeable phase — i.e. this is the last bar the bot may still act on."""
     minutes = _INTERVAL_MINUTES.get(bar_interval, 5)
-    return not _phase_allowed(last_bar_ts + timedelta(minutes=minutes), market_type)
+    return not phase_allowed(last_bar_ts + timedelta(minutes=minutes), market_type)
 
 
 def _finish(
@@ -424,7 +424,7 @@ async def run_bot_cycle(
             "NOT_CONFIGURED: no equity market-data vendor is wired (LONGPORT_* unset)", clock,
         )
 
-    if not _phase_allowed(now, bot.market_type):
+    if not phase_allowed(now, bot.market_type):
         phase = session_phase(now)
         return _finish(
             run, outcome, AutotradeBotRunStatus.SKIPPED_MARKET_CLOSED,

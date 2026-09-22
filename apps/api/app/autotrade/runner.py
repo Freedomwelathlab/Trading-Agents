@@ -30,13 +30,13 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from apps.api.app.autotrade.engine import BotCycleOutcome, run_bot_cycle
+from apps.api.app.autotrade.engine import BotCycleOutcome, phase_allowed, run_bot_cycle
 from apps.api.app.core.config import Settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.models import (
@@ -50,6 +50,12 @@ from apps.api.app.marketdata.news_provider import NewsProvider
 from apps.api.app.portfolio.cycle_lock import SnapshotCycleLock, SnapshotCycleLockDecision
 
 logger = get_logger(__name__)
+
+CLOSED_MARKET_ROW_INTERVAL = timedelta(hours=1)
+"""While a bot's market phase is closed, a `skipped_market_closed` row is
+written at most this often rather than every cycle. One row a minute for
+sixteen closed hours a day is 960 rows saying the same thing; one an hour
+still proves the runner is alive and still says why nothing happened."""
 
 AUTOTRADE_RUNNER_LOCK_OBJID = 1635017844
 """ASCII ``b"abot"`` big-endian (0x61626f74) — this job's own advisory-lock
@@ -102,6 +108,12 @@ async def run_bot_isolated(
         bot = await session.get(AutotradeBot, bot_id)
         if bot is None:
             return None
+        if (
+            bot.status is AutotradeBotStatus.ACTIVE
+            and not phase_allowed(started, bot.market_type)
+            and await _recent_closed_row(session, bot.id, started)
+        ):
+            return None  # market closed and already said so within the hour
         run = AutotradeBotRun(
             id=uuid.uuid4(),
             bot_id=bot.id,
@@ -140,6 +152,22 @@ async def run_bot_isolated(
                 bot_id=bot_id, run_id=run.id, status=AutotradeBotRunStatus.FAILED,
                 detail=f"{type(exc).__name__}: {exc}",
             )
+
+
+async def _recent_closed_row(session: AsyncSession, bot_id: uuid.UUID, now: datetime) -> bool:
+    latest = (
+        await session.execute(
+            select(AutotradeBotRun)
+            .where(AutotradeBotRun.bot_id == bot_id)
+            .order_by(AutotradeBotRun.started_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return (
+        latest is not None
+        and latest.status is AutotradeBotRunStatus.SKIPPED_MARKET_CLOSED
+        and now - latest.started_at < CLOSED_MARKET_ROW_INTERVAL
+    )
 
 
 async def run_autotrade_cycle(
