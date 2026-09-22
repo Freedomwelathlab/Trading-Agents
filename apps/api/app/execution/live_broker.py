@@ -125,9 +125,12 @@ class LiveTradeClient(Protocol):
         side: Any,
         submitted_quantity: Decimal,
         time_in_force: Any,
+        submitted_price: Decimal | None = None,
     ) -> Any: ...
 
     def order_detail(self, order_id: str) -> Any: ...
+
+    def cancel_order(self, order_id: str) -> Any: ...
 
     def stock_positions(self, symbols: list[str] | None = None) -> Any: ...
 
@@ -309,6 +312,18 @@ class LiveBrokerAdapter:
 
     # -- order status ------------------------------------------------------
 
+    def cancel_order(self, order_id: str) -> LiveOrderStatus:
+        """Phase 84 (D101): ask the venue to cancel, then read back what it
+        says. The returned status is the broker's, not an assumption — a
+        cancel can race a fill, and the answer to "did it cancel?" is
+        whatever `order_detail` reports afterwards."""
+        try:
+            self._client.cancel_order(order_id)
+        except Exception as exc:
+            raise LiveBrokerError(f"Cancel of live order {order_id} failed: {exc}") from exc
+        self._snapshot = None
+        return self.get_order_status(order_id)
+
     def get_order_status(self, order_id: str) -> LiveOrderStatus:
         """Read one live order back from the broker (Phase 49, D066).
 
@@ -394,13 +409,27 @@ class LiveBrokerAdapter:
         side = OrderSide.Buy if order.side is Side.BUY else OrderSide.Sell
 
         try:
-            response = self._client.submit_order(
-                symbol=order.symbol,
-                order_type=OrderType.MO,
-                side=side,
-                submitted_quantity=order.quantity,
-                time_in_force=TimeInForceType.Day,
-            )
+            if order.order_type == "limit":
+                # Phase 84 (D101): a real limit order. The venue may rest it;
+                # the not-executed branch below then records it as
+                # SUBMITTED_UNCONFIRMED for the reconciler, exactly as an
+                # unfilled market order is.
+                response = self._client.submit_order(
+                    symbol=order.symbol,
+                    order_type=OrderType.LO,
+                    side=side,
+                    submitted_quantity=order.quantity,
+                    time_in_force=TimeInForceType.Day,
+                    submitted_price=order.limit_price,
+                )
+            else:
+                response = self._client.submit_order(
+                    symbol=order.symbol,
+                    order_type=OrderType.MO,
+                    side=side,
+                    submitted_quantity=order.quantity,
+                    time_in_force=TimeInForceType.Day,
+                )
         except Exception as exc:
             raise LiveBrokerError(
                 f"Live order submission failed for {order.symbol!r}: {exc}"

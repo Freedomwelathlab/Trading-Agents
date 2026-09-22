@@ -435,9 +435,18 @@ async def test_the_emergency_stop_blocks_a_fully_confirmed_live_trade():
         paper_broker_row(session, kind=BrokerKind.LIVE) as broker_id,
         broker_grant(session, user_id=user_id, broker_id=broker_id),
     ):
+        # The persisted switch is what the trade path reads once any row
+        # exists (D039), and in a shared dev database one always does after
+        # the emergency-stop tests have run. Flip it through the real
+        # mechanism and flip it back, rather than relying on the
+        # settings-only bootstrap default.
+        from apps.api.app.safety.emergency_stop import set_emergency_stop
+
         settings = get_settings()
         original = settings.emergency_stop_active
         settings.emergency_stop_active = True
+        await set_emergency_stop(session, active=True, reason="test", actor_user_id=None)
+        await session.commit()
         try:
             async with api_client() as client:
                 token = await _get_token(client, email)
@@ -458,6 +467,10 @@ async def test_the_emergency_stop_blocks_a_fully_confirmed_live_trade():
                     )
         finally:
             settings.emergency_stop_active = original
+            await set_emergency_stop(
+                session, active=False, reason="test teardown", actor_user_id=None
+            )
+            await session.commit()
 
     assert response.status_code == 200
     body = response.json()

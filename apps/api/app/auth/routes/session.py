@@ -16,14 +16,18 @@ extend it.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 
 from apps.api.app.auth.dependencies import get_current_user
-from apps.api.app.auth.security import InvalidTokenError, decode_access_token_claims
+from apps.api.app.auth.security import (
+    InvalidTokenError,
+    create_access_token,
+    decode_access_token_claims,
+)
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.models import User
 
@@ -43,6 +47,10 @@ class SessionResponse(BaseModel):
     email: str
     issued_at: datetime | None
     expires_at: datetime
+    permissions: list[str] = []
+    """The permission strings the caller's role grants (Phase 84). Lets the
+    UI decide what to show without guessing; the backend still enforces
+    every permission on every request regardless of what the UI shows."""
     expires_in_seconds: int
     """Whole seconds remaining, computed server-side against the server's
     own clock, and floored at 0. The UI shows this rather than doing its
@@ -89,4 +97,53 @@ async def get_session_info(
         issued_at=issued_at,
         expires_at=expires_at,
         expires_in_seconds=max(remaining, 0),
+        permissions=list(current_user.role.permissions or []) if current_user.role else [],
+    )
+
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
+
+
+@router.post("/auth/refresh", response_model=RefreshResponse)
+async def refresh_session(
+    token: str | None = Depends(_oauth2_scheme),
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> RefreshResponse:
+    """Phase 84 (D100): a NEW token for a caller whose current one is still
+    valid — the sliding half of the idle timeout. The web app calls this
+    while the screen is active; it never calls it while idle, so an idle
+    session expires on `jwt_access_token_expire_minutes` exactly as before.
+
+    Two refusals: an expired/invalid token (401, same as everywhere — a
+    dead session is not resurrected) and a session older than
+    `jwt_max_session_hours` since first login (401 with a distinct
+    detail), so "active" cannot mean "forever". A deactivated user is
+    refused by `get_current_user` before this runs.
+    """
+    if token is None:
+        raise _UNAUTHORIZED
+    try:
+        claims = decode_access_token_claims(token, settings)
+    except InvalidTokenError:
+        raise _UNAUTHORIZED from None
+
+    orig = claims.get("orig_iat") or claims.get("iat")
+    orig_dt = datetime.fromtimestamp(int(orig), tz=UTC) if orig is not None else datetime.now(UTC)
+    if datetime.now(UTC) - orig_dt > timedelta(hours=settings.jwt_max_session_hours):
+        raise HTTPException(
+            status_code=401,
+            detail=f"SESSION_MAX_AGE: signed in more than {settings.jwt_max_session_hours}h "
+            f"ago; sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    new_token = create_access_token(current_user.id, settings, orig_iat=orig_dt)
+    new_claims = decode_access_token_claims(new_token, settings)
+    return RefreshResponse(
+        access_token=new_token,
+        expires_at=datetime.fromtimestamp(int(new_claims["exp"]), tz=UTC),
     )

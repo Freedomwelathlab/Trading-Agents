@@ -1,8 +1,9 @@
 import enum
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Side(str, enum.Enum):  # noqa: UP042 (str mixin kept for interop)
@@ -37,6 +38,20 @@ class TradeProposal(BaseModel):
     estimated_price: Decimal = Field(gt=0)
     stop_price: Decimal | None = Field(default=None, gt=0)
     market_data_as_of: datetime
+    order_type: Literal["market", "limit"] = "market"
+    """Phase 84 (D101). A limit order carries `limit_price`; the Risk Engine
+    sizes it on `estimated_price`, which the route sets to the limit price
+    for a limit order (the worst price a buy can pay, the best a sell can
+    get) so risk is measured against what could actually be paid."""
+    limit_price: Decimal | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _limit_needs_a_price(self) -> "TradeProposal":
+        if self.order_type == "limit" and self.limit_price is None:
+            raise ValueError("a limit order needs limit_price")
+        if self.order_type == "market" and self.limit_price is not None:
+            raise ValueError("limit_price is only meaningful on a limit order")
+        return self
 
     @field_validator("market_data_as_of")
     @classmethod

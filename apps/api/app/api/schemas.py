@@ -7,6 +7,7 @@ matching change on the pure domain layer, and vice versa.
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +30,14 @@ class TradeSubmissionRequest(BaseModel):
     vendor is wired or no data exists; the server never guesses a price
     itself."""
     stop_price: Decimal | None = Field(default=None, gt=0)
+    order_type: Literal["market", "limit"] = "market"
+    limit_price: Decimal | None = Field(default=None, gt=0)
+    """Phase 84 (D101). For a limit order the risk engine sizes on the
+    limit price (a buy cannot pay more, a sell cannot get less), so
+    `estimated_price` may be omitted. Paper brokers fill only a MARKETABLE
+    limit, at the market; a non-marketable one is a 409, never a pretend
+    resting order. Live brokers send a real limit order the venue may
+    rest; that comes back as an unconfirmed order to cancel or reconcile."""
     market_data_as_of: datetime | None = None
     """Only meaningful alongside a caller-supplied estimated_price - omit
     to use the server's current time. Ignored (and overwritten by the

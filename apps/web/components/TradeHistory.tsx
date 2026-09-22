@@ -158,6 +158,37 @@ export default function TradeHistory({ className }: { className?: string } = {})
   const [limit, setLimit] = useState("50");
 
   const [loading, setLoading] = useState(false);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+  const [cancelNotice, setCancelNotice] = useState<string | null>(null);
+
+  /** Phase 84 (D101): cancel a resting live order. The venue's answer is
+   * what gets shown — a cancel can race a fill. */
+  async function cancelOrder(orderId: string) {
+    setCancelling(orderId);
+    setCancelNotice(null);
+    try {
+      const res = await fetch(
+        `/api/brokers/${encodeURIComponent(brokerId)}/orders/${encodeURIComponent(orderId)}/cancel`,
+        { method: "POST" },
+      );
+      const data = (await res.json().catch(() => null)) as
+        | { outcome?: string; broker_status?: string | null; detail?: string }
+        | null;
+      if (handleExpiredSession(res.status)) return;
+      if (!res.ok) {
+        setCancelNotice(`Cancel failed: ${data?.detail ?? `HTTP ${res.status}`}`);
+        return;
+      }
+      setCancelNotice(
+        `Venue answered: ${data?.outcome ?? "?"}${data?.broker_status ? ` (${data.broker_status})` : ""}`,
+      );
+      await load(pageLimit, pageOffset);
+    } catch {
+      setCancelNotice("DATA_UNAVAILABLE: could not reach the trading API");
+    } finally {
+      setCancelling(null);
+    }
+  }
   const [result, setResult] = useState<OrdersResponse | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [status, setStatus] = useState<number | null>(null);
@@ -262,6 +293,11 @@ export default function TradeHistory({ className }: { className?: string } = {})
           {errorDetail}
         </Alert>
       )}
+      {cancelNotice && (
+        <Alert tone="info" role="status">
+          {cancelNotice}
+        </Alert>
+      )}
 
       {result && !errorDetail && orders.length === 0 && (
         <EmptyNote>
@@ -287,6 +323,7 @@ export default function TradeHistory({ className }: { className?: string } = {})
                 <th className={thClass}>Status</th>
                 <th className={thClass}>broker_kind</th>
                 <th className={thClass}>risk_block_reason</th>
+                <th className={thClass}>actions</th>
               </tr>
             </thead>
             <tbody>
@@ -307,6 +344,21 @@ export default function TradeHistory({ className }: { className?: string } = {})
                   <td className={`${tdClass} text-ink-muted`}>
                     {o.risk_block_reason ? (
                       <span title={o.risk_detail ?? undefined}>{o.risk_block_reason}</span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className={tdClass}>
+                    {o.status === "submitted_unconfirmed" && o.broker_kind === "live" ? (
+                      <button
+                        type="button"
+                        className={btnGhost}
+                        disabled={cancelling === o.id}
+                        onClick={() => void cancelOrder(o.id)}
+                        title="Ask the venue to cancel this resting order"
+                      >
+                        {cancelling === o.id ? "Cancelling…" : "Cancel"}
+                      </button>
                     ) : (
                       "—"
                     )}

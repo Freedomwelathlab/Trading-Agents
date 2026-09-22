@@ -8,7 +8,7 @@ side of that same guarantee).
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
@@ -16,13 +16,26 @@ from apps.api.app.risk.models import AccountState, Side
 
 
 class OrderRequest(BaseModel):
-    """A market order. Limit orders are intentionally not supported yet -
-    faking limit-order matching without a real order book would violate the
-    no-fabrication rule (spec Sec57)."""
+    """A market order, or (Phase 84, D101) a limit order.
+
+    A limit order at a real venue may REST unfilled. The paper broker has
+    no order book to rest it in, so it fills a MARKETABLE limit (a buy at
+    or above the market, a sell at or below it) at the market price — the
+    real outcome of such an order — and refuses a non-marketable one with
+    `OrderWouldRestError` rather than inventing a later fill (spec Sec57).
+    The live adapter sends `OrderType.LO` and reports the venue's answer."""
 
     symbol: str
     side: Side
     quantity: Decimal
+    order_type: Literal["market", "limit"] = "market"
+    limit_price: Decimal | None = None
+
+
+class OrderWouldRestError(Exception):
+    """A limit order that would not execute at the current price. The paper
+    broker raises it instead of pretending to hold a resting order; the
+    route turns it into a 409 with the numbers in it."""
 
 
 class Fill(BaseModel):

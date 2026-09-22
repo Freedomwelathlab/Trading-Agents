@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { AUTH_COOKIE_NAME, backendUrl } from "@/lib/backend";
 
 /**
- * Proxies `DELETE /watchlists/{id}` (Phase 50). Owner-only server-side:
+ * Proxies `DELETE /watchlists/{id}` (Phase 50) and `PATCH` (rename,
+ * Phase 84). Owner-only server-side:
  * this handler forwards the caller's own token and never inspects who owns
  * what — the backend's 403 for someone else's watchlist and 404 for one
  * that does not exist both come back unchanged.
@@ -36,6 +37,33 @@ export async function DELETE(
     return new NextResponse(null, { status: 204 });
   }
 
+  const data = await r.json().catch(() => null);
+  return NextResponse.json(data, { status: r.status });
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ watchlistId: string }> },
+) {
+  const { watchlistId } = await params;
+  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+  if (!token) {
+    return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
+  }
+  const body = await request.text();
+  let r: Response;
+  try {
+    r = await fetch(backendUrl(`/watchlists/${encodeURIComponent(watchlistId)}`), {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body,
+    });
+  } catch {
+    return NextResponse.json(
+      { detail: "DATA_UNAVAILABLE: could not reach the trading API" },
+      { status: 503 },
+    );
+  }
   const data = await r.json().catch(() => null);
   return NextResponse.json(data, { status: r.status });
 }

@@ -55,6 +55,8 @@ export type SessionInfo = {
   issued_at: string | null;
   expires_at: string;
   expires_in_seconds: number;
+  /** Permission strings the role grants; absent on older backends. */
+  permissions?: string[];
 };
 
 /** Below this, the UI warns that the session is about to end. */

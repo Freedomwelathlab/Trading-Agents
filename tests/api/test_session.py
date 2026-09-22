@@ -167,3 +167,49 @@ async def test_session_is_401_for_a_deactivated_user_holding_a_still_valid_token
                 "/auth/session", headers={"Authorization": f"Bearer {token}"}
             )
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_issues_a_new_token_that_keeps_the_original_session_start():
+    """Phase 84 (D100): a refresh slides the expiry but carries `orig_iat`
+    so the hard session ceiling is measured from first login."""
+    from apps.api.app.auth.security import decode_access_token_claims
+
+    settings = get_settings()
+    async with db_session() as session, active_user(session) as (_uid, email), api_client() as c:
+        token = await _get_token(c, email)
+        first = decode_access_token_claims(token, settings)
+
+        r = await c.post("/auth/refresh", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        new_token = r.json()["access_token"]
+        # Within the same second the two tokens can be byte-identical (iat
+        # has second resolution); the claims are what matter.
+        second = decode_access_token_claims(new_token, settings)
+        assert second["orig_iat"] == first["orig_iat"]
+        assert second["exp"] >= first["exp"]
+
+        # The refreshed token works, and reports the wider permissions shape.
+        r = await c.get("/auth/session", headers={"Authorization": f"Bearer {new_token}"})
+        assert r.status_code == 200 and "permissions" in r.json()
+
+
+@pytest.mark.asyncio
+async def test_refresh_refuses_a_session_older_than_the_ceiling():
+    settings = get_settings()
+    async with db_session() as session, active_user(session) as (uid, _email), api_client() as c:
+        old = create_access_token(
+            uid, settings,
+            orig_iat=datetime.now(UTC) - timedelta(hours=settings.jwt_max_session_hours + 1),
+        )
+        r = await c.post("/auth/refresh", headers={"Authorization": f"Bearer {old}"})
+        assert r.status_code == 401
+        assert "SESSION_MAX_AGE" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_without_a_valid_token_is_401():
+    async with api_client() as c:
+        assert (await c.post("/auth/refresh")).status_code == 401
+        r = await c.post("/auth/refresh", headers={"Authorization": "Bearer nope"})
+        assert r.status_code == 401

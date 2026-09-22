@@ -22,6 +22,7 @@ session/transaction, which sees its own flushed-but-uncommitted writes.
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -208,6 +209,7 @@ async def submit_trade_and_record(
     portfolio: PortfolioState | None = None,
     portfolio_limits: PortfolioLimits | None = None,
     market_risk: MarketRiskInputs | None = None,
+    market_price: Decimal | None = None,
 ) -> OMSResult:
     try:
         result = submit_trade(
@@ -221,6 +223,7 @@ async def submit_trade_and_record(
             portfolio=portfolio,
             portfolio_limits=portfolio_limits,
             market_risk=market_risk,
+            market_price=market_price,
         )
     except OrderNotConfirmedError as exc:
         await _record_unconfirmed_order(

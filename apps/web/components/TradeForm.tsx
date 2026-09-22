@@ -40,6 +40,8 @@ export default function TradeForm() {
   const [quantity, setQuantity] = useState("10");
   const [estimatedPrice, setEstimatedPrice] = useState("");
   const [stopPrice, setStopPrice] = useState("");
+  const [orderType, setOrderType] = useState<"market" | "limit">("market");
+  const [limitPrice, setLimitPrice] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TradeResponse | null>(null);
@@ -56,6 +58,12 @@ export default function TradeForm() {
     const body: Record<string, unknown> = { symbol, side, quantity };
     if (estimatedPrice.trim()) body.estimated_price = estimatedPrice.trim();
     if (stopPrice.trim()) body.stop_price = stopPrice.trim();
+    // Phase 84 (D101): a limit order carries its price; the backend sizes
+    // risk on it and, for a paper broker, fills only a marketable one.
+    if (orderType === "limit") {
+      body.order_type = "limit";
+      if (limitPrice.trim()) body.limit_price = limitPrice.trim();
+    }
 
     try {
       const res = await fetch(`/api/trades/${encodeURIComponent(brokerId)}`, {
@@ -144,6 +152,30 @@ export default function TradeForm() {
               className={monoInputClass}
               value={stopPrice}
               onChange={(e) => setStopPrice(e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Order type"
+            hint="Paper: a limit fills only if marketable, at the market; otherwise a real 409. Live: sent to the venue as a limit order it may rest — cancel it from Trade history."
+          >
+            <select
+              id="trade-order-type"
+              className={inputClass}
+              value={orderType}
+              onChange={(e) => setOrderType(e.target.value as "market" | "limit")}
+            >
+              <option value="market">market</option>
+              <option value="limit">limit</option>
+            </select>
+          </Field>
+          <Field label="Limit price">
+            <input
+              id="trade-limit-price"
+              className={monoInputClass}
+              value={limitPrice}
+              disabled={orderType !== "limit"}
+              placeholder={orderType === "limit" ? "required" : "—"}
+              onChange={(e) => setLimitPrice(e.target.value)}
             />
           </Field>
         </div>

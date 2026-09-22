@@ -281,8 +281,21 @@ export function CreateBrokerForm() {
           idPrefix="create-broker"
         />
 
-        <button type="submit" disabled={loading} className={submitClass}>
-          {loading ? "Creating…" : "Create broker"}
+        <button
+          type="submit"
+          disabled={loading || (kind === "live" && !confirmLive)}
+          className={submitClass}
+          title={
+            kind === "live" && !confirmLive
+              ? "Tick the confirmation above to create a live broker"
+              : undefined
+          }
+        >
+          {loading
+            ? "Creating…"
+            : kind === "live" && !confirmLive
+              ? "Tick the confirmation to create a live broker"
+              : "Create broker"}
         </button>
       </form>
       <ResultOrError status={status} errorDetail={errorDetail} result={result} />

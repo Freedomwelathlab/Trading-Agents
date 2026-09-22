@@ -48,10 +48,15 @@ import uuid
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.app.api.dependencies import AuthorizedBroker, require_broker_access
+from apps.api.app.api.dependencies import (
+    AuthorizedBroker,
+    get_live_broker_adapter,
+    require_broker_access,
+)
 from apps.api.app.api.schemas_orders import (
     FillBlotterEntry,
     FillEntry,
@@ -61,9 +66,10 @@ from apps.api.app.api.schemas_orders import (
 )
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import BrokerKind
+from apps.api.app.db.models import BrokerKind, OrderStatus
 from apps.api.app.db.models import Fill as FillRow
 from apps.api.app.db.models import Order as OrderRow
+from apps.api.app.execution.live_broker import LiveBrokerAdapter
 
 router = APIRouter(prefix="/brokers/{broker_id}/orders", tags=["orders"])
 fills_router = APIRouter(prefix="/brokers/{broker_id}/fills", tags=["orders"])
@@ -287,4 +293,83 @@ async def list_fills_endpoint(
         ],
         limit=limit,
         offset=offset,
+    )
+
+
+class CancelOrderResponse(BaseModel):
+    order: OrderResponse
+    broker_status: str | None
+    outcome: str
+    """`cancelled` (the venue reports it closed unfilled), `filled` (the
+    cancel raced a fill — the venue's answer wins), or `still_open` (the
+    venue still shows it open; the reconciler keeps watching)."""
+
+
+@router.post("/{order_id}/cancel", response_model=CancelOrderResponse)
+async def cancel_order_endpoint(
+    broker_id: uuid.UUID,
+    order_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    authorized: AuthorizedBroker = Depends(require_broker_access(Permission.SUBMIT_LIVE_TRADE)),
+    live_broker: LiveBrokerAdapter | None = Depends(get_live_broker_adapter),
+) -> CancelOrderResponse:
+    """Phase 84 (D101): cancel a live order the venue has not executed.
+
+    Only a `submitted_unconfirmed` row on a LIVE broker can be cancelled —
+    a paper order fills or is refused in the same call, so there is never
+    anything to cancel (409). The venue is asked to cancel and then asked
+    what happened; its answer is applied through the reconciler's own
+    guarded `resolve_order`, so a cancel that raced a fill is recorded as
+    the fill it was, never as the cancel that was wished for.
+    """
+    from datetime import UTC, datetime
+
+    from apps.api.app.execution.live_broker import LiveBrokerError
+    from apps.api.app.execution.reconciliation import resolve_order
+
+    row = (
+        await session.execute(
+            select(OrderRow).where(OrderRow.id == order_id, OrderRow.broker_id == broker_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail=f"No order with id {order_id} for broker {broker_id}."
+        )
+    if authorized.broker.kind is not BrokerKind.LIVE:
+        raise HTTPException(
+            status_code=409,
+            detail="NOT_CANCELLABLE: a paper order fills or is refused at submission; "
+            "there is never a resting order to cancel.",
+        )
+    if row.status is not OrderStatus.SUBMITTED_UNCONFIRMED or not row.broker_order_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"NOT_CANCELLABLE: order is {row.status.value}; only a "
+            f"submitted_unconfirmed live order can be cancelled.",
+        )
+    if live_broker is None:
+        raise HTTPException(
+            status_code=400,
+            detail="NOT_CONFIGURED: no live broker adapter is built on this deployment "
+            "(TRADING_MODE, LIVE_TRADING_ENABLED and the LONGPORT_LIVE_* trio).",
+        )
+
+    try:
+        status = live_broker.cancel_order(row.broker_order_id)
+    except LiveBrokerError as exc:
+        raise HTTPException(status_code=502, detail=f"LIVE_BROKER_ERROR: {exc}") from None
+
+    await resolve_order(session, row, status, now=datetime.now(UTC))
+    await session.commit()
+    await session.refresh(row)
+    fills = await _fills_by_order(session, [row.id])
+    return CancelOrderResponse(
+        order=_to_order_response(
+            row, broker_kind=authorized.broker.kind, fills=fills.get(row.id, [])
+        ),
+        broker_status=status.raw_status,
+        outcome=(
+            "still_open" if status.still_open else "filled" if status.executed else "cancelled"
+        ),
     )

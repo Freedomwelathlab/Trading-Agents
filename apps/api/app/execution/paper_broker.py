@@ -14,7 +14,7 @@ a change to it.
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from apps.api.app.execution.broker import Fill, OrderRequest
+from apps.api.app.execution.broker import Fill, OrderRequest, OrderWouldRestError
 from apps.api.app.risk.models import AccountState, Side
 
 
@@ -45,6 +45,22 @@ class PaperBrokerAdapter:
         return dict(self._positions)
 
     def submit_order(self, order: OrderRequest, *, market_price: Decimal) -> Fill:
+        if order.order_type == "limit":
+            # Phase 84 (D101): no order book here, so only a MARKETABLE
+            # limit can be honoured, and it fills at the market — which is
+            # what a marketable limit gets at a real venue too.
+            assert order.limit_price is not None  # nosec - validated upstream
+            marketable = (
+                order.limit_price >= market_price
+                if order.side is Side.BUY
+                else order.limit_price <= market_price
+            )
+            if not marketable:
+                raise OrderWouldRestError(
+                    f"{order.side.value} limit {order.limit_price} is not marketable at "
+                    f"{market_price}; the paper broker cannot hold a resting order and "
+                    f"will not fabricate a later fill."
+                )
         notional = order.quantity * market_price
 
         if order.side is Side.BUY:

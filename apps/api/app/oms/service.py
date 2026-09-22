@@ -97,7 +97,12 @@ def submit_trade(
     portfolio: PortfolioState | None = None,
     portfolio_limits: PortfolioLimits | None = None,
     market_risk: MarketRiskInputs | None = None,
+    market_price: Decimal | None = None,
 ) -> OMSResult:
+    """`market_price` (Phase 84, D101) is the CURRENT quote handed to the
+    adapter, which for a limit order differs from `proposal.estimated_price`
+    (the limit). Defaults to the estimated price, which is what every
+    market-order caller passed before."""
     decision = evaluate_trade(
         proposal,
         account,
@@ -146,9 +151,18 @@ def submit_trade(
                     portfolio_decision=portfolio_decision,
                 )
 
-    order = OrderRequest(symbol=effective.symbol, side=effective.side, quantity=effective.quantity)
+    order = OrderRequest(
+        symbol=effective.symbol,
+        side=effective.side,
+        quantity=effective.quantity,
+        order_type=effective.order_type,
+        limit_price=effective.limit_price,
+    )
     try:
-        fill = broker.submit_order(order, market_price=effective.estimated_price)
+        fill = broker.submit_order(
+            order,
+            market_price=market_price if market_price is not None else effective.estimated_price,
+        )
     except OrderNotConfirmedError as exc:
         # Phase 49 (D066). A REAL order now exists at a REAL broker and this
         # function is about to unwind past every local variable describing

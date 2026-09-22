@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import SideNav from "@/components/shell/SideNav";
 import SideWatchlist from "@/components/shell/SideWatchlist";
 import SessionStatus from "@/components/SessionStatus";
+import SessionKeepAlive from "@/components/SessionKeepAlive";
 import LogoutButton from "@/components/LogoutButton";
 
 /**
@@ -46,6 +47,7 @@ export default function AppShell({
         <SideNav />
         <SideWatchlist />
         <div className="mt-auto flex flex-col gap-3 border-t border-line pt-4">
+          <SessionKeepAlive />
           <SessionStatus />
           <LogoutButton />
         </div>

@@ -39,6 +39,9 @@ export default function SideWatchlist() {
   const [newListName, setNewListName] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** "rename" edits the active list's name in place; "new" creates one. */
+  const [editMode, setEditMode] = useState<"rename" | "new" | null>(null);
+  const [editName, setEditName] = useState("");
 
   const classifyLists = useMemo(
     () => classifyWithAbsences<{ watchlists: WatchlistRow[] }>([404], "No watchlists."),
@@ -129,10 +132,53 @@ export default function SideWatchlist() {
 
   async function createList(e: React.FormEvent) {
     e.preventDefault();
-    const name = newListName.trim();
+    const name = (editMode === "new" ? editName : newListName).trim();
     if (!name) return;
-    if (await post("/api/watchlists", { name })) {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/watchlists", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (handleExpiredSession(res.status)) return;
+      const data = (await res.json().catch(() => null)) as { id?: string; detail?: string } | null;
+      if (!res.ok) {
+        setActionError(data?.detail ?? `Request failed (HTTP ${res.status})`);
+        return;
+      }
       setNewListName("");
+      setEditName("");
+      setEditMode(null);
+      if (data?.id) setActiveList(data.id);
+      reloadLists();
+    } catch {
+      setActionError("DATA_UNAVAILABLE: could not reach the trading API");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function renameList(e: React.FormEvent) {
+    e.preventDefault();
+    const name = editName.trim();
+    if (!name || !selected) return;
+    if (await post(`/api/watchlists/${encodeURIComponent(selected)}`, { name }, "PATCH")) {
+      setEditMode(null);
+      reloadLists();
+    }
+  }
+
+  async function deleteList() {
+    if (!selected) return;
+    const list = lists?.find((l) => l.id === selected);
+    if (!list) return;
+    if (list.symbols.length > 0) {
+      setActionError(`"${list.name}" still has ${list.symbols.length} symbol(s); remove them first.`);
+      return;
+    }
+    if (await post(`/api/watchlists/${encodeURIComponent(selected)}`, undefined, "DELETE")) {
+      setActiveList(null);
       reloadLists();
     }
   }
@@ -146,24 +192,81 @@ export default function SideWatchlist() {
         >
           Watchlist
         </h2>
-        {lists && lists.length > 1 && selected ? (
-          <select
-            id="side-watchlist-select"
-            aria-label="Active watchlist"
-            value={selected}
-            onChange={(e) => setActiveList(e.target.value)}
-            className="max-w-[120px] rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-ink-muted"
-          >
-            {lists.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
-              </option>
-            ))}
-          </select>
-        ) : lists && lists.length === 1 ? (
-          <span className="truncate text-[11px] text-ink-muted">{lists[0].name}</span>
+        {lists && lists.length > 0 && selected ? (
+          <div className="flex items-center gap-1">
+            <select
+              id="side-watchlist-select"
+              aria-label="Active watchlist"
+              value={selected}
+              onChange={(e) => setActiveList(e.target.value)}
+              className="max-w-[110px] rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-ink-muted"
+            >
+              {lists.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              aria-label="Rename watchlist"
+              title="Rename"
+              className="rounded px-1 text-[11px] text-ink-faint hover:text-accent"
+              onClick={() => {
+                setEditName(lists.find((l) => l.id === selected)?.name ?? "");
+                setEditMode(editMode === "rename" ? null : "rename");
+              }}
+            >
+              ✎
+            </button>
+            <button
+              type="button"
+              aria-label="New watchlist"
+              title="New watchlist"
+              className="rounded px-1 text-[11px] text-ink-faint hover:text-accent"
+              onClick={() => {
+                setEditName("");
+                setEditMode(editMode === "new" ? null : "new");
+              }}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              aria-label="Delete watchlist"
+              title="Delete this list (must be empty)"
+              className="rounded px-1 text-[11px] text-ink-faint hover:text-neg"
+              onClick={() => void deleteList()}
+              disabled={busy}
+            >
+              🗑
+            </button>
+          </div>
         ) : null}
       </div>
+
+      {editMode ? (
+        <form
+          onSubmit={editMode === "rename" ? renameList : createList}
+          className="flex gap-1 px-1"
+        >
+          <input
+            id="side-watchlist-edit-name"
+            aria-label={editMode === "rename" ? "Watchlist name" : "New watchlist name"}
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            placeholder={editMode === "rename" ? "Rename" : "New list name"}
+            autoFocus
+            className="min-w-0 flex-1 rounded border border-line bg-surface px-2 py-1 text-xs"
+          />
+          <button type="submit" disabled={busy || !editName.trim()} className={btnGhost}>
+            {editMode === "rename" ? "Save" : "Create"}
+          </button>
+          <button type="button" onClick={() => setEditMode(null)} className={btnGhost}>
+            ×
+          </button>
+        </form>
+      ) : null}
 
       {listsError ? (
         <p className="px-1 text-xs text-neg">{listsError}</p>
@@ -191,7 +294,11 @@ export default function SideWatchlist() {
               Prices unavailable: {quotesUnavailable}
             </p>
           ) : null}
-          <ul className="flex max-h-64 flex-col overflow-y-auto" aria-label="Watchlist symbols">
+          <ul
+            className="flex h-56 min-h-24 max-h-[70vh] resize-y flex-col overflow-y-auto rounded-md border border-line/60 pb-1"
+            aria-label="Watchlist symbols"
+            title="Drag the corner to show more tickers"
+          >
             {(quotes ?? lists.find((l) => l.id === selected)?.symbols.map((symbol) => ({
               symbol,
               price: null,

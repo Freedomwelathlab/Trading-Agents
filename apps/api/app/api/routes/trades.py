@@ -132,7 +132,7 @@ from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import BrokerKind, OrderStatus
-from apps.api.app.execution.broker import BrokerAdapter
+from apps.api.app.execution.broker import BrokerAdapter, OrderWouldRestError
 from apps.api.app.execution.live_broker import (
     LiveBrokerAdapter,
     LiveBrokerError,
@@ -422,6 +422,7 @@ async def _execute_trade(
     marks: dict[str, Decimal],
     submitted_by_user_id: uuid.UUID,
     live_broker: LiveBrokerAdapter | None = None,
+    market_price: Decimal | None = None,
 ) -> TradeSubmissionResponse:
     """`live_broker` is None for every paper trade, which is the only shape
     this function had before Phase 43; passing one switches the broker and
@@ -535,7 +536,12 @@ async def _execute_trade(
             portfolio=portfolio,
             portfolio_limits=portfolio_limits,
             market_risk=market_risk,
+            market_price=market_price,
         )
+    except OrderWouldRestError as exc:
+        # Phase 84 (D101): a non-marketable limit on the paper broker. Not
+        # an error in the request; a real answer about the price.
+        raise HTTPException(status_code=409, detail=f"ORDER_WOULD_REST: {exc}") from None
     except LiveOrderNotFilledError as exc:
         # D058: the live broker ACCEPTED a real order but has not executed
         # it. The one thing that must not happen here is inventing a fill,
@@ -608,9 +614,35 @@ async def submit_trade_endpoint(
         _require_paper_broker(authorized)
         live_broker = None
 
+    if request.order_type == "limit" and request.limit_price is None:
+        raise HTTPException(
+            status_code=400, detail="LIMIT_PRICE_REQUIRED: a limit order needs limit_price."
+        )
+    if request.order_type == "market" and request.limit_price is not None:
+        raise HTTPException(
+            status_code=400, detail="limit_price is only meaningful on a limit order."
+        )
+
     if request.estimated_price is not None:
         estimated_price = request.estimated_price
         market_data_as_of = request.market_data_as_of or datetime.now(UTC)
+    elif request.order_type == "limit" and request.limit_price is not None:
+        # Phase 84 (D101): the limit price bounds what can be paid, so it
+        # is the honest number to size risk on; the vendor is still asked
+        # for the current quote so the paper broker can decide if the
+        # limit is marketable (a stale or absent quote is a real 400).
+        market_price, market_data_as_of = await _resolve_live_quote(
+            request.symbol,
+            market_data_router,
+            not_configured_hint=(
+                "NOT_CONFIGURED: a limit order needs a current quote to test against "
+                "and no market data vendor is wired (docs/DECISIONS.md D008/D017)."
+            ),
+        )
+        estimated_price = request.limit_price
+        request = request.model_copy(
+            update={"marks": {**request.marks, "__market__": market_price}}
+        )
     else:
         estimated_price, market_data_as_of = await _resolve_live_quote(
             request.symbol,
@@ -621,6 +653,7 @@ async def submit_trade_endpoint(
             ),
         )
 
+    market_for_symbol = request.marks.pop("__market__", None) or estimated_price
     proposal = TradeProposal(
         symbol=request.symbol,
         side=request.side,
@@ -628,6 +661,8 @@ async def submit_trade_endpoint(
         estimated_price=estimated_price,
         stop_price=request.stop_price,
         market_data_as_of=market_data_as_of,
+        order_type=request.order_type,
+        limit_price=request.limit_price,
     )
 
     return await _execute_trade(
@@ -635,9 +670,10 @@ async def submit_trade_endpoint(
         settings=settings,
         broker_id=broker_id,
         proposal=proposal,
-        marks={**request.marks, request.symbol: estimated_price},
+        marks={**request.marks, request.symbol: market_for_symbol},
         submitted_by_user_id=authorized.user.id,
         live_broker=live_broker,
+        market_price=market_for_symbol,
     )
 
 

@@ -26,11 +26,19 @@ class InvalidTokenError(Exception):
     regardless of which, so this doesn't need finer-grained subtypes."""
 
 
-def create_access_token(user_id: uuid.UUID, settings: Settings) -> str:
+def create_access_token(
+    user_id: uuid.UUID, settings: Settings, *, orig_iat: datetime | None = None
+) -> str:
+    """`orig_iat` (Phase 84, D100) is the instant the SESSION began — the
+    first token's `iat`, carried unchanged through every refresh — so a
+    sliding session still has a hard ceiling (`jwt_max_session_hours`)."""
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "iat": now,
+        # PyJWT converts only the registered date claims; a custom one is
+        # stored as the epoch integer it will be read back as.
+        "orig_iat": int((orig_iat or now).timestamp()),
         "exp": now + timedelta(minutes=settings.jwt_access_token_expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)

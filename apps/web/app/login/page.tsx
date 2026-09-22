@@ -173,9 +173,9 @@ function LoginForm() {
         </div>
 
         <p className="mt-5 text-center text-xs leading-relaxed text-ink-faint">
-          Sessions are held in an httpOnly cookie and expire server-side. Trading
-          mode and the live-trading switch are enforced by the backend, never by
-          this page.
+          Sessions are held in an httpOnly cookie and end after 15 minutes without
+          input (or 12 hours in all). Trading mode and the live-trading switch are
+          enforced by the backend, never by this page.
         </p>
       </div>
     </main>

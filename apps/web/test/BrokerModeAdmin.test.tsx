@@ -72,29 +72,18 @@ describe("CreateBrokerForm", () => {
     expect(box.disabled).toBe(true);
   });
 
-  it("submits a live broker WITHOUT confirm_live when the box is unticked, and shows the backend's real 400", async () => {
-    mockFetch().mockResolvedValueOnce({
-      ok: false,
-      status: 400,
-      json: async () => ({
-        detail:
-          "LIVE_KIND_CONFIRMATION_REQUIRED: designating a broker as kind='live' makes it eligible for the real-money execution path.",
-      }),
-    });
-
+  it("will not submit a live broker until the confirmation is ticked (Phase 84)", async () => {
+    // Before Phase 84 an unticked live submission went to the backend and
+    // came back as its real 400; operators read that as "cannot create a
+    // live broker". The form now refuses to submit at all until the box
+    // is ticked, and says so on the button.
     render(<CreateBrokerForm />);
     fillRequired();
     fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: "live" } });
-    fireEvent.click(screen.getByRole("button", { name: /create broker/i }));
-
-    await waitFor(() =>
-      expect(
-        screen.getByText(/LIVE_KIND_CONFIRMATION_REQUIRED/),
-      ).toBeInTheDocument(),
-    );
-    const body = bodyOf(0);
-    expect(body.kind).toBe("live");
-    expect(body).not.toHaveProperty("confirm_live");
+    const button = screen.getByRole("button", { name: /tick the confirmation/i });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(mockFetch()).not.toHaveBeenCalled();
   });
 
   it("sends confirm_live: true only once the box is ticked for a live target", async () => {
@@ -121,12 +110,6 @@ describe("CreateBrokerForm", () => {
   });
 
   it("clears a live confirmation when the target kind changes away and back", async () => {
-    mockFetch().mockResolvedValueOnce({
-      ok: false,
-      status: 400,
-      json: async () => ({ detail: "LIVE_KIND_CONFIRMATION_REQUIRED: ..." }),
-    });
-
     render(<CreateBrokerForm />);
     fillRequired();
     const kind = screen.getByLabelText(/^kind$/i);
@@ -144,9 +127,9 @@ describe("CreateBrokerForm", () => {
       false,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /create broker/i }));
-    await waitFor(() => expect(mockFetch()).toHaveBeenCalled());
-    expect(bodyOf(0)).not.toHaveProperty("confirm_live");
+    // ...and with the tick gone the form is back to refusing to submit.
+    expect(screen.getByRole("button", { name: /tick the confirmation/i })).toBeDisabled();
+    expect(mockFetch()).not.toHaveBeenCalled();
   });
 });
 

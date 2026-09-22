@@ -12,9 +12,10 @@ import {
   ChangeBrokerModeForm,
   CreateBrokerForm,
 } from "@/components/admin/BrokerModeAdmin";
+import AdminGate from "@/components/admin/AdminGate";
 import { EmergencyStopPanel, MarketDataBackfillPanel } from "@/components/admin/SafetyAdmin";
 import AppShell from "@/components/shell/AppShell";
-import { Alert, SectionHeading } from "@/components/ui/primitives";
+import { SectionHeading } from "@/components/ui/primitives";
 import {
   UsersList,
   RolesList,
@@ -48,13 +49,7 @@ export default function AdminPage() {
     <AppShell
       title="Administration"
       subtitle="Safety switch, market data, users, roles and broker grants."
-      statusStrip={
-        <Alert tone="warn" role="status" className="max-w-3xl">
-          Requires the <code className="font-mono">admin:manage</code> permission.
-          If your account doesn&apos;t hold it, every action below will return a
-          real 403 from the backend when you submit it.
-        </Alert>
-      }
+      statusStrip={<AdminGate />}
     >
       <div className="flex flex-col gap-5">
         <SectionHeading note="read on every order path, never liquidates">

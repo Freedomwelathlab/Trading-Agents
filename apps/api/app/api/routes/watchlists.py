@@ -182,6 +182,31 @@ async def list_watchlists(
     )
 
 
+@router.patch("/{watchlist_id}", response_model=WatchlistResponse)
+async def rename_watchlist(
+    watchlist_id: uuid.UUID,
+    payload: CreateWatchlistRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> WatchlistResponse:
+    """Phase 84: rename. Owner-only, same validation as create (stripped,
+    non-blank, length-capped). The items are untouched."""
+    watchlist = await _owned_watchlist(watchlist_id, current_user, session)
+    watchlist.name = payload.name
+    await session.commit()
+    items = (
+        await session.execute(
+            select(WatchlistItem.symbol)
+            .where(WatchlistItem.watchlist_id == watchlist_id)
+            .order_by(WatchlistItem.added_at.asc(), WatchlistItem.symbol.asc())
+        )
+    ).scalars().all()
+    return WatchlistResponse(
+        id=watchlist.id, name=watchlist.name, created_at=watchlist.created_at,
+        symbols=list(items),
+    )
+
+
 @router.delete("/{watchlist_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_watchlist(
     watchlist_id: uuid.UUID,

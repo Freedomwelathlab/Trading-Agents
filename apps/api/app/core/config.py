@@ -644,7 +644,15 @@ class Settings(BaseSettings):
     start without configuration, same posture as the live-trading gate
     below. Set via .env; see .env.example for how to generate one."""
     jwt_algorithm: str = "HS256"
-    jwt_access_token_expire_minutes: int = 30
+    jwt_access_token_expire_minutes: int = 15
+    """Phase 84 (D100): the IDLE timeout. The web app renews the token
+    while the screen is active (POST /auth/refresh), so this is how long a
+    session survives with no keyboard or mouse input, not how long a
+    working session lasts."""
+    jwt_max_session_hours: int = 12
+    """Phase 84 (D100): hard ceiling on a sliding session, measured from
+    the first login (`orig_iat`), after which /auth/refresh refuses and
+    the operator signs in again however active they are."""
 
     auth_max_failed_login_attempts: int = 5
     """Phase 39 (docs/DECISIONS.md D049): how many CONSECUTIVE failed
