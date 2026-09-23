@@ -2357,10 +2357,11 @@ Both are returned on every bot response.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/brokers/providers` | The venue catalogue: asset classes, order types, short/extended-hours/fractional support, the credential fields each needs, and `adapter_status` (`implemented` or `catalogued`). Authentication only — public facts about public APIs. |
+| GET | `/brokers/providers` | The venue catalogue: asset classes, order types, short/extended-hours/fractional support, the credential fields each needs (with the `env_var` each may be supplied as instead), and `adapter_status` (`implemented` or `catalogued`). Authentication only — public facts about public APIs. |
 | GET | `/brokers/{broker_id}/credentials` | Presence per field, plus the VALUES of non-secret fields only. A secret is never in this response. `admin:manage`. |
 | PUT | `/brokers/{broker_id}/credentials` | Store the whole credential set, encrypted. A full replace, never a merge. 503 when no encryption key is configured, 422 naming a missing or unknown field. `admin:manage`. |
 | DELETE | `/brokers/{broker_id}/credentials` | Forget them. Idempotent — 204 either way. `admin:manage`. |
+| POST | `/brokers/{broker_id}/connection-check` | **Read-only probe** (Phase 94, D113). Logs in and reads the balance through the adapter's `get_account_state`; places no order. Always 200 while the probe RAN — a venue's refusal comes back as `reachable: false` with the venue's own words, because that is a finding and not a server error. Reports `credential_source` (`stored`/`environment`), the real `cash` figure (null on any failure, never 0) and position SYMBOLS only. `admin:manage`. |
 
 `BROKER_CREDENTIAL_ENCRYPTION_KEY` (a Fernet key) must be set for any of
 the writes to work. Unset, the store refuses rather than writing plaintext

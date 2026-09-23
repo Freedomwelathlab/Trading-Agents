@@ -5,7 +5,7 @@ import contextlib
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.db.models import (
@@ -13,8 +13,12 @@ from apps.api.app.db.models import (
     AutotradeBotRun,
     AutotradeBotTrade,
     Broker,
+    BrokerAccount,
     BrokerGrant,
     BrokerKind,
+    BrokerPosition,
+    Fill,
+    Order,
 )
 from tests.api.test_admin import _get_token, api_client, db_session
 from tests.api.test_deployments import _h, _role_user, deploy_only_user, deploy_user
@@ -39,6 +43,21 @@ async def granted_paper_broker(session, user_id):
             await session.execute(delete(AutotradeBotTrade).where(AutotradeBotTrade.bot_id == bid))
             await session.execute(delete(AutotradeBotRun).where(AutotradeBotRun.bot_id == bid))
         await session.execute(delete(AutotradeBot).where(AutotradeBot.broker_id == broker_id))
+        # `run-now` runs the REAL engine against REAL market data, so
+        # whether it places a paper order depends on whether a setup fired
+        # at that moment. On a quiet tape nothing is written and this
+        # teardown is a no-op; on a day one fires, an orders row references
+        # the broker and deleting it hits orders_broker_id_fkey. The same
+        # trap tests/deployments/conftest.py documents, and the reason this
+        # test failed only intermittently.
+        await session.execute(
+            delete(Fill).where(
+                Fill.order_id.in_(select(Order.id).where(Order.broker_id == broker_id))
+            )
+        )
+        await session.execute(delete(Order).where(Order.broker_id == broker_id))
+        await session.execute(delete(BrokerPosition).where(BrokerPosition.broker_id == broker_id))
+        await session.execute(delete(BrokerAccount).where(BrokerAccount.broker_id == broker_id))
         await session.execute(delete(BrokerGrant).where(BrokerGrant.broker_id == broker_id))
         await session.execute(delete(Broker).where(Broker.id == broker_id))
         await session.commit()
@@ -104,10 +123,24 @@ async def test_full_lifecycle_and_run_now_writes_a_run_row():
 
         r = await client.get(f"/autotrade/bots/{bid}/runs", headers=_h(token))
         assert r.status_code == 200
+        # Assert the INVARIANTS, not emptiness. `run-now` above ran the
+        # real engine against the real tape, so whether a setup fired is a
+        # property of the market at this minute and not of this code — an
+        # assertion of `trades == []` passes on a quiet afternoon and fails
+        # the day `order_block_fvg` triggers on QQQ, which is what it did.
+        # What must hold either way: every trade belongs to this bot's
+        # symbols, a trade with no exit is not counted as closed, and the
+        # two endpoints agree with each other.
         r = await client.get(f"/autotrade/bots/{bid}/trades", headers=_h(token))
-        assert r.status_code == 200 and r.json()["trades"] == []
+        assert r.status_code == 200
+        trades = r.json()["trades"]
+        assert all(t["symbol"] in ("TQQQ.US", "QQQ.US") for t in trades)
+        assert all(t["closed_at"] is None or t["exit_price"] is not None for t in trades)
+        closed = [t for t in trades if t["closed_at"] is not None]
+
         r = await client.get(f"/autotrade/bots/{bid}/stats", headers=_h(token))
-        assert r.status_code == 200 and r.json()["closed_trades"] == 0
+        assert r.status_code == 200
+        assert r.json()["closed_trades"] == len(closed)
 
         r = await client.post(f"/autotrade/bots/{bid}/stop", headers=_h(token))
         assert r.json()["status"] == "stopped"

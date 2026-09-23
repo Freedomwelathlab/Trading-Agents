@@ -55,6 +55,10 @@ from sqlalchemy import text
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_engine
+from apps.api.app.execution.env_credentials import (
+    configured_providers,
+    partial_providers,
+)
 
 router = APIRouter(tags=["health"])
 
@@ -134,7 +138,47 @@ async def health() -> dict[str, Any]:
         # NOT_CONFIGURED after the operator had set credentials, and
         # nothing on this endpoint could say which half was missing.
         "llm_provider": _llm_provider_status(settings),
+        # Phase 94 (D113): which venues this deployment could actually
+        # reach, from the environment alone. Same presence-only discipline
+        # as every key above - variable NAMES, never values, and no
+        # network call to find out whether a key is accepted.
+        #
+        # This one earns its place the way `llm_provider` did: an operator
+        # set six broker variables on Railway, every one of them under a
+        # name nothing reads, and no endpoint could say so. A bridge that
+        # silently sees no credentials is indistinguishable from a bridge
+        # nobody has configured.
+        "broker_credentials": _broker_credentials_status(settings),
     }
+
+
+def _broker_credentials_status(settings: Settings) -> str:
+    """Which providers the ENVIRONMENT configures, plus any half-set one.
+
+    Three things an operator cannot otherwise find out without a shell:
+    which venues are reachable from env vars, which they have STARTED and
+    not finished (the state that looks configured on a dashboard and is
+    not), and whether the encrypted store is available at all.
+
+    The store is reported separately because the two sources are
+    independent: env-supplied credentials work with no encryption key set,
+    and that is the whole point of D113.
+    """
+    complete = configured_providers()
+    partial = partial_providers()
+
+    parts = [f"env:{','.join(complete)}" if complete else "env:none"]
+    if partial:
+        parts.extend(
+            f"INCOMPLETE:{name} missing {', '.join(missing)}"
+            for name, missing in sorted(partial.items())
+        )
+    parts.append(
+        "store:available"
+        if settings.broker_credential_encryption_key
+        else "store:NOT_CONFIGURED: missing BROKER_CREDENTIAL_ENCRYPTION_KEY"
+    )
+    return " | ".join(parts)
 
 
 def _llm_provider_status(settings: Settings) -> str:

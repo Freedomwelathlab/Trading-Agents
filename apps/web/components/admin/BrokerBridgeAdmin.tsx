@@ -46,6 +46,10 @@ type ProviderField = {
   secret: boolean;
   required: boolean;
   help: string;
+  /** The environment variable this field can be supplied as instead
+   *  (Phase 94, D113). Shown rather than described, because an operator
+   *  with a dashboard and no console has to type it exactly. */
+  env_var: string;
 };
 
 type Provider = {
@@ -75,6 +79,16 @@ type CredentialStatus = {
 };
 
 type BrokerRow = { id: string; name: string; kind: string; provider: string };
+
+/** The read-only probe's answer (Phase 94, D113). `reachable: false` is a
+ *  200 — the venue answered and its answer was no. */
+type ConnectionCheck = {
+  reachable: boolean;
+  credential_source: string | null;
+  detail: string;
+  cash: string | null;
+  position_symbols: string[];
+};
 
 export function BrokerCatalogue() {
   const classify = useMemo(
@@ -147,6 +161,7 @@ export function BrokerCredentialsAdmin() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const [probe, setProbe] = useState<ConnectionCheck | null>(null);
 
   const classifyBrokers = useMemo(
     () => classifyWithAbsences<{ brokers: BrokerRow[] }>([404], "No brokers."),
@@ -196,8 +211,31 @@ export function BrokerCredentialsAdmin() {
       // stored secret is not readable, so leaving the typed value on
       // screen would be the only place it still exists.
       setDraft({});
+      setProbe(null);
       setSaved("Stored. Secrets are encrypted at rest and are not readable from any route.");
       setReload((n) => n + 1);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function check() {
+    if (!brokerId) return;
+    setBusy(true);
+    setError(null);
+    setSaved(null);
+    setProbe(null);
+    try {
+      const res = await fetch(`/api/brokers/${brokerId}/connection-check`, { method: "POST" });
+      const body = (await res.json().catch(() => null)) as
+        | (ConnectionCheck & { detail?: string })
+        | null;
+      if (handleExpiredSession(res.status)) return;
+      if (!res.ok || !body) {
+        setError(body?.detail ?? `Request failed (HTTP ${res.status})`);
+        return;
+      }
+      setProbe(body);
     } finally {
       setBusy(false);
     }
@@ -216,6 +254,7 @@ export function BrokerCredentialsAdmin() {
         return;
       }
       setDraft({});
+      setProbe(null);
       setSaved("Forgotten.");
       setReload((n) => n + 1);
     } finally {
@@ -306,6 +345,12 @@ export function BrokerCredentialsAdmin() {
                         }
                       />
                       <span className="leading-snug text-ink-faint">{f.help}</span>
+                      {f.env_var ? (
+                        <span className="text-ink-faint">
+                          or set{" "}
+                          <code className="font-mono text-[10px] text-ink">{f.env_var}</code>
+                        </span>
+                      ) : null}
                     </label>
                   ))}
                 </div>
@@ -314,10 +359,42 @@ export function BrokerCredentialsAdmin() {
               {error ? <Alert>{error}</Alert> : null}
               {saved ? <p className="text-xs text-pos">{saved}</p> : null}
 
+              {probe ? (
+                <div className="flex flex-col gap-1 text-xs">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <Pill tone={probe.reachable ? "pos" : "neg"}>
+                      {probe.reachable ? "reachable" : "not reachable"}
+                    </Pill>
+                    {probe.credential_source ? (
+                      <span className="text-ink-faint">
+                        using the {probe.credential_source} credentials
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="leading-snug text-ink-faint">{probe.detail}</span>
+                  {probe.reachable ? (
+                    <span className="font-mono text-[11px]">
+                      cash {probe.cash}
+                      {probe.position_symbols.length > 0
+                        ? ` · holding ${probe.position_symbols.join(", ")}`
+                        : " · no open positions"}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+
               {status.fields.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <button type="submit" className={btnPrimary} disabled={busy}>
                     {busy ? "Saving…" : "Save credentials"}
+                  </button>
+                  <button
+                    type="button"
+                    className={btnGhost}
+                    onClick={check}
+                    disabled={busy}
+                  >
+                    Test connection
                   </button>
                   <button
                     type="button"
@@ -330,6 +407,7 @@ export function BrokerCredentialsAdmin() {
                   <p className="text-[11px] leading-relaxed text-ink-faint">
                     Every field is sent together — the store replaces rather than merges, so a
                     half-filled form would otherwise leave a stale secret beside a new one.
+                    Testing logs in and reads the balance; it places no order.
                   </p>
                 </div>
               ) : null}

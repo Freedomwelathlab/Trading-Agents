@@ -241,3 +241,80 @@ rather than discovered later:
 None of that blocks a Forex build. All of it changes what an honest one
 looks like, and it is cheaper to know now than after a strategy has been
 measured on a VWAP that was never there.
+
+## Update, 2026-09-23 — how to actually supply a credential
+
+There are now **two** ways, and the difference matters because only one of
+them works on a deployment where you have a dashboard and no console.
+
+### Environment variables (Phase 94, D113)
+
+One rule: `{PROVIDER}_{FIELD}`, upper-cased. The field names are the ones
+the catalogue declares, so `GET /brokers/providers` will always tell you
+the exact string for every field (`credential_fields[].env_var`), and so
+will the credential form in the admin UI.
+
+| Venue | Required variables | Optional |
+| --- | --- | --- |
+| Kraken | `KRAKEN_API_KEY`, `KRAKEN_API_SECRET` | `KRAKEN_QUOTE_CURRENCY` (default USD), `KRAKEN_LIVE_ORDERS` |
+| IG | `IG_API_KEY`, `IG_USERNAME`, `IG_PASSWORD`, `IG_ACCOUNT_TYPE` | `IG_DEAL_CURRENCY` (default USD) |
+| Binance | `BINANCE_API_KEY`, `BINANCE_API_SECRET` | — |
+| Longbridge | `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, `LONGBRIDGE_ACCESS_TOKEN` | — |
+
+Four things worth knowing before you set them:
+
+* **`IG_ACCOUNT_TYPE` is `DEMO` or `LIVE` and has no default.** They are
+  different hosts with different money in them. An unrecognised value is
+  refused rather than guessed.
+* **Kraken places nothing unless `KRAKEN_LIVE_ORDERS` is set.** The adapter
+  defaults to Kraken's own `validate=true` mode, in which `submit_order`
+  raises rather than returning a fill. Kraken has no spot sandbox, so this
+  is the only rehearsal that exists there.
+* **Binance and Longbridge are catalogued, not implemented.** Setting their
+  variables prepares them and reaches nothing; the connection probe will
+  say `NO_ADAPTER` rather than let it look like a venue failure.
+* **The market-data `LONGPORT_*` trio is a different thing** and is
+  unaffected. It feeds quotes and candles; `LONGBRIDGE_*` would feed the
+  bridge's broker adapter, which does not exist yet.
+
+A **half-set** credential is the failure mode to watch for: it looks
+configured in a dashboard and is not. `/health`'s `broker_credentials` key
+reports it separately and names the variables still missing, e.g.
+`env:kraken | INCOMPLETE:ig missing IG_PASSWORD, IG_ACCOUNT_TYPE |
+store:NOT_CONFIGURED: missing BROKER_CREDENTIAL_ENCRYPTION_KEY`.
+
+### The encrypted store (Phase 90, D109)
+
+Still the default and still the richer path: per broker ROW rather than per
+deployment, so it can express "this user's IG account and that user's
+Kraken account", and a database dump alone is not a set of live
+credentials. It needs `BROKER_CREDENTIAL_ENCRYPTION_KEY`:
+
+```
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Keep it. Everything encrypted under a key is unreadable without it, and the
+store refuses to write plaintext or to generate a key of its own — a
+generated key would live in one process's memory and take every stored
+credential with it at the next restart.
+
+**Stored beats environment**, whole set against whole set. The two are
+never blended: a set assembled half from each was never entered as a whole
+by anybody, and nobody could then say which credential a rejected order
+used.
+
+### Proving it works, without trading
+
+`POST /brokers/{id}/connection-check` (admin only, **Test connection** in
+the UI) logs in and reads the balance. That exercises the credential, the
+signing, the host and the account selection — every part of the path that
+can be wrong — and none of the part that moves money. There is no order and
+no size.
+
+Its answer is honest in both directions. A refusal comes back as
+`reachable: false` at HTTP 200 carrying the venue's own words, because the
+probe ran and its answer was no; that is a finding, not a server error. A
+success reports the venue's real cash figure and the symbols it holds.
+`cash` is null on any failure — never `0`, which would be
+indistinguishable from an empty account.

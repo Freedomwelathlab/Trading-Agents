@@ -27,6 +27,7 @@ the operator's own action, performed here, through this route.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime
 
@@ -42,12 +43,21 @@ from apps.api.app.db.models import Broker, User
 from apps.api.app.execution.credentials import (
     CredentialsNotConfiguredError,
     CredentialStatus,
+    CredentialsUnreadableError,
     MissingCredentialFieldError,
     credential_status,
     delete_credentials,
+    resolve_credentials,
     save_credentials,
 )
-from apps.api.app.execution.registry import PROVIDERS, UnknownProviderError, get_provider
+from apps.api.app.execution.env_credentials import env_credential_status, env_var_names
+from apps.api.app.execution.registry import (
+    PROVIDERS,
+    AdapterNotImplementedError,
+    UnknownProviderError,
+    build_adapter,
+    get_provider,
+)
 
 router = APIRouter(prefix="/brokers", tags=["brokers"])
 
@@ -61,6 +71,11 @@ class CredentialFieldSpec(BaseModel):
     secret: bool
     required: bool
     help: str
+    env_var: str
+    """The environment variable this field can be supplied as instead
+    (Phase 94, D113). Carried in the response so an operator who has env
+    vars and no console is told the exact string rather than made to
+    infer the prefix and the case."""
 
 
 class ProviderResponse(BaseModel):
@@ -94,6 +109,10 @@ class FieldStatusResponse(BaseModel):
     value: str | None = None
     """Null for every secret, always. Populated only for a field the
     registry marks PUBLIC."""
+    env_var: str = ""
+    """The variable this field can be supplied as instead (Phase 94,
+    D113). Defaulted rather than required so an older client that
+    constructs this model in a test is unaffected."""
 
 
 class CredentialStatusResponse(BaseModel):
@@ -123,6 +142,7 @@ CATALOGUE_NOTE = (
 
 def _provider_response(name: str) -> ProviderResponse:
     p = get_provider(name)
+    variables = env_var_names(name)
     return ProviderResponse(
         provider=p.provider,
         display_name=p.display_name,
@@ -140,6 +160,7 @@ def _provider_response(name: str) -> ProviderResponse:
                 secret=f.kind.value == "secret",
                 required=f.required,
                 help=f.help,
+                env_var=variables[f.name],
             )
             for f in p.credential_fields
         ],
@@ -148,6 +169,7 @@ def _provider_response(name: str) -> ProviderResponse:
 
 
 def _status_response(status: CredentialStatus) -> CredentialStatusResponse:
+    variables = env_var_names(status.provider)
     return CredentialStatusResponse(
         broker_id=status.broker_id,
         provider=status.provider,
@@ -161,6 +183,7 @@ def _status_response(status: CredentialStatus) -> CredentialStatusResponse:
                 present=f.present,
                 help=f.help,
                 value=f.value,
+                env_var=variables[f.name],
             )
             for f in status.fields
         ],
@@ -254,3 +277,122 @@ async def delete_broker_credentials(
     broker = await _load_broker(session, broker_id)
     await delete_credentials(session, broker)
     await session.commit()
+
+
+class ConnectionCheckResponse(BaseModel):
+    """The outcome of a READ-ONLY probe. No order is placed."""
+
+    broker_id: uuid.UUID
+    provider: str
+    reachable: bool
+    credential_source: str | None = None
+    """`"stored"`, `"environment"`, or null when nothing was found."""
+    detail: str
+    cash: str | None = None
+    """The venue's own cash figure, as a string so no decimal is lost in
+    JSON. Null whenever the probe did not succeed — never 0, which would
+    be indistinguishable from an empty account."""
+    position_symbols: list[str] = Field(default_factory=list)
+    """Symbols only. A position's SIZE is this account's business and is
+    not needed to prove the credentials work."""
+
+
+@router.post("/{broker_id}/connection-check", response_model=ConnectionCheckResponse)
+async def check_broker_connection(
+    broker_id: uuid.UUID,
+    _current_user: User = Depends(require_permission(Permission.ADMIN)),
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> ConnectionCheckResponse:
+    """Prove a credential set reaches its venue, WITHOUT trading.
+
+    This calls exactly one thing — the adapter's `get_account_state` — and
+    that is the whole point: logging in and reading a balance exercises
+    the credential, the signing, the host and the account selection, which
+    is every part of the path that can be wrong, and none of the part that
+    moves money. There is no order, no size and no validate-only flag to
+    misread here.
+
+    It answers honestly in both directions. A failure is reported as a
+    failure with the venue's own words, never smoothed into "not
+    configured"; a success reports the venue's real cash figure, never a
+    placeholder. `reachable: false` with a `detail` is a 200 — the probe
+    ran and its answer is "no", which is a result, not a server error.
+    """
+    broker = await _load_broker(session, broker_id)
+    provider = get_provider(broker.provider)
+
+    try:
+        resolved = await resolve_credentials(session, broker, settings=settings)
+    except CredentialsUnreadableError as exc:
+        return ConnectionCheckResponse(
+            broker_id=broker.id,
+            provider=broker.provider,
+            reachable=False,
+            detail=f"CREDENTIALS_UNREADABLE: {exc}",
+        )
+
+    if resolved is None:
+        env = env_credential_status(broker.provider)
+        missing = ", ".join(env.missing_required)
+        return ConnectionCheckResponse(
+            broker_id=broker.id,
+            provider=broker.provider,
+            reachable=False,
+            detail=(
+                f"NOT_CONFIGURED: no credentials for {provider.display_name}. Store them "
+                f"for this broker, or set {missing} in the environment."
+            ),
+        )
+
+    try:
+        adapter = build_adapter(broker.provider, resolved.credentials)
+    except AdapterNotImplementedError as exc:
+        return ConnectionCheckResponse(
+            broker_id=broker.id,
+            provider=broker.provider,
+            reachable=False,
+            credential_source=resolved.source,
+            detail=f"NO_ADAPTER: {exc}",
+        )
+    except Exception as exc:  # noqa: BLE001 - a vendor error is an answer, not a 500
+        return ConnectionCheckResponse(
+            broker_id=broker.id,
+            provider=broker.provider,
+            reachable=False,
+            credential_source=resolved.source,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+
+    def _probe() -> tuple[str, list[str]]:
+        # Synchronous vendor clients, off the event loop - the same shape
+        # marketdata/providers/coinbase.py uses for the same reason.
+        # `AccountState` carries cash/equity/exposure; the held symbols are
+        # the adapter's own `positions` property, not part of that model.
+        state = adapter.get_account_state(marks={})  # type: ignore[attr-defined]
+        held = adapter.positions  # type: ignore[attr-defined]
+        return format(state.cash, "f"), sorted(held)
+
+    try:
+        cash, symbols = await asyncio.to_thread(_probe)
+    except Exception as exc:  # noqa: BLE001 - the venue's refusal IS the finding
+        return ConnectionCheckResponse(
+            broker_id=broker.id,
+            provider=broker.provider,
+            reachable=False,
+            credential_source=resolved.source,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+
+    return ConnectionCheckResponse(
+        broker_id=broker.id,
+        provider=broker.provider,
+        reachable=True,
+        credential_source=resolved.source,
+        detail=(
+            f"Reached {provider.display_name} and read the account using the "
+            f"{resolved.source} credentials. No order was placed."
+        ),
+        cash=cash,
+        position_symbols=symbols,
+    )

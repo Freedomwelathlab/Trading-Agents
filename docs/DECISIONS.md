@@ -11083,3 +11083,79 @@ the ledger the venue never quoted.
 Status: Implemented, tested: `tests/execution/test_ig_adapter.py` (27). No
 deal has been placed at IG from this platform; no credentials are stored
 (`BROKER_CREDENTIAL_ENCRYPTION_KEY` is unset).
+
+## D113 — Broker credentials from the environment, and a probe that does not trade (Phase 94)
+Date: 2026-09-23
+Decision: `execution/env_credentials.py` adds a SECOND credential source
+beside D109's encrypted store, and `POST /brokers/{id}/connection-check`
+adds a read-only way to find out whether a credential set actually reaches
+its venue.
+
+**Why a second source at all.** D109 deliberately moved broker credentials
+out of the environment and into an encrypted per-broker table, and that
+reasoning still holds: env vars cannot express "this user's IBKR account
+and that user's Kraken account", and a database dump must not be a set of
+live trading credentials. What D109 did not account for is that the store
+needs `BROKER_CREDENTIAL_ENCRYPTION_KEY` set before it holds anything, and
+that on Railway the operator has env vars and no shell, no console and no
+second machine. The measured consequence: on 2026-09-23 the operator set
+six broker variables in the Railway dashboard, every one of them under a
+name nothing in this codebase reads, and no endpoint in the platform could
+say so. A bridge that silently sees no credentials is indistinguishable
+from a bridge nobody has configured.
+
+So: stored remains the default and the richer path; the environment is the
+fallback that works when the store is unavailable. This is the same shape
+the `LONGPORT_*` and `LLM_PROVIDER_*` trios have had since Phase 1, not a
+new concept in this codebase.
+
+**One naming rule, derived from the registry.** A field's variable is
+`{PROVIDER}_{FIELD}` upper-cased — `KRAKEN_API_KEY`, `IG_PASSWORD`,
+`BINANCE_API_SECRET`. The field names come from the catalogue's own
+`credential_fields`, so a provider that gains a field gains its variable in
+the same commit and there is no second list to fall out of date. The name
+is carried in `GET /brokers/providers` (`credential_fields[].env_var`) and
+named by `/health`, because an operator who cannot be told the exact string
+is left to infer a prefix and a case.
+
+**Lookup is case-insensitive.** A dashboard lets you type `Kraken_API_KEY`;
+POSIX env vars are case-sensitive; the resulting failure is invisible,
+because the variable is plainly there in the dashboard and the platform
+reports it absent. A lowercased index removes the whole class. Exact case
+wins a collision.
+
+**Sources are never blended.** Stored beats environment, whole set against
+whole set, and the loser is not consulted for the fields the winner lacks —
+the same rule `save_credentials` applies when it replaces rather than
+merges. A set assembled half from each was never entered as a whole by
+anybody, and nobody could then say which credential a rejected order used.
+`ResolvedCredentials` carries its `source` for exactly that question.
+
+**A half-set credential is reported, not silently ignored.** `/health`
+separates `env:<complete>` from `INCOMPLETE:<provider> missing <VARS>`,
+because a partially-configured venue is the state that looks configured on
+a dashboard and is not. A provider requiring NOTHING (paper) is excluded
+from the configured list rather than reported complete — its set is
+trivially satisfied by an empty environment, and listing it would be the
+same false reassurance in reverse.
+
+**The probe calls exactly one thing: `get_account_state`.** Logging in and
+reading a balance exercises the credential, the signing, the host and the
+account selection — every part of the path that can be wrong — and none of
+the part that moves money. There is no order, no size, and no validate-only
+flag to misread. It answers honestly in both directions: a venue's refusal
+is returned as `reachable: false` with the venue's own words at HTTP 200,
+because the probe RAN and its answer is "no", which is a result and not a
+server error; a success reports the venue's real cash figure and never a
+placeholder. `cash` is null whenever the probe did not succeed, never 0,
+which would be indistinguishable from an empty account. Position SYMBOLS
+are returned and sizes are not — a size is the account's business and is
+not needed to prove a credential works.
+
+Rejected: reading credentials from the environment in the adapter factories
+themselves. That would have put the naming rule in seven places, made
+`/health` unable to report on a venue without constructing its client, and
+left the stored path with no say in precedence.
+Status: Implemented, tested: `tests/execution/test_env_credentials.py` (16),
+`tests/api/test_broker_connection_check.py` (8). No order has been placed at
+any venue.

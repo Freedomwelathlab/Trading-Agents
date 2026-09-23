@@ -160,3 +160,67 @@ def test_health_names_which_llm_variable_is_missing():
 
     # The secret itself never appears in any of these.
     assert "k" not in only_key.replace("LLM_PROVIDER_API_KEY", "").replace("KEY", "")
+
+# --- Phase 94 (D113): which venues the environment configures ----------------
+
+
+def _broker_line(monkeypatch, **environ: str) -> str:
+    """`/health`'s broker line under an environment we control.
+
+    `delenv` first: a developer with real broker variables set would
+    otherwise get a different answer than CI, which is exactly the class
+    of bug this key exists to surface.
+    """
+    for name in (
+        "KRAKEN_API_KEY",
+        "KRAKEN_API_SECRET",
+        "IG_API_KEY",
+        "IG_USERNAME",
+        "IG_PASSWORD",
+        "IG_ACCOUNT_TYPE",
+        "BINANCE_API_KEY",
+        "BINANCE_API_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environ.items():
+        monkeypatch.setenv(name, value)
+    return TestClient(app).get("/health").json()["broker_credentials"]
+
+
+def test_health_reports_no_broker_credentials_when_none_are_set(monkeypatch):
+    settings = get_settings()
+    previous = settings.broker_credential_encryption_key
+    settings.broker_credential_encryption_key = None
+    try:
+        line = _broker_line(monkeypatch)
+    finally:
+        settings.broker_credential_encryption_key = previous
+
+    assert "env:none" in line
+    # And it NAMES the absent variable rather than saying "check your
+    # config" - the same reasoning that added the LLM variable's name.
+    assert "BROKER_CREDENTIAL_ENCRYPTION_KEY" in line
+
+
+def test_health_reports_a_complete_env_configured_venue(monkeypatch):
+    line = _broker_line(monkeypatch, KRAKEN_API_KEY="k", KRAKEN_API_SECRET="s")
+    assert "env:kraken" in line
+    assert "INCOMPLETE" not in line
+
+
+def test_health_singles_out_a_half_configured_venue(monkeypatch):
+    """The state that looks configured on a dashboard and is not. This is
+    the failure that prompted D113: six variables set, none of them read."""
+    line = _broker_line(monkeypatch, IG_API_KEY="k", IG_USERNAME="u")
+    assert "INCOMPLETE:ig" in line
+    assert "IG_PASSWORD" in line
+    assert "IG_ACCOUNT_TYPE" in line
+
+
+def test_health_never_reports_a_credential_value(monkeypatch):
+    """An unauthenticated probe names variables, never their contents."""
+    line = _broker_line(
+        monkeypatch, KRAKEN_API_KEY="SECRET-KEY-VALUE", KRAKEN_API_SECRET="SECRET-SECRET-VALUE"
+    )
+    assert "SECRET-KEY-VALUE" not in line
+    assert "SECRET-SECRET-VALUE" not in line

@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -51,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.core.config import Settings
 from apps.api.app.db.models import Broker, BrokerCredential
+from apps.api.app.execution.env_credentials import load_env_credentials
 from apps.api.app.execution.registry import CredentialKind, get_provider
 
 
@@ -270,3 +272,53 @@ async def delete_credentials(session: AsyncSession, broker: Broker) -> bool:
     await session.delete(row)
     await session.flush()
     return True
+
+
+@dataclass(frozen=True)
+class ResolvedCredentials:
+    """A credential set plus WHERE it came from.
+
+    The source travels with the values because an operator debugging a
+    rejected order has to be able to ask "which key did that use" and get
+    an answer. Two sources exist (Phase 94, D113) and they are never
+    blended — see `resolve_credentials`.
+    """
+
+    credentials: dict[str, str]
+    source: str
+    """`"stored"` or `"environment"`."""
+
+
+async def resolve_credentials(
+    session: AsyncSession,
+    broker: Broker,
+    *,
+    settings: Settings,
+    environ: Mapping[str, str] | None = None,
+) -> ResolvedCredentials | None:
+    """The credentials to build this broker's adapter with, or None.
+
+    **Stored beats environment, whole set against whole set.** A row in
+    `broker_credentials` was entered deliberately, for this broker row, by
+    a person who could see which account it was; a variable is ambient and
+    deployment-wide. When both exist the explicit one wins, and the loser
+    is not consulted for the fields the winner happens to lack — a mixed
+    set was never entered as a whole by anyone (the same reasoning
+    `save_credentials` applies when it replaces rather than merges).
+
+    A missing encryption key is not an error here: it means the stored
+    path is unavailable, so the environment is all there is. That is the
+    deployment this exists for, and raising would deny an operator the
+    one source they can still reach.
+    """
+    try:
+        stored = await load_credentials(session, broker, settings=settings)
+    except CredentialsNotConfiguredError:
+        stored = None
+    if stored:
+        return ResolvedCredentials(credentials=stored, source="stored")
+
+    from_env = load_env_credentials(broker.provider, environ)
+    if from_env:
+        return ResolvedCredentials(credentials=from_env, source="environment")
+    return None

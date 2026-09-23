@@ -3672,10 +3672,18 @@ has been measured on a VWAP that was never there.
 
 ### Open
 
-* **`BROKER_CREDENTIAL_ENCRYPTION_KEY`** is unset on Railway. Until it is,
-  the bridge catalogues venues but cannot hold one key. Operator action.
-* **No broker adapter is implemented.** Six of seven providers are
-  `catalogued`; nothing routes an order through any of them.
+* **Two adapters are implemented, five are catalogued.** Kraken (Phase 92,
+  D111) and IG (Phase 93, D112) can reach their venues; binance, ibkr,
+  moomoo and longbridge describe a broker this build cannot talk to.
+* **Nothing routes a live ORDER through the bridge yet.** `build_adapter`
+  is called by the connection probe and by nothing else — the OMS still
+  submits through its own broker path. Wiring the two together is the next
+  structural piece, and it is deliberately not done while no strategy has
+  earned a deployment.
+* **`BROKER_CREDENTIAL_ENCRYPTION_KEY`** is unset on Railway. Since Phase 94
+  that no longer blocks reaching a venue (env vars are a second source),
+  but the per-broker encrypted store still cannot hold anything until it is
+  set. Operator action.
 * **Options**: chain snapshots (the blocker on the bot and on any options
   backtest), a Greeks dashboard, the bot, and option order routing. The
   planner is live but prices from a model — re-pricing a plan against the
@@ -3683,5 +3691,61 @@ has been measured on a VWAP that was never there.
 * **Forex**: ingestion, panels, strategies and bot, all behind the IG or
   IBKR adapter.
 * **Deployment of any equity strategy**: still deliberately not done.
+
+## Phase 94 — Broker credentials from the environment, and a probe that does not trade
+
+Shipped 2026-09-23. Decision: `docs/DECISIONS.md` D113.
+
+**The problem, measured not guessed.** The operator set six broker
+variables on Railway — `KRAKEN_CREDENTIAL_ENCRYPTION_KEY`,
+`IG_CREDENTIAL_ENCRYPTION_KEY`, `Kraken_API_KEY` and others — and every one
+of them was a name nothing in this codebase reads. Phase 90's credential
+store is the only source there was, it is reachable only through the admin
+UI, and it refuses to hold anything until `BROKER_CREDENTIAL_ENCRYPTION_KEY`
+is set. So the keys were present, the bridge saw nothing, and no endpoint
+could say which of those two facts was true.
+
+**What was built.**
+
+* `apps/api/app/execution/env_credentials.py` — a second credential source.
+  One naming rule derived from the catalogue's own fields,
+  `{PROVIDER}_{FIELD}` upper-cased, so a provider that gains a field gains
+  its variable in the same commit. Case-insensitive lookup. A half-set
+  credential returns nothing and reports which VARIABLES are missing.
+* `resolve_credentials()` in `execution/credentials.py` — stored beats
+  environment, whole set against whole set, never blended, and the result
+  carries its own `source` so a rejected order can be traced to a key.
+* `POST /brokers/{id}/connection-check` — logs in and reads the balance
+  through `get_account_state`, and does nothing else. A venue's refusal
+  comes back as `reachable: false` at HTTP 200 with the venue's own words;
+  a success reports the real cash figure. `cash` is null on any failure,
+  never 0.
+* `/health` gained `broker_credentials`, which separates the venues the
+  environment fully configures from the ones it half-configures and names
+  the missing variables — presence only, never a value.
+* The catalogue and the credential form now carry `env_var` per field, and
+  the admin UI shows it beside each input and offers **Test connection**.
+
+**The variables, for reference.** Required fields only; the catalogue lists
+the optional ones with their names.
+
+| Venue | Variables |
+| --- | --- |
+| Kraken | `KRAKEN_API_KEY`, `KRAKEN_API_SECRET` (optional: `KRAKEN_QUOTE_CURRENCY`, `KRAKEN_LIVE_ORDERS`) |
+| IG | `IG_API_KEY`, `IG_USERNAME`, `IG_PASSWORD`, `IG_ACCOUNT_TYPE` (`DEMO` or `LIVE`; optional `IG_DEAL_CURRENCY`) |
+| Binance | `BINANCE_API_KEY`, `BINANCE_API_SECRET` (catalogued only — no adapter yet) |
+| Longbridge | `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, `LONGBRIDGE_ACCESS_TOKEN` (catalogued only; the MARKET DATA path keeps using its own `LONGPORT_*` trio and is unaffected) |
+
+`IG_ACCOUNT_TYPE` has no default on purpose: demo and live are different
+hosts with different money in them, and guessing picks one of two accounts
+rather than failing (D112).
+
+**Tests**: `tests/execution/test_env_credentials.py` (16),
+`tests/api/test_broker_connection_check.py` (8), four added to
+`tests/test_health.py`.
+
+**Not done here.** No order has been placed at any venue. The probe is
+read-only by construction, and the OMS still does not route through the
+bridge.
 
 Live ledger: https://claude.ai/artifact/1FWq7Uciqvye2dT1Kzk9EP
