@@ -3641,3 +3641,47 @@ tests** and **360 web tests**, `ruff` and `mypy` clean over `apps`.
 
 Live ledger of all of the above:
 https://claude.ai/artifact/1FWq7Uciqvye2dT1Kzk9EP
+
+---
+
+## Phases 90-91 (2026-09-23, same day, second session)
+
+| Phase | Decision | What shipped |
+|---|---|---|
+| 90 | D109 (migration 0034) | The broker bridge: a provider catalogue for all six requested venues plus paper, a per-broker encrypted credential store, capability refusals that name the venue, and the admin UI for both. |
+| 91 | D110 | `POST /options/plan` and a form over it — the Phase 78 decision layer, reachable at last. `llm_provider` added to `/health`. |
+
+### Two findings that change later work
+
+**IBKR and moomoo are not reachable from a hosted API.** Both talk to a
+gateway process on the operator's own machine — IBKR's Client Portal
+gateway (daily human re-authentication) and moomoo's OpenD. Railway cannot
+see your desktop's localhost. No adapter solves this; it needs a bridge
+agent, a self-hosted API, or manual trading of those two venues. The build
+order in `docs/BROKER_INTEGRATION.md` is now by REACHABILITY: Kraken, IG,
+Binance first.
+
+**Spot FX carries no volume.** Verified against the live IBKR connector:
+`EUR` on IDEALPRO returns real 5-minute OHLC and no volume field, source
+`MidPoint`. So every volume-gated setup (`quiet_pullback`,
+`volume_climax_reversal`) has no input on a currency pair, session VWAP
+cannot be computed — the chart already refuses it correctly — and an FX
+cost model must be spread-based rather than the equity fee-plus-slippage
+model. Knowing this now is cheaper than discovering it after a strategy
+has been measured on a VWAP that was never there.
+
+### Open
+
+* **`BROKER_CREDENTIAL_ENCRYPTION_KEY`** is unset on Railway. Until it is,
+  the bridge catalogues venues but cannot hold one key. Operator action.
+* **No broker adapter is implemented.** Six of seven providers are
+  `catalogued`; nothing routes an order through any of them.
+* **Options**: chain snapshots (the blocker on the bot and on any options
+  backtest), a Greeks dashboard, the bot, and option order routing. The
+  planner is live but prices from a model — re-pricing a plan against the
+  real chain is the obvious next step and is not built.
+* **Forex**: ingestion, panels, strategies and bot, all behind the IG or
+  IBKR adapter.
+* **Deployment of any equity strategy**: still deliberately not done.
+
+Live ledger: https://claude.ai/artifact/1FWq7Uciqvye2dT1Kzk9EP
