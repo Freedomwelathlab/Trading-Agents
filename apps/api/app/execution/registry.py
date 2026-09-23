@@ -72,6 +72,20 @@ class CredentialField:
     required: bool = True
 
 
+def _build_kraken(credentials: dict[str, str]) -> object:
+    """Imported inside the call, not at module scope.
+
+    This module is imported by the OMS, by bot creation and by the route
+    layer purely to read capability declarations; pulling a vendor client
+    in at import time would make every one of those depend on the adapter
+    being importable. The registry's job is to describe venues, and
+    describing one must not cost anything.
+    """
+    from apps.api.app.execution.adapters.kraken import build_kraken_adapter
+
+    return build_kraken_adapter(credentials)
+
+
 AdapterFactory = Callable[[dict[str, str]], object]
 """Builds a live adapter from decrypted credentials. Typed loosely on
 purpose: the concrete return must satisfy `execution.broker`'s Protocol,
@@ -266,13 +280,37 @@ PROVIDERS: dict[str, BrokerProvider] = {
         supports_extended_hours=True,
         supports_fractional=True,
         supports_cancel=True,
-        credential_fields=_api_key_pair("API key", "Private key"),
+        credential_fields=(
+            CredentialField("api_key", "API key", CredentialKind.PUBLIC, "The key's identifier."),
+            CredentialField(
+                "api_secret", "Private key", CredentialKind.SECRET, "Never shown again."
+            ),
+            CredentialField(
+                "quote_currency",
+                "Quote currency",
+                CredentialKind.PUBLIC,
+                "Which balance counts as cash. Default USD.",
+                required=False,
+            ),
+            CredentialField(
+                "live_orders",
+                "Place real orders",
+                CredentialKind.PUBLIC,
+                "Leave empty to keep the adapter in VALIDATE-ONLY mode, where Kraken checks "
+                "each order and places nothing. Kraken has no spot sandbox, so this is the "
+                "only rehearsal available - set it to `true` only when you mean it.",
+                required=False,
+            ),
+        ),
         notes=(
             "Spot crypto, 24/7 - so `supports_extended_hours` is true in the trivial sense "
-            "that there are no sessions. Margin shorting exists at Kraken but is not declared "
-            "until an adapter has been tested against it."
+            "that there are no sessions. NO SPOT SANDBOX EXISTS (verified 2026-09-23: "
+            "api.demo.kraken.com does not resolve and demo-futures.kraken.com is a different "
+            "product), so the adapter defaults to Kraken's own validate-only mode. Margin "
+            "shorting exists at Kraken but is not declared until an adapter has been tested "
+            "against it."
         ),
-        factory=None,
+        factory=_build_kraken,
     ),
     "binance": BrokerProvider(
         provider="binance",

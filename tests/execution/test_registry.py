@@ -53,11 +53,37 @@ def test_an_unknown_provider_is_an_error_not_a_permissive_default():
 
 def test_a_catalogued_provider_refuses_to_build_rather_than_returning_a_stand_in():
     # A stand-in would accept orders nothing would ever execute, which is
-    # strictly worse than a failure at construction.
-    assert get_provider("kraken").adapter_status == "catalogued"
+    # strictly worse than a failure at construction. IBKR is the example
+    # because it is gateway-only and so cannot be reached from a hosted
+    # API at all (D109) - the catalogue says what the venue does, never
+    # that this build can talk to it.
+    assert get_provider("ibkr").adapter_status == "catalogued"
     with pytest.raises(AdapterNotImplementedError) as err:
-        build_adapter("kraken", {"api_key": "k", "api_secret": "s"})
+        build_adapter("ibkr", {"gateway_url": "https://localhost:5000/v1/api"})
     assert "catalogued" in str(err.value)
+
+
+def test_kraken_is_the_one_implemented_venue_and_builds_validate_only_by_default():
+    # Phase 92 (D111): the first provider to move from catalogued to
+    # implemented. Kraken has no spot sandbox, so an adapter built from a
+    # credential set that does not explicitly ask for real orders must
+    # come back unable to place one.
+    assert get_provider("kraken").adapter_status == "implemented"
+    adapter = build_adapter("kraken", {"api_key": "k", "api_secret": "c2VjcmV0"})
+    assert adapter._validate_only is True  # type: ignore[attr-defined]
+
+    armed = build_adapter(
+        "kraken", {"api_key": "k", "api_secret": "c2VjcmV0", "live_orders": "true"}
+    )
+    assert armed._validate_only is False  # type: ignore[attr-defined]
+
+
+def test_kraken_refuses_to_build_without_both_halves_of_the_key():
+    from apps.api.app.execution.adapters.kraken import KrakenError
+
+    with pytest.raises(KrakenError) as err:
+        build_adapter("kraken", {"api_key": "k"})
+    assert "NOT_CONFIGURED" in str(err.value)
 
 
 def test_an_asset_class_the_venue_does_not_trade_is_named_in_the_refusal():

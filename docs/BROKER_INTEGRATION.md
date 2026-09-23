@@ -189,8 +189,29 @@ topology problem with exactly three answers:
 | 5 | **moomoo** | Needs the bridge agent, same as IBKR. |
 
 Alpaca was recommended above as the first adapter and is not in the user's
-list; the reasoning that made it first — an identical paper and live API —
-applies to Kraken's sandbox too, which is why Kraken takes that slot.
+list; Kraken takes that slot because it is the shortest path from "a
+bridge exists" to "a bridge places a real order" — plain REST, a key and a
+secret, no gateway.
+
+> **Correction, 2026-09-23 (Phase 92).** An earlier version of this
+> paragraph said Kraken has a sandbox that mirrors live, by analogy with
+> Alpaca. **It does not.** Verified by probing the hosts:
+> `api.demo.kraken.com` does not resolve, and `demo-futures.kraken.com` is
+> Kraken **Futures** — a different product with a different API. Kraken
+> spot has no test environment at all.
+>
+> What exists instead is `validate=true` on `AddOrder`, which runs
+> Kraken's own validation and places nothing. That is a weaker guarantee
+> than a sandbox: it proves an order is well-formed and permitted, not
+> that the fill path works. The adapter therefore **defaults to
+> validate-only** and has to be armed by an explicit `live_orders`
+> credential field, so the state a freshly-wired Kraken broker arrives in
+> is the one that cannot place an order.
+>
+> This does not change the ordering — reachability still decides it, and
+> Kraken is still the cheapest first adapter — but it does change what
+> "tested" can mean for it, and that is worth knowing before the first
+> real order rather than after.
 
 ### Verified against the live IBKR connector, 2026-09-23
 

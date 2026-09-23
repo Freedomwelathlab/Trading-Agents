@@ -10966,3 +10966,61 @@ Status: Implemented, tested: `tests/execution/test_registry.py` (10),
 `tests/api/test_broker_bridge.py` (8),
 `apps/web/test/BrokerBridgeAdmin.test.tsx` (4). No adapter is implemented;
 nothing can trade through a catalogued provider.
+
+## D111 — Kraken adapter: the first implemented venue, armed only on purpose (Phase 92)
+Date: 2026-09-23
+Decision: `execution/adapters/kraken.py` is the first provider to move from
+`catalogued` to `implemented` in the D109 registry. Same `BrokerAdapter`
+Protocol as paper and Longbridge, so the OMS, the Risk Engine and the
+Portfolio Manager treat a Kraken order like any other and no gate can be
+skipped by routing around them.
+
+**There is no Kraken SPOT sandbox, and the earlier claim that there was is
+corrected.** `docs/BROKER_INTEGRATION.md` recommended Kraken first partly
+by analogy with Alpaca's identical paper/live APIs. Verified by probing:
+`api.demo.kraken.com` does not resolve and `demo-futures.kraken.com` is
+Kraken FUTURES, a different product. The ordering still holds — Kraken is
+still the cheapest first adapter and reachability still decides — but what
+"tested" can mean for it is weaker than was assumed, which is worth
+knowing before the first real order rather than after.
+
+What exists instead is `validate=true` on `AddOrder`: Kraken validates and
+places nothing. So the adapter makes it a **first-class default**, not a
+footnote. `validate_only` is True unless a `live_orders` credential field
+explicitly says otherwise, which means arming a Kraken broker is a
+deliberate act recorded in the credential set and therefore visible in the
+admin UI — not a constructor argument buried somewhere. In validate-only
+mode `submit_order` RAISES rather than returning a `Fill`: returning one
+would fabricate the single thing this module exists not to fabricate.
+
+**HTTP 200 is not a success signal at Kraken.** Its ordinary refusal shape
+is 200 with a non-empty `error` array, so `_check()` is the only place a
+call is allowed to be called successful, and reading the status code alone
+would turn "Unknown asset pair" into a fill.
+
+**Symbols pass through verbatim.** Kraken names one market three ways —
+key `XXBTZUSD`, altname `XBTUSD`, wsname `XBT/USD` — and accepts more than
+one on input while returning the key form. The adapter translates none of
+them, per D109's no-unified-symbol-namespace rule; Kraken's own error is
+surfaced. A helpful mapping here is exactly how two different instruments
+eventually become one.
+
+Everything else follows the existing no-fabrication rules: a partial fill
+reports the EXECUTED quantity (a partial recorded at full size is a
+position the account does not hold), an accepted-but-unexecuted order
+raises the port's own `OrderNotConfirmedError` carrying Kraken's txid so
+the existing reconciler resolves it with no Kraken-specific branch, an
+execution at a non-positive average price is refused rather than recorded,
+and an account with no quote-currency balance is an error rather than zero
+cash. The nonce is `time_ns()` because Kraken rejects a nonce at or below
+the last one a key used and a millisecond clock repeats under two requests
+in the same millisecond.
+
+The registry's factory is imported INSIDE the call. `registry.py` is
+imported by the OMS, by bot creation and by the route layer purely to read
+capability declarations, and describing a venue must not cost the ability
+to import its vendor client.
+Status: Implemented, tested: `tests/execution/test_kraken_adapter.py` (17),
+`tests/execution/test_registry.py` (13). No order has been placed at
+Kraken from this platform; the adapter defaults to validate-only and no
+credentials are stored (`BROKER_CREDENTIAL_ENCRYPTION_KEY` is unset).
