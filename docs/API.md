@@ -2328,3 +2328,26 @@ Adds `by_symbol` and `by_hour` (same row shape as `setups`, with `symbol` / `hou
 
 ### `GET /autotrade/bots/{id}/insights?limit`
 `{ insights: [{ id, session_date, trades, wins, total_r, total_pnl, best_setup, worst_setup, findings: [string], demoted_setups, created_at }] }` — the journal, newest first. Written by the engine after each session; findings are recorded, not applied (D099).
+
+### Market data — Phase 86/89 additions
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/market-data/{symbol}/extended-hours` | Pre-market / regular / after-hours movement for the latest stored session, derived from `market_data_bars`. Each phase names its own reference price. A phase with no bars is absent from the response, never zero-filled. 404 when nothing is stored. |
+| GET | `/market-data/{symbol}/option-expiries` | Listed expiries, ascending. An **empty list is a 200** — "this vendor lists no options on this symbol" is a real answer and a different fact from an unreachable vendor. 503 NOT_CONFIGURED when no vendor is wired. |
+| GET | `/market-data/{symbol}/option-chain?expiry=YYYY-MM-DD` | Calls and puts as two strike-ordered lists. Every market field is nullable; a null is a field the vendor did not return, never a price of zero. `quoted_contracts` counts the rows carrying any market at all. 404 when the vendor lists no contracts for that expiry. |
+
+### Autotrade — Phase 87 additions
+
+`POST /autotrade/bots` accepts two further fields, both additive:
+
+* `allow_short` (bool, default false) — may this bot open shorts as well
+  as longs. The setups already emit short signals; a long-only bot
+  discards them.
+* `extended_hours_min_score` (int 0–10, nullable) — the score a signal
+  must reach on a pre-market or after-hours bar. Left unset on a bot whose
+  `market_type` admits those phases, the API stores `min_score + 2`; on a
+  regular-session-only bot it stays null, because the field would never be
+  read.
+
+Both are returned on every bot response.

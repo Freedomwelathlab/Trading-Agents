@@ -3601,3 +3601,43 @@ for them are now **CLOSED**:
    three in `apps/web/components/AgentTradeForm.tsx`, and the Phase 47
    "no analyst context in the response" caveat is gone because it is no
    longer true.
+
+
+---
+
+## Phases 86-89 (2026-09-23)
+
+Four phases in one session, all against a green suite: **1,516 backend
+tests** and **360 web tests**, `ruff` and `mypy` clean over `apps`.
+
+| Phase | Decision | What shipped |
+|---|---|---|
+| 86 | D103, D104, D105 | Chart viewport that survives a render plus a 60s hold; the Indicators menu (Bollinger, SMA, EMA, RSI, MACD, VWAP, Volume, ATR, pivots, session levels, setup markers); the Anthropic-compatible client fixed for Anthropic's own API; the extended-hours endpoint and panel. |
+| 87 | D106 (migration 0033) | Both-direction intraday trading, opt-in per bot, with direction-aware brackets, trailing, excursion and settlement; opt-in shorting on the paper broker at 100% cash collateral; a separate evidence bar for extended-hours signals. |
+| 88 | D107 | The four remaining playbook setups (registry now 12) and `scripts/walk_forward_5m.py`. Every one measured negative; the walk-forward pools negative too. |
+| 89 | D108 | Option chain port, Longbridge adapter, two endpoints and the `/options` desk. |
+
+### Open, and why
+
+* **Agent Trade credentials** — the adapter is fixed and tested; the
+  deployment needs `LLM_PROVIDER_API_KEY` and `LLM_PROVIDER_MODEL`. An
+  operator action, deliberately not automated.
+* **Options** — chain snapshots, a Greeks dashboard, routes over the D096
+  decision layer, the options bot and option order routing. The snapshot
+  store is the blocker on the other four: a bot needs stored chains to
+  measure itself against, exactly as the intraday bot needs stored bars.
+* **Forex** — cannot start. No configured vendor serves tradeable FX;
+  Longbridge sells equities, options and warrants, and its currency
+  conversion-rate lookup is not an instrument. Synthesising an FX feed from
+  conversion rates would produce something that looks exactly like market
+  data and is not. Needs a vendor decision.
+* **Other brokers** — proposal written (`docs/BROKER_INTEGRATION.md`);
+  nothing built. Steps 1-2 there (per-broker encrypted credentials, an
+  adapter registry with capability declarations) are the whole
+  architecture.
+* **Deployment of any strategy** — still deliberately not done. Twelve
+  setups are now measured on this data and every one sits at or below zero
+  expectancy at real costs.
+
+Live ledger of all of the above:
+https://claude.ai/artifact/1FWq7Uciqvye2dT1Kzk9EP

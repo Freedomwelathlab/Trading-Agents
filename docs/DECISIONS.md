@@ -10688,3 +10688,211 @@ a `note` field saying these are measurement rather than advice, and the UI
 renders it under the score table. The score box exists for the same
 reason: a marker on a chart invites belief, and being able to read WHY it
 appeared is the difference between an instrument and an oracle.
+
+
+## D103 — The chart is created once and only fed; indicators are a plan, not a draw call (Phase 86)
+Date: 2026-09-23
+Decision: `apps/web/components/PriceChart.tsx` no longer rebuilds the chart
+when its props change. The reported bug was "zooming in resets the view in
+about a second"; the cause was not a timer. Every prop was in the effect's
+dependency array, including `signals = []`, `scoredSignals = []` and
+`priceLines = []` — default parameters, so new array identities on EVERY
+render — which meant any parent re-render destroyed the canvas, rebuilt it
+and called `fitContent()`, discarding the user's viewport. The chart object
+is now created once per mount (deps: `height` alone) and afterwards only
+fed: `setData` on the existing series, markers replaced in place, price
+lines removed and re-added from content KEYS rather than identities.
+
+A hand-set viewport is then held for `VIEW_HOLD_MS` (60s) after the last
+wheel, pointerdown or touchstart on the container, with the remaining
+seconds shown and explicit Reset/Hold controls. The hold listens to the
+CONTAINER, not to `subscribeVisibleLogicalRangeChange`: a range change also
+fires when we re-fit, so listening there would make the chart hold a
+viewport it set itself and never return to auto-fit.
+
+The Indicators menu (`components/markets/IndicatorsMenu.tsx`) carries the
+nine the brief named plus the two the chart already drew unconditionally —
+session levels and the scored B/S markers — so ONE menu answers "what is on
+this chart". Every series is computed in `apps/web/lib/indicators.ts` from
+the same stored bars the candles come from, never from a vendor indicator
+endpoint: an indicator drawn from one feed sitting on candles from another
+is a picture of two different markets.
+
+Three refusal rules hold throughout and each has a plausible-looking
+alternative: a window shorter than the period produces NO point rather than
+an average of what is there; `vwap()` declines the whole series if ANY bar
+in the window carries no volume, because a VWAP computed from a subset of a
+session's prints is not that session's VWAP and looks exactly like one; and
+pivots are computed from the PREVIOUS session, never the one still forming.
+Reasons are rendered under the chart rather than swallowed.
+
+`planIndicators()` is a pure function returning colour ROLES, run during
+render. The drawing effect only translates its plan into library calls.
+That split is what lets the "why this is missing" notes reach the JSX
+without `setState` inside an effect (the `react-hooks/set-state-in-effect`
+rule caught the first version), and it makes every decision about what to
+draw directly testable without a canvas jsdom does not implement.
+Status: Implemented, tested: `apps/web/test/indicators.test.ts` (19).
+
+## D104 — The Messages client works against Anthropic's own API, not only a gateway (Phase 86)
+Date: 2026-09-23
+Decision: `AnthropicCompatibleProvider` sent `Authorization: Bearer` only.
+`api.anthropic.com` authenticates with `x-api-key` and rejects a request
+carrying no `anthropic-version`, so the Agent Trade panel would have
+returned an opaque failure even after credentials were set — and that
+failure was indistinguishable from a network outage, because every
+`httpx.HTTPError` collapsed into "LLM provider request failed". Both
+headers are now sent (each endpoint reads the one it knows), an
+`HTTPStatusError` names the status and the provider's own message, and
+`DEFAULT_ANTHROPIC_BASE_URL` means a key and a model are enough. The
+all-or-nothing gate is unchanged: no key, or no model, still returns None
+and every caller still renders NOT_CONFIGURED. Guessing a model for a key
+would make a misconfiguration look like a working agent right up until it
+billed someone.
+Status: Implemented, tested: `tests/agents/test_anthropic_compatible.py` (7).
+Credentials remain the operator's to set; the assistant does not write them.
+
+## D105 — Extended-hours movement is derived from our own bars, and names its reference (Phase 86)
+Date: 2026-09-23
+Decision: `GET /market-data/{symbol}/extended-hours` reports pre-market,
+regular and after-hours movement for the latest stored session, computed by
+`extended_hours_moves()` from `market_data_bars` rather than from a vendor
+extended-hours quote — the same reasoning as D092's session levels: which
+phase a print belongs to is a fact about the exchange clock, and the bars
+this platform trades from are the only ones whose phase it can vouch for.
+
+Each phase carries `reference_label`. "+2.1% pre-market" is meaningless
+without knowing whether that is against yesterday's close or the pre-market
+open, and the two differ by the overnight gap, so the comparison is named
+in the response instead of being left to the reader. Pre-market and regular
+are measured against the PREVIOUS session's regular close; after-hours
+against THIS session's regular close, because an after-hours move is by
+definition a move away from the close.
+
+A phase with no bars is ABSENT from the response, not zero-filled. Nothing
+traded and traded unchanged are different facts, and a row of zeros asserts
+the second.
+Status: Implemented.
+
+## D106 — Both directions, and a separate evidence bar for extended hours (Phase 87, migration 0033)
+Date: 2026-09-23
+Decision: the setups in `backtesting/setups.py` have ALWAYS emitted short
+signals (eleven `Direction.SHORT` sites); `scan_latest_bar`'s
+`allow_directions` defaulted to long-only and the bot discarded every one.
+`autotrade_bots.allow_short` turns them on, off by default and off for
+every existing bot — a human approved a long-only bot and shorting is a
+different risk, so enabling it is a fresh, explicit decision.
+
+Making it work meant making four separate things direction-aware, and each
+is a place where reusing the long branch yields a number that LOOKS like a
+correct one: the bracket (stop above entry, target below), the exit test
+(the stop triggers on the bar's HIGH), the trailing ratchet (down from the
+lowest low, not up from the highest high), adverse excursion (the highest
+high, not the lowest low), and the settlement — the long P&L formula
+reports a winning short as a loss of the same size, which reads as a
+strategy result rather than as a bug. `brackets.py` writes each comparison
+out per direction rather than folding it into a sign multiplier: a
+multiplier is compact and unreadable at exactly the moment somebody is
+checking whether a live stop is on the correct side of the price.
+
+The paper broker grows OPT-IN shorting (`allow_short`, defaulted False so
+every existing caller keeps the adapter it has always had) collateralised
+at **100% cash**. It has no margin model, no borrow availability and no
+financing cost; rather than invent one it refuses a short the account
+cannot cover outright. That is stricter than any real broker, which is the
+correct direction for a simulator to be wrong in — a paper account that can
+open positions the real one would reject produces a track record the live
+account could not have earned.
+
+`extended_hours_min_score` holds a signal fired on a PRE-MARKET or
+AFTER-HOURS bar to a higher bar than a regular-session one, defaulting (in
+`service.py`, not the DB) to `min_score + 2` for a bot whose `market_type`
+admits those phases and NULL for one that cannot reach them — a number
+nobody reads is a number somebody eventually trusts. The premium is not a
+tuned parameter and the code says so: nothing has measured the right value,
+and it is set in the safe direction because extended-hours tape is thin
+(roughly 1.9M shares pre-market against 53M regular on TQQQ over the
+measured window), so the same score is computed from materially less
+evidence. The phase is read from the BAR the signal would fire on, not from
+the wall clock, so a cycle running late still judges the bar in front of it.
+Status: Implemented, tested: `tests/autotrade/test_shorts.py` (18).
+
+## D107 — The four remaining playbook setups, and a rolling walk-forward that says no (Phase 88)
+Date: 2026-09-23
+Decision: `rsi_divergence` (strategy 3), `order_block_fvg` (strategy 9),
+`fib_confluence` (strategy 10) and `bollinger_confluence` (strategy 6)
+bring the registry to twelve. Each was written once to the playbook's
+description and measured once — no parameter search, on the principle D095
+and D102 already established.
+
+Three implementation decisions are the honest part. Divergence compares
+against a CONFIRMED swing and recomputes RSI as of that swing's bar:
+comparing against the lowest low in a lookback would use a pivot the market
+had not yet revealed (the look-ahead trap `docs/RESEARCH_5M.md` records
+being caught in), and reading the current RSI would compare now against
+now. A fair value gap must still be UNFILLED at the retest — a gap price
+has already traded back through is not an imbalance. Both confluence setups
+require an INDEPENDENT second level (a session level or VWAP) rather than
+another ratio, because a Fibonacci level agreeing with a Fibonacci level is
+one observation counted twice.
+
+Measured on 129 sessions at real costs, all four are negative on both
+symbols. `rsi_divergence` is the worst result this study has produced
+(−0.279R TQQQ t=−3.68; −0.569R QQQ t=−7.95). `fib_confluence` and
+`bollinger_confluence` are small and statistically indistinguishable from
+zero on TQQQ with 121 and 66 trades — and were deliberately NOT loosened to
+manufacture a sample.
+
+`scripts/walk_forward_5m.py` automates §22's rolling procedure, which this
+engine had only ever had one hand-made 60/40 split of. Folds are sliced by
+SESSION DATE, never by bar count (half a session is not a sample of a
+session); the test window always follows the train window it was selected
+on; selection never consults the test window. At 40/20 over the same
+sessions the pooled out-of-sample figure is −0.070R on TQQQ and −0.087R on
+QQQ, picking a different setup in three folds of four — the signature of
+selecting on noise. The windows were NOT retuned after seeing that, which
+would be the overfitting the procedure exists to detect.
+Status: Implemented, tested: `tests/backtesting/` (161). Findings recorded
+in `docs/RESEARCH_5M.md`.
+
+## D108 — Option chains: the ladder says what exists, the quote says what it is worth (Phase 89)
+Date: 2026-09-23
+Decision: `marketdata/option_chain_provider.py` adds the port and
+`LongbridgeOptionChainProvider` the first adapter. It makes BOTH vendor
+calls, deliberately: `option_chain_info_by_date` returns the ladder and is
+the only source of which contracts exist; `option_quote` returns the market
+on named contracts. Building from the ladder alone gives a table of strikes
+with no prices; quoting without it means guessing contract symbols from a
+naming convention this platform does not get to assume. A full chain runs
+to hundreds of contracts, so the ladder is quoted in bounded batches
+(`QUOTE_BATCH = 50`) — chosen conservatively, not tuned, because a refusal
+on an over-long symbol list would surface as an empty chain.
+
+Every market field is nullable and stays null. A contract the quote call
+did not answer for KEEPS its row with an empty market: dropping it would
+silently shorten the chain. `OptionQuote.mid` refuses to be computed from
+one side — a one-sided mid is that side's price wearing a neutral name, and
+it is exactly the number a spread's cost would be taken from. Sizes are the
+deliberate exception: a zero VOLUME is a real measurement and survives as
+0, while a zero PRICE is the vendor declining to quote, and collapsing the
+two loses the distinction a chain is read for.
+
+Greeks are the VENDOR's. This codebase can compute its own
+(`apps/api/app/options/pricing.py`, D096) and does not substitute them
+here: a delta computed from a different volatility input than the desk is
+quoting is a different delta, and mixing the two in one column makes the
+column meaningless.
+
+`quoted_contracts` is surfaced in the response and in the desk's header. A
+three-hundred-row chain where twelve rows carry a market is a chain nobody
+should price a spread from, and that should not have to be inferred from a
+screen of dashes. The at-the-money row is marked from the live quote or not
+at all — a highlight parked at the middle of the ladder looks identical and
+means something else.
+
+NOT built in this phase, and named so nobody assumes otherwise: chain
+snapshot persistence, a Greeks dashboard, routes over the D096 decision
+layer, an options bot, and option order routing.
+Status: Implemented, tested: `tests/marketdata/test_option_chain.py` (8),
+`tests/api/test_option_chain_routes.py` (6),
+`apps/web/test/OptionChainTerminal.test.tsx` (5).
