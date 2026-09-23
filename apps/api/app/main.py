@@ -86,6 +86,7 @@ from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_fundamentals_provider,
     build_longbridge_history_provider,
     build_longbridge_news_provider,
+    build_longbridge_option_chain_provider,
     build_longbridge_provider,
 )
 from apps.api.app.marketdata.router import MarketDataRouter
@@ -110,6 +111,7 @@ async def lifespan(app: FastAPI):
     # Depth is a separate capability from quotes on purpose: the vendor
     # can serve a quote and still have no order book (D092).
     app.state.depth_provider = build_longbridge_depth_provider(settings)
+    app.state.option_chain_provider = build_longbridge_option_chain_provider(settings)
     # Phase 44 (D059): two more capabilities from the SAME already-
     # credentialed Longbridge relationship - company fundamentals and
     # recent news. Same all-or-nothing credential gate, same
@@ -315,6 +317,9 @@ async def lifespan(app: FastAPI):
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
         history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
         depth_provider="longbridge" if app.state.depth_provider else "NOT_CONFIGURED",
+        option_chain_provider=(
+            "longbridge" if app.state.option_chain_provider else "NOT_CONFIGURED"
+        ),
         fundamentals_provider=(
             "longbridge" if app.state.fundamentals_provider else "NOT_CONFIGURED"
         ),

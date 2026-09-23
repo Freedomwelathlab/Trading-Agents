@@ -34,7 +34,9 @@ from apps.api.app.marketdata.fundamental_metrics import latest_point
 from apps.api.app.marketdata.fundamentals_provider import CompanyFundamentals
 from apps.api.app.marketdata.models import MarketSnapshot
 from apps.api.app.marketdata.news_provider import NewsHeadline
+from apps.api.app.marketdata.option_chain_provider import OptionChain, OptionQuote
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
+from apps.api.app.options.pricing import OptionRight
 
 if TYPE_CHECKING:
     # Type-checking only - the real SDK is never imported at module level
@@ -836,3 +838,201 @@ def build_longbridge_news_provider(settings: Settings) -> LongbridgeNewsProvider
     from longport.openapi import AsyncContentContext
 
     return LongbridgeNewsProvider(AsyncContentContext.create(config))
+
+
+class LongbridgeOptionChainClient(Protocol):
+    # Plain methods returning Awaitables, same reasoning as every other
+    # client Protocol in this file: the real SDK methods are not coroutine
+    # functions, they return awaitables.
+    def option_chain_expiry_date_list(self, symbol: str) -> Awaitable[object]: ...
+    def option_chain_info_by_date(self, symbol: str, expiry_date: date) -> Awaitable[object]: ...
+    def option_quote(self, symbols: list[str]) -> Awaitable[object]: ...
+
+
+class LongbridgeOptionChainProvider:
+    """Option chains from the already-credentialed quote context
+    (Phase 89, D108).
+
+    The vendor splits a chain across two calls and they carry different
+    things, which is why this adapter makes both:
+
+    * `option_chain_info_by_date` returns the LADDER - every strike for an
+      expiry, with each side contract symbol. It is the only call that
+      knows which contracts exist.
+    * `option_quote` returns the MARKET on named contracts - bid, ask,
+      volume, open interest, implied volatility and the Greeks.
+
+    Building a chain from the ladder alone would produce a table of
+    strikes with no prices in it; quoting without the ladder would mean
+    guessing contract symbols from a naming convention, which is a
+    convention this platform does not get to assume.
+
+    **A field the vendor did not return stays None all the way through.**
+    `_optional_decimal` already refuses to turn an absent metric into a
+    zero, and the same rule is applied here to the Greeks. An option bid
+    of zero and an option with no bid are different facts and only one of
+    them is a price.
+    """
+
+    name = "longbridge"
+
+    QUOTE_BATCH = 50
+    """Contracts per `option_quote` call. A full chain routinely runs to
+    several hundred contracts and the vendor rejects an unboundedly long
+    symbol list, so the ladder is quoted in batches. Chosen conservatively
+    rather than tuned: a smaller batch costs another round trip, a larger
+    one risks a refusal that would surface as an empty chain.
+    """
+
+    def __init__(self, client: LongbridgeOptionChainClient) -> None:
+        self._client = client
+
+    async def get_expiries(self, underlying: str) -> list[date]:
+        try:
+            raw = await self._client.option_chain_expiry_date_list(underlying)
+        except Exception as exc:
+            raise VendorError(
+                f"Longbridge option expiry request failed for {underlying!r}: {exc}"
+            ) from exc
+        if not isinstance(raw, Sequence):
+            return []
+        out: list[date] = []
+        for item in raw:
+            parsed = _as_option_date(item)
+            if parsed is not None:
+                out.append(parsed)
+        return sorted(set(out))
+
+    async def get_chain(self, underlying: str, expiry: date) -> OptionChain:
+        try:
+            ladder = await self._client.option_chain_info_by_date(underlying, expiry)
+        except Exception as exc:
+            raise VendorError(
+                f"Longbridge option chain request failed for {underlying!r} "
+                f"{expiry.isoformat()}: {exc}"
+            ) from exc
+
+        if not isinstance(ladder, Sequence) or not ladder:
+            raise DataUnavailableError(
+                f"Longbridge lists no option contracts for {underlying!r} expiring "
+                f"{expiry.isoformat()}. Reported as unavailable rather than as a "
+                "strike ladder built around the spot price."
+            )
+
+        # contract symbol -> (strike, right), from the ladder only. The
+        # ladder is the single source of truth for which contracts exist.
+        contracts: dict[str, tuple[Decimal, OptionRight]] = {}
+        for rung in ladder:
+            strike = _optional_decimal(getattr(rung, "price", None))
+            if strike is None:
+                continue
+            for attr, right in (
+                ("call_symbol", OptionRight.CALL),
+                ("put_symbol", OptionRight.PUT),
+            ):
+                symbol = getattr(rung, attr, None)
+                if isinstance(symbol, str) and symbol:
+                    contracts[symbol] = (strike, right)
+
+        if not contracts:
+            raise DataUnavailableError(
+                f"Longbridge returned a ladder for {underlying!r} {expiry.isoformat()} "
+                "with no contract symbols on it, so no contract can be quoted."
+            )
+
+        symbols = sorted(contracts)
+        quoted: dict[str, object] = {}
+        for i in range(0, len(symbols), self.QUOTE_BATCH):
+            batch = symbols[i : i + self.QUOTE_BATCH]
+            try:
+                results = await self._client.option_quote(batch)
+            except Exception as exc:
+                raise VendorError(
+                    f"Longbridge option quote request failed for {underlying!r} "
+                    f"{expiry.isoformat()}: {exc}"
+                ) from exc
+            if not isinstance(results, Sequence):
+                continue
+            for q in results:
+                sym = getattr(q, "symbol", None)
+                if isinstance(sym, str):
+                    quoted[sym] = q
+
+        quotes: list[OptionQuote] = []
+        for symbol in symbols:
+            strike, right = contracts[symbol]
+            q = quoted.get(symbol)
+            quotes.append(
+                OptionQuote(
+                    contract_symbol=symbol,
+                    underlying=underlying,
+                    expiry=expiry,
+                    strike=strike,
+                    right=right,
+                    # A contract the quote call did not answer for keeps its
+                    # place in the ladder with every market field None. It
+                    # exists; we simply have no market on it, and dropping
+                    # it would silently shorten the chain.
+                    last_price=_optional_decimal(getattr(q, "last_done", None)),
+                    bid=_optional_decimal(getattr(q, "bid", None)),
+                    ask=_optional_decimal(getattr(q, "ask", None)),
+                    volume=_optional_size(getattr(q, "volume", None)),
+                    open_interest=_optional_size(getattr(q, "open_interest", None)),
+                    implied_vol=_optional_decimal(getattr(q, "implied_volatility", None)),
+                    delta=_optional_decimal(getattr(q, "delta", None)),
+                    gamma=_optional_decimal(getattr(q, "gamma", None)),
+                    theta=_optional_decimal(getattr(q, "theta", None)),
+                    vega=_optional_decimal(getattr(q, "vega", None)),
+                )
+            )
+
+        return OptionChain(
+            underlying=underlying,
+            expiry=expiry,
+            as_of=datetime.now(UTC),
+            source=self.name,
+            quotes=tuple(quotes),
+        )
+
+
+def _optional_size(raw: object) -> int | None:
+    """A vendor size -> int, or None when it gave nothing.
+
+    Zero is PRESERVED here, unlike a zero price. An option that genuinely
+    traded no contracts today has a volume and it is 0; a zero price is
+    the vendor declining to quote. One is a measurement, the other is an
+    absence, and collapsing them loses the distinction the chain is read
+    for.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_option_date(raw: object) -> date | None:
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return date.fromisoformat(raw.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def build_longbridge_option_chain_provider(
+    settings: Settings,
+) -> LongbridgeOptionChainProvider | None:
+    """Same all-or-nothing credential gate as every other builder here."""
+    config = _longbridge_config(settings)
+    if config is None:
+        return None
+
+    from longport.openapi import AsyncQuoteContext
+
+    return LongbridgeOptionChainProvider(AsyncQuoteContext.create(config))

@@ -8,7 +8,11 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.app.api.dependencies import get_depth_provider, get_market_data_router
+from apps.api.app.api.dependencies import (
+    get_depth_provider,
+    get_market_data_router,
+    get_option_chain_provider,
+)
 from apps.api.app.api.schemas_marketdata import (
     BarResponse,
     BarsResponse,
@@ -16,6 +20,9 @@ from apps.api.app.api.schemas_marketdata import (
     ChartSignalsResponse,
     DepthLevelResponse,
     ExtendedHoursResponse,
+    OptionChainResponse,
+    OptionExpiriesResponse,
+    OptionQuoteResponse,
     OrderBookResponse,
     PhaseMoveResponse,
     QuoteResponse,
@@ -26,6 +33,10 @@ from apps.api.app.db.base import get_session
 from apps.api.app.db.models import User
 from apps.api.app.marketdata.bar_provider import BarInterval
 from apps.api.app.marketdata.depth_provider import DepthProvider
+from apps.api.app.marketdata.option_chain_provider import (
+    OptionChainProvider,
+    OptionQuote,
+)
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from apps.api.app.marketdata.resolution import resolve_quote
 from apps.api.app.marketdata.router import MarketDataRouter
@@ -39,6 +50,7 @@ from apps.api.app.marketdata.sessions import (
     session_vwap,
 )
 from apps.api.app.marketdata.store import MarketDataStore
+from apps.api.app.options.pricing import OptionRight
 
 router = APIRouter(prefix="/market-data", tags=["market-data"])
 
@@ -358,6 +370,116 @@ async def get_extended_hours(
         regular=_phase_move_response(moves.get(SessionPhase.REGULAR)),
         after_hours=_phase_move_response(moves.get(SessionPhase.AFTER_HOURS)),
         note=EXTENDED_HOURS_NOTE,
+    )
+
+
+OPTION_CHAIN_NOTE = (
+    "Strikes come from the vendor's own contract ladder and the market on each one "
+    "from its option quote. A dash is a field the vendor did not return - never a "
+    "price of zero, and never a value computed here to fill the gap. Greeks are the "
+    "vendor's; this platform can compute its own (apps/api/app/options/pricing.py) "
+    "and deliberately does not mix the two in one table."
+)
+
+
+def _option_quote_response(q: OptionQuote) -> OptionQuoteResponse:
+    return OptionQuoteResponse(
+        contract_symbol=q.contract_symbol,
+        strike=q.strike,
+        right=q.right.value,
+        last_price=q.last_price,
+        bid=q.bid,
+        ask=q.ask,
+        mid=q.mid,
+        spread=q.spread,
+        volume=q.volume,
+        open_interest=q.open_interest,
+        implied_vol=q.implied_vol,
+        delta=q.delta,
+        gamma=q.gamma,
+        theta=q.theta,
+        vega=q.vega,
+    )
+
+
+@router.get("/{symbol}/option-expiries", response_model=OptionExpiriesResponse)
+async def get_option_expiries(
+    symbol: str,
+    provider: OptionChainProvider | None = Depends(get_option_chain_provider),
+    _current_user: User = Depends(get_current_user),
+) -> OptionExpiriesResponse:
+    """Listed expiries for an underlying (Phase 89, D108).
+
+    An EMPTY list is a 200, not a 404: "this vendor lists no options on
+    this symbol" is a real, useful answer, and a symbol with no options is
+    a different thing from a vendor that could not be reached. Only the
+    absent vendor is an error here.
+    """
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail="NOT_CONFIGURED: no market-data vendor is wired for option chains.",
+        )
+    try:
+        expiries = await provider.get_expiries(symbol)
+    except DataUnavailableError as exc:
+        raise HTTPException(status_code=404, detail=f"DATA_UNAVAILABLE: {exc}") from exc
+    except VendorError as exc:
+        raise HTTPException(status_code=502, detail=f"VENDOR_ERROR: {exc}") from exc
+    return OptionExpiriesResponse(symbol=symbol, expiries=expiries, source=provider.name)
+
+
+@router.get("/{symbol}/option-chain", response_model=OptionChainResponse)
+async def get_option_chain(
+    symbol: str,
+    expiry: date = Query(..., description="Expiry date, YYYY-MM-DD"),
+    provider: OptionChainProvider | None = Depends(get_option_chain_provider),
+    _current_user: User = Depends(get_current_user),
+) -> OptionChainResponse:
+    """The full call/put ladder for one expiry (Phase 89, D108).
+
+    Calls and puts are returned as two strike-ordered lists rather than as
+    one interleaved table, because that is how a chain is read and because
+    a strike that lists only one side must not silently pull the other
+    side's row out of alignment.
+
+    `quoted_contracts` counts the rows that came back with any market at
+    all. A three-hundred-row chain where twelve are quoted is a chain
+    nobody should price a spread from, and this makes that visible instead
+    of leaving it to be inferred from a screen of dashes.
+    """
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail="NOT_CONFIGURED: no market-data vendor is wired for option chains.",
+        )
+    try:
+        chain = await provider.get_chain(symbol, expiry)
+    except DataUnavailableError as exc:
+        raise HTTPException(status_code=404, detail=f"DATA_UNAVAILABLE: {exc}") from exc
+    except VendorError as exc:
+        raise HTTPException(status_code=502, detail=f"VENDOR_ERROR: {exc}") from exc
+
+    def side(right: OptionRight) -> list[OptionQuoteResponse]:
+        return [
+            _option_quote_response(q)
+            for q in sorted(chain.by_right(right), key=lambda q: q.strike)
+        ]
+
+    quoted = sum(
+        1
+        for q in chain.quotes
+        if q.bid is not None or q.ask is not None or q.last_price is not None
+    )
+    return OptionChainResponse(
+        symbol=chain.underlying,
+        expiry=chain.expiry,
+        as_of=chain.as_of,
+        source=chain.source,
+        calls=side(OptionRight.CALL),
+        puts=side(OptionRight.PUT),
+        quoted_contracts=quoted,
+        note=OPTION_CHAIN_NOTE,
     )
 
 

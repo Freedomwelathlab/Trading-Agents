@@ -175,3 +175,45 @@ class ExtendedHoursResponse(BaseModel):
     regular: PhaseMoveResponse | None = None
     after_hours: PhaseMoveResponse | None = None
     note: str
+
+
+class OptionExpiriesResponse(BaseModel):
+    symbol: str
+    expiries: list[date]
+    source: str
+
+
+class OptionQuoteResponse(BaseModel):
+    """One contract. Every market field is nullable and a null means the
+    vendor reported nothing - never a price of zero (Phase 89, D108)."""
+
+    contract_symbol: str
+    strike: Decimal
+    right: str
+    last_price: Decimal | None = None
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    mid: Decimal | None = None
+    spread: Decimal | None = None
+    volume: int | None = None
+    open_interest: int | None = None
+    implied_vol: Decimal | None = None
+    delta: Decimal | None = None
+    gamma: Decimal | None = None
+    theta: Decimal | None = None
+    vega: Decimal | None = None
+
+
+class OptionChainResponse(BaseModel):
+    symbol: str
+    expiry: date
+    as_of: datetime
+    source: str
+    calls: list[OptionQuoteResponse]
+    puts: list[OptionQuoteResponse]
+    quoted_contracts: int
+    """How many of the listed contracts came back with any market at all.
+    A chain of 300 rows where this is 12 is a chain nobody should trade
+    from, and the number says so rather than leaving it to be inferred
+    from a table of dashes."""
+    note: str

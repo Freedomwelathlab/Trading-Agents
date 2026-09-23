@@ -26,6 +26,7 @@ from apps.api.app.marketdata.depth_provider import DepthProvider
 from apps.api.app.marketdata.fundamentals_provider import FundamentalsProvider
 from apps.api.app.marketdata.history_provider import HistoryProvider
 from apps.api.app.marketdata.news_provider import NewsProvider
+from apps.api.app.marketdata.option_chain_provider import OptionChainProvider
 from apps.api.app.marketdata.router import MarketDataRouter
 
 
@@ -48,6 +49,14 @@ def get_depth_provider(request: Request) -> DepthProvider | None:
     provider here: its absence is reported as NOT_CONFIGURED rather than
     standing in for an empty book (Phase 74, D092)."""
     return request.app.state.depth_provider
+
+
+def get_option_chain_provider(request: Request) -> OptionChainProvider | None:
+    """`None` when no vendor is wired (Phase 89, D108). Reported as
+    NOT_CONFIGURED - an option chain is the one table where an empty
+    result and an absent vendor look identical on screen, so the two are
+    kept distinguishable in the response."""
+    return request.app.state.option_chain_provider
 
 
 def get_trader_agent(request: Request) -> TraderAgent | None:

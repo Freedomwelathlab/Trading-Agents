@@ -18,6 +18,7 @@ type Item = {
   href:
     | "/dashboard"
     | "/markets"
+    | "/options"
     | "/strategies"
     | "/strategies/history"
     | "/strategies/leaderboard"
@@ -160,9 +161,28 @@ function IconBot() {
   );
 }
 
+function IconLayers() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4 shrink-0"
+      aria-hidden="true"
+    >
+      <path d="m12 3 9 5-9 5-9-5 9-5Z" />
+      <path d="m3 13 9 5 9-5" />
+    </svg>
+  );
+}
+
 const ITEMS: Item[] = [
   { href: "/dashboard", label: "Trading desk", icon: <IconTerminal /> },
   { href: "/markets", label: "Markets", icon: <IconCandles /> },
+  { href: "/options", label: "Options", icon: <IconLayers /> },
   { href: "/strategies", label: "Strategy Lab", icon: <IconFlask /> },
   { href: "/strategies/history", label: "Backtest history", icon: <IconClock /> },
   { href: "/strategies/leaderboard", label: "Leaderboard", icon: <IconTrophy /> },
