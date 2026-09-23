@@ -13,6 +13,10 @@ import {
   CreateBrokerForm,
 } from "@/components/admin/BrokerModeAdmin";
 import AdminGate from "@/components/admin/AdminGate";
+import {
+  BrokerCatalogue,
+  BrokerCredentialsAdmin,
+} from "@/components/admin/BrokerBridgeAdmin";
 import { EmergencyStopPanel, MarketDataBackfillPanel } from "@/components/admin/SafetyAdmin";
 import AppShell from "@/components/shell/AppShell";
 import { SectionHeading } from "@/components/ui/primitives";
@@ -61,6 +65,16 @@ export default function AdminPage() {
           Market data
         </SectionHeading>
         <MarketDataBackfillPanel />
+
+        {/* Phase 90 (D109). Above Users deliberately: wiring a venue is
+            the act that decides what this deployment can trade at all,
+            and it belongs beside Safety and Market data rather than
+            below the account administration. */}
+        <SectionHeading note="one adapter and one credential record per venue">
+          Broker bridge
+        </SectionHeading>
+        <BrokerCatalogue />
+        <BrokerCredentialsAdmin />
 
         <SectionHeading>Users</SectionHeading>
         <div className="grid gap-5 lg:grid-cols-2">

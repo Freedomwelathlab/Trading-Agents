@@ -26,6 +26,7 @@ from apps.api.app.db.models import (
     Watchlist,
     WatchlistItem,
 )
+from apps.api.app.execution.registry import UnknownProviderError, get_provider
 
 MARKET_TYPES = ("auto", "regular", "pre_market", "post_market")
 STRATEGY_MODES = ("auto", "single", "multi")
@@ -125,6 +126,22 @@ async def create_bot(
             "NO_BROKER_GRANT: you hold no access grant for this broker; an admin "
             "grants it under Administration → Broker grants."
         )
+
+    # Phase 90 (D109): the venue's own capability, checked BEFORE the bot
+    # exists rather than when it first tries to sell short into a broker
+    # that cannot hold one. A refusal here names the venue; the
+    # alternative is a vendor rejection mid-session on a bot an operator
+    # already approved.
+    if spec.allow_short:
+        try:
+            registry_entry = get_provider(broker.provider)
+        except UnknownProviderError:
+            registry_entry = None
+        if registry_entry is not None and not registry_entry.supports_short:
+            raise AutotradeError(
+                f"BROKER_CANNOT: {registry_entry.display_name} cannot open a short "
+                f"position, so this bot cannot be created with shorting enabled."
+            )
 
     symbols = _normalize_symbols(spec.symbols)
     if spec.watchlist_id is not None:

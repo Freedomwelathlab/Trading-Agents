@@ -627,6 +627,21 @@ class Settings(BaseSettings):
     development; a real deployment must set it to its own origin, or every
     emailed link will point at the operator's laptop."""
 
+    broker_credential_encryption_key: str | None = None
+    """Phase 90 (D109). A Fernet key (32 url-safe base64 bytes) encrypting
+    every stored broker credential set.
+
+    Unset means broker credentials cannot be stored AT ALL - the store
+    raises rather than falling back to plaintext, and rather than
+    generating a key. A generated key would live in one process's memory,
+    and everything written under it would become unreadable at the next
+    restart, silently, discovered only when a bot could not trade.
+
+    Rotating it does not re-encrypt anything. Existing rows keep their old
+    key's fingerprint and report themselves as unreadable so an operator is
+    told to re-enter them, which is the honest outcome: the platform cannot
+    recover a plaintext it never kept.
+    """
     llm_provider_base_url: str | None = None
     llm_provider_api_key: str | None = None
     llm_provider_model: str | None = None

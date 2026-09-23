@@ -11,6 +11,7 @@ from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
 from apps.api.app.api.routes.autotrade import router as autotrade_router
 from apps.api.app.api.routes.backtests import router as backtests_router
+from apps.api.app.api.routes.broker_bridge import router as broker_bridge_router
 from apps.api.app.api.routes.brokers import router as brokers_router
 from apps.api.app.api.routes.deployments import (
     _approve_router as deployments_approve_router,
@@ -439,6 +440,16 @@ app.include_router(portfolio_router)
 app.include_router(orders_router)
 app.include_router(order_fills_router)
 app.include_router(backtests_router)
+# Phase 90 (D109): BEFORE `brokers_router`, and the order is load-bearing.
+# Both carry the /brokers prefix and FastAPI matches in registration order
+# with no preference for a static segment over a path parameter, so with
+# the discovery router first this router's literal `/brokers/providers`
+# was swallowed by its `/brokers/{broker_id}` and answered 422 on a UUID
+# parse (measured, not assumed:
+# tests/api/test_broker_bridge.py::test_the_catalogue_resolves_... caught
+# it). The two `/{broker_id}` routes do not collide either way - they sit
+# at different path depths.
+app.include_router(broker_bridge_router)
 app.include_router(brokers_router)
 # Phase 50: user-scoped, not broker-scoped - registered next to the
 # market-data router it shares a resolution path with rather than with the

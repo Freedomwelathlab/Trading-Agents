@@ -114,6 +114,24 @@ async def health() -> dict[str, Any]:
             if settings.autotrade_runner_enabled
             else "DISABLED"
         ),
+        # Phase 90: whether the agent layer has a provider at all. Same
+        # reasoning as `market_data` above and the same all-or-nothing gate
+        # `build_llm_provider` applies (D018, D104) — a key without a model
+        # is not a configured provider.
+        #
+        # It reports PRESENCE, never validity. A wrong key is
+        # indistinguishable from a right one without spending a request at
+        # the vendor, and a liveness probe that bills someone is not a
+        # liveness probe. The provider's own errors now name the status
+        # (D104), which is where an invalid key surfaces.
+        #
+        # No value, no prefix, no length: this says configured or not. An
+        # unauthenticated endpoint must never leak a shape of a secret.
+        "llm_provider": (
+            "configured"
+            if settings.llm_provider_api_key and settings.llm_provider_model
+            else "NOT_CONFIGURED"
+        ),
     }
 
 
