@@ -52,7 +52,7 @@ from typing import Any
 from fastapi import APIRouter, Response, status
 from sqlalchemy import text
 
-from apps.api.app.core.config import get_settings
+from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_engine
 
@@ -125,14 +125,41 @@ async def health() -> dict[str, Any]:
         # liveness probe. The provider's own errors now name the status
         # (D104), which is where an invalid key surfaces.
         #
-        # No value, no prefix, no length: this says configured or not. An
-        # unauthenticated endpoint must never leak a shape of a secret.
-        "llm_provider": (
-            "configured"
-            if settings.llm_provider_api_key and settings.llm_provider_model
-            else "NOT_CONFIGURED"
-        ),
+        # No value, no prefix, no length: this says configured or not, and
+        # WHICH VARIABLE IS ABSENT when it is not. An unauthenticated
+        # endpoint must never leak the shape of a secret, but the NAME of
+        # an environment variable the operator themselves chose to set is
+        # not a secret — and naming it is the difference between "check
+        # your config" and a fix. Measured need: a deployment reported
+        # NOT_CONFIGURED after the operator had set credentials, and
+        # nothing on this endpoint could say which half was missing.
+        "llm_provider": _llm_provider_status(settings),
     }
+
+
+def _llm_provider_status(settings: Settings) -> str:
+    """`configured`, or `NOT_CONFIGURED: missing X[, Y]`.
+
+    The same all-or-nothing gate `build_llm_provider` applies (D018,
+    D104): a key without a model is not a configured provider, and
+    reporting it as one would make the agent's 400 look like a bug rather
+    than a missing variable.
+
+    Presence only — never validity. A wrong key is indistinguishable from
+    a right one without spending a request at the vendor, and a liveness
+    probe that bills someone is not a liveness probe. An invalid key
+    surfaces through the provider's own error, which names the HTTP status
+    (D104).
+    """
+    missing = [
+        name
+        for name, value in (
+            ("LLM_PROVIDER_API_KEY", settings.llm_provider_api_key),
+            ("LLM_PROVIDER_MODEL", settings.llm_provider_model),
+        )
+        if not value
+    ]
+    return "configured" if not missing else f"NOT_CONFIGURED: missing {', '.join(missing)}"
 
 
 async def _check_database(timeout_seconds: float) -> dict[str, Any]:

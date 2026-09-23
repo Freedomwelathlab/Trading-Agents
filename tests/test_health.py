@@ -126,3 +126,37 @@ def test_readiness_times_out_rather_than_hanging(monkeypatch):
     assert body["status"] == "not_ready"
     assert body["checks"]["database"]["reason"] == "timeout"
     assert body["checks"]["database"]["timeout_seconds"] == pytest.approx(0.05)
+
+
+def test_health_names_which_llm_variable_is_missing():
+    """`NOT_CONFIGURED` alone is not actionable.
+
+    A deployment reported it after the operator had set credentials, and
+    nothing on this endpoint could say which half was absent. The variable
+    NAMES are the operator's own choice of configuration, not secrets —
+    and no value, prefix or length is ever reported.
+    """
+    from apps.api.app.api.routes.health import _llm_provider_status
+    from apps.api.app.core.config import Settings
+
+    def s(**over) -> Settings:
+        base = dict(llm_provider_api_key=None, llm_provider_model=None)
+        base.update(over)
+        return Settings(**base)  # type: ignore[arg-type]
+
+    assert _llm_provider_status(s(llm_provider_api_key="k", llm_provider_model="m")) == "configured"
+
+    only_key = _llm_provider_status(s(llm_provider_api_key="k"))
+    assert only_key == "NOT_CONFIGURED: missing LLM_PROVIDER_MODEL"
+    # A key without a model is NOT a configured provider - the same
+    # all-or-nothing gate `build_llm_provider` applies.
+    assert "configured" != only_key
+
+    only_model = _llm_provider_status(s(llm_provider_model="m"))
+    assert only_model == "NOT_CONFIGURED: missing LLM_PROVIDER_API_KEY"
+
+    both = _llm_provider_status(s())
+    assert "LLM_PROVIDER_API_KEY" in both and "LLM_PROVIDER_MODEL" in both
+
+    # The secret itself never appears in any of these.
+    assert "k" not in only_key.replace("LLM_PROVIDER_API_KEY", "").replace("KEY", "")
