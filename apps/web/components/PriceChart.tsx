@@ -16,17 +16,10 @@ import {
 } from "lightweight-charts";
 import { EmptyNote } from "@/components/ui/primitives";
 import {
-  atr as calcAtr,
-  bollinger as calcBollinger,
-  ema as calcEma,
-  macd as calcMacd,
-  pivots as calcPivots,
-  rsi as calcRsi,
-  sma as calcSma,
-  volumeBars as calcVolume,
-  vwap as calcVwap,
+  planIndicators,
   type Candle,
   type IndicatorSettings,
+  type Tone,
 } from "@/lib/indicators";
 
 export type PriceBar = {
@@ -317,7 +310,6 @@ export function PriceChart({
     () => `${candles.length}:${candles[0]?.time ?? 0}:${candles[candles.length - 1]?.time ?? 0}:${candles[candles.length - 1]?.close ?? 0}`,
     [candles],
   );
-  const indicatorsKey = useMemo(() => JSON.stringify(indicators ?? null), [indicators]);
 
   const fitNow = useCallback(() => {
     holdUntilRef.current = 0;
@@ -327,9 +319,10 @@ export function PriceChart({
 
   /** The user touched the viewport: hold it, and start the clock back. */
   const holdView = useCallback(() => {
-    const until = Date.now() + VIEW_HOLD_MS;
-    holdUntilRef.current = until;
-    setHoldUntil(until);
+    const at = Date.now();
+    holdUntilRef.current = at + VIEW_HOLD_MS;
+    setNow(at);
+    setHoldUntil(at + VIEW_HOLD_MS);
   }, []);
 
   // --- the chart itself: created once per mount ---------------------------
@@ -389,9 +382,10 @@ export function PriceChart({
     // fires when WE re-fit, which would make the chart hold a viewport it
     // set itself and never come back.
     const hold = () => {
-      const until = Date.now() + VIEW_HOLD_MS;
-      holdUntilRef.current = until;
-      setHoldUntil(until);
+      const at = Date.now();
+      holdUntilRef.current = at + VIEW_HOLD_MS;
+      setNow(at);
+      setHoldUntil(at + VIEW_HOLD_MS);
     };
     container.addEventListener("wheel", hold, { passive: true });
     container.addEventListener("pointerdown", hold);
@@ -425,7 +419,9 @@ export function PriceChart({
   // --- the hold clock: ticks only while a view is actually held -----------
   useEffect(() => {
     if (holdUntil === 0) return;
-    setNow(Date.now());
+    // No synchronous setState here: `now` is seeded by whoever set
+    // `holdUntil` (an event handler), and this effect only schedules the
+    // tick that counts it down.
     const id = setInterval(() => {
       const t = Date.now();
       setNow(t);
@@ -524,12 +520,41 @@ export function PriceChart({
   }, [signalsKey, scoredKey, candlesKey]);
 
   // --- indicators ---------------------------------------------------------
-  const [indicatorNotes, setIndicatorNotes] = useState<string[]>([]);
+  /**
+   * The plan is computed during RENDER, not inside the drawing effect.
+   * That is what makes `plan.notes` - "VWAP: 3 bars carry no volume" and
+   * the like - available to the JSX below without pushing them into state
+   * from an effect, and it keeps every decision about what to draw in one
+   * pure, directly testable function. The effect only translates the plan
+   * into `lightweight-charts` calls.
+   */
+  const plan = useMemo(
+    () => planIndicators(indicatorCandles, indicators),
+    [indicatorCandles, indicators],
+  );
+
   useEffect(() => {
     const chart = chartRef.current;
     const series = mainRef.current;
     const colors = colorsRef.current;
     if (!chart || !series || !colors) return;
+
+    // Tone -> colour, resolved against the live theme. The plan never
+    // holds a literal colour precisely so that it can be built before any
+    // DOM exists to read theme tokens from.
+    const paint: Record<Tone, string> = {
+      "series-a": "#2563eb",
+      "series-b": "#ea580c",
+      "series-c": "#0891b2",
+      "series-d": "#9333ea",
+      faint: colors.inkFaint,
+      band: colors.levels.band,
+      vwap: colors.levels.vwap,
+      accent: colors.accent,
+      up: colors.up,
+      down: colors.down,
+      pivot: colors.levels.opening,
+    };
 
     for (const s of overlayRefs.current) chart.removeSeries(s);
     overlayRefs.current = [];
@@ -538,208 +563,81 @@ export function PriceChart({
     // Panes are removed back-to-front: removing pane 1 renumbers pane 2.
     for (let i = chart.panes().length - 1; i >= 1; i--) chart.removePane(i);
 
-    if (!indicators || indicatorCandles.length === 0) {
-      setIndicatorNotes([]);
-      return;
-    }
-
-    const notes: string[] = [];
-    const overlay = (points: { time: number; value: number }[], color: string, title: string,
-                     width: 1 | 2 = 1, dashed = false) => {
-      const s = chart.addSeries(LineSeries, {
-        color,
-        lineWidth: width,
-        lineStyle: dashed ? 2 : 0,
+    for (const o of plan.overlays) {
+      const line = chart.addSeries(LineSeries, {
+        color: paint[o.tone],
+        lineWidth: o.width,
+        lineStyle: o.dashed ? 2 : 0,
         priceLineVisible: false,
         lastValueVisible: false,
-        title,
+        title: o.title,
       });
-      s.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
-      overlayRefs.current.push(s);
-    };
-    const note = (name: string, why?: string) => {
-      if (why) notes.push(`${name}: ${why}`);
-    };
-
-    const PALETTE = ["#2563eb", "#ea580c", "#0891b2", "#9333ea"];
-
-    if (indicators.sma.on) {
-      indicators.sma.periods.forEach((p, i) => {
-        const r = calcSma(indicatorCandles, p);
-        if (r.unavailable) note(`SMA(${p})`, r.unavailable);
-        else overlay(r.points, PALETTE[i % PALETTE.length], `SMA ${p}`);
-      });
+      line.setData(o.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+      overlayRefs.current.push(line);
     }
-    if (indicators.ema.on) {
-      indicators.ema.periods.forEach((p, i) => {
-        const r = calcEma(indicatorCandles, p);
-        if (r.unavailable) note(`EMA(${p})`, r.unavailable);
-        else overlay(r.points, PALETTE[(i + 2) % PALETTE.length], `EMA ${p}`, 1, true);
-      });
-    }
-    if (indicators.bollinger.on) {
-      const { middle, upper, lower } = calcBollinger(
-        indicatorCandles,
-        indicators.bollinger.period,
-        indicators.bollinger.mult,
+
+    for (const l of plan.pivotLines) {
+      pivotRefs.current.push(
+        series.createPriceLine({
+          price: l.price,
+          color: paint[l.tone],
+          lineWidth: 1,
+          lineStyle: 3,
+          axisLabelVisible: true,
+          title: l.title,
+        }),
       );
-      if (middle.unavailable) note("Bollinger", middle.unavailable);
-      else {
-        overlay(upper.points, colors.levels.band, `BB +${indicators.bollinger.mult}σ`);
-        overlay(middle.points, colors.inkFaint, `BB ${indicators.bollinger.period}`, 1, true);
-        overlay(lower.points, colors.levels.band, `BB -${indicators.bollinger.mult}σ`);
-      }
-    }
-    if (indicators.vwap.on) {
-      const r = calcVwap(indicatorCandles);
-      if (r.unavailable) note("VWAP", r.unavailable);
-      else overlay(r.points, colors.levels.vwap, "VWAP", 2);
-    }
-    if (indicators.pivot.on) {
-      const { levels, unavailable } = calcPivots(indicatorCandles);
-      if (unavailable || !levels) note("Pivots", unavailable ?? "No previous session.");
-      else {
-        const rows: [string, number, string][] = [
-          ["R3", levels.r3, colors.levels.band],
-          ["R2", levels.r2, colors.levels.band],
-          ["R1", levels.r1, colors.down],
-          ["P", levels.p, colors.levels.opening],
-          ["S1", levels.s1, colors.up],
-          ["S2", levels.s2, colors.levels.band],
-          ["S3", levels.s3, colors.levels.band],
-        ];
-        for (const [title, price, color] of rows) {
-          pivotRefs.current.push(
-            series.createPriceLine({
-              price,
-              color,
-              lineWidth: 1,
-              lineStyle: 3,
-              axisLabelVisible: true,
-              title,
-            }),
-          );
-        }
-        notes.push(`Pivots computed from the ${levels.basedOn} session.`);
-      }
     }
 
-    // Panes below the price. Each is its own scale, which is the whole
-    // point: an RSI plotted on the price axis is a flat line at the bottom
-    // of the chart.
-    let pane = 0;
-    const nextPane = () => {
-      pane += 1;
+    // Panes below the price. Each carries its own scale, which is the
+    // whole point: an RSI plotted on the price axis is a flat line along
+    // the bottom of the chart.
+    plan.panes.forEach((pane, n) => {
+      const idx = n + 1;
       chart.addPane();
-      return pane;
-    };
-    if (indicators.volume.on) {
-      const { bars: vb, unavailable } = calcVolume(indicatorCandles);
-      if (vb.length === 0) note("Volume", unavailable);
-      else {
-        if (unavailable) note("Volume", unavailable);
-        const idx = nextPane();
-        const s = chart.addSeries(
+      if (pane.kind === "histogram") {
+        const hist = chart.addSeries(
           HistogramSeries,
-          { priceFormat: { type: "volume" }, priceLineVisible: false, title: "Vol" },
+          {
+            ...(pane.volumeFormat ? { priceFormat: { type: "volume" as const } } : {}),
+            priceLineVisible: false,
+            title: pane.title,
+          },
           idx,
         );
-        s.setData(
-          vb.map((b) => ({
+        hist.setData(
+          pane.bars.map((b) => ({
             time: b.time as UTCTimestamp,
             value: b.value,
             color: b.up ? colors.up : colors.down,
           })),
         );
-        overlayRefs.current.push(s);
-        chart.panes()[idx]?.setStretchFactor(0.25);
+        overlayRefs.current.push(hist);
       }
-    }
-    if (indicators.rsi.on) {
-      const r = calcRsi(indicatorCandles, indicators.rsi.period);
-      if (r.unavailable) note(`RSI(${indicators.rsi.period})`, r.unavailable);
-      else {
-        const idx = nextPane();
-        const s = chart.addSeries(
-          LineSeries,
-          { color: colors.accent, lineWidth: 1, priceLineVisible: false, title: "RSI" },
-          idx,
-        );
-        s.setData(r.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
-        for (const level of [70, 30])
-          s.createPriceLine({
-            price: level,
-            color: colors.inkFaint,
-            lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: String(level),
-          });
-        overlayRefs.current.push(s);
-        chart.panes()[idx]?.setStretchFactor(0.3);
-      }
-    }
-    if (indicators.macd.on) {
-      const m = calcMacd(
-        indicatorCandles,
-        indicators.macd.fast,
-        indicators.macd.slow,
-        indicators.macd.signal,
-      );
-      if (m.macd.unavailable) note("MACD", m.macd.unavailable);
-      else {
-        const idx = nextPane();
-        const hist = chart.addSeries(
-          HistogramSeries,
-          { priceLineVisible: false, title: "MACD hist" },
-          idx,
-        );
-        hist.setData(
-          m.histogram.points.map((p) => ({
-            time: p.time as UTCTimestamp,
-            value: p.value,
-            color: p.value >= 0 ? colors.up : colors.down,
-          })),
-        );
+      pane.series.forEach((sr, k) => {
         const line = chart.addSeries(
           LineSeries,
-          { color: "#2563eb", lineWidth: 1, priceLineVisible: false, title: "MACD" },
+          { color: paint[sr.tone], lineWidth: 1, priceLineVisible: false, title: sr.title },
           idx,
         );
-        line.setData(m.macd.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
-        overlayRefs.current.push(hist, line);
-        if (m.signal.unavailable) note("MACD signal", m.signal.unavailable);
-        else {
-          const sig = chart.addSeries(
-            LineSeries,
-            { color: "#ea580c", lineWidth: 1, priceLineVisible: false, title: "signal" },
-            idx,
-          );
-          sig.setData(m.signal.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
-          overlayRefs.current.push(sig);
+        line.setData(sr.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        if (pane.kind === "line" && k === 0) {
+          for (const level of pane.levels) {
+            line.createPriceLine({
+              price: level,
+              color: colors.inkFaint,
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: String(level),
+            });
+          }
         }
-        chart.panes()[idx]?.setStretchFactor(0.3);
-      }
-    }
-    if (indicators.atr.on) {
-      const r = calcAtr(indicatorCandles, indicators.atr.period);
-      if (r.unavailable) note(`ATR(${indicators.atr.period})`, r.unavailable);
-      else {
-        const idx = nextPane();
-        const s = chart.addSeries(
-          LineSeries,
-          { color: "#b45309", lineWidth: 1, priceLineVisible: false, title: "ATR" },
-          idx,
-        );
-        s.setData(r.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
-        overlayRefs.current.push(s);
-        chart.panes()[idx]?.setStretchFactor(0.25);
-      }
-    }
-
-    setIndicatorNotes(notes);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [indicatorsKey, candlesKey]);
+        overlayRefs.current.push(line);
+      });
+      chart.panes()[idx]?.setStretchFactor(pane.stretch);
+    });
+  }, [plan, candlesKey]);
 
   if (bars.length === 0) {
     return (
@@ -835,9 +733,9 @@ export function PriceChart({
         </button>
       </div>
 
-      {indicatorNotes.length > 0 && (
+      {plan.notes.length > 0 && (
         <ul className="text-[11px] leading-relaxed text-ink-faint" data-testid="indicator-notes">
-          {indicatorNotes.map((n) => (
+          {plan.notes.map((n) => (
             <li key={n}>{n}</li>
           ))}
         </ul>

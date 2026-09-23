@@ -7,6 +7,7 @@ import SignalScoreTable from "@/components/markets/SignalScoreTable";
 import IndicatorsMenu from "@/components/markets/IndicatorsMenu";
 import { DEFAULT_INDICATORS, type IndicatorSettings } from "@/lib/indicators";
 import OrderBookPanel from "@/components/markets/OrderBookPanel";
+import ExtendedHoursPanel from "@/components/markets/ExtendedHoursPanel";
 import SessionLevelsPanel, {
   toPriceLines,
   useSessionLevels,
@@ -311,6 +312,7 @@ export default function MarketsTerminal({
 
         <div className="xl:col-span-4 flex flex-col gap-4">
           <OrderBookPanel symbol={symbol} />
+          <ExtendedHoursPanel symbol={symbol} interval={interval === "1d" ? "5m" : interval} />
           <SessionLevelsPanel
             levels={levels}
             unavailable={levelsUnavailable}

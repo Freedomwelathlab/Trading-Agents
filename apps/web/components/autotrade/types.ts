@@ -16,6 +16,8 @@ export type Bot = {
   strategy_mode: string;
   setups: string[];
   min_score: number;
+  extended_hours_min_score: number | null;
+  allow_short: boolean;
   stop_loss_mode: string;
   stop_loss_max_pct: string | null;
   trailing_stop_pct: string | null;

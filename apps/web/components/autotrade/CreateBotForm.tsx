@@ -83,6 +83,11 @@ export default function CreateBotForm({ onCreated }: { onCreated: (bot: Bot) => 
   const [strategyMode, setStrategyMode] = useState("auto");
   const [setups, setSetups] = useState<string[]>([]);
   const [minScore, setMinScore] = useState("3");
+  // Phase 87 (D106). Blank means "let the backend apply its own
+  // stricter default", which is not the same as zero — so the field is
+  // a string and an empty one is sent as null rather than as 0.
+  const [extendedMinScore, setExtendedMinScore] = useState("");
+  const [allowShort, setAllowShort] = useState(false);
   const [slMode, setSlMode] = useState("auto");
   const [slMax, setSlMax] = useState("1.5");
   const [trailSl, setTrailSl] = useState("");
@@ -124,6 +129,8 @@ export default function CreateBotForm({ onCreated }: { onCreated: (bot: Bot) => 
         strategy_mode: strategyMode,
         setups: strategyMode === "auto" ? [] : setups,
         min_score: Number(minScore),
+        extended_hours_min_score: extendedMinScore === "" ? null : Number(extendedMinScore),
+        allow_short: allowShort,
         stop_loss_mode: slMode,
         stop_loss_max_pct: slMode === "max" && slMax ? slMax : null,
         trailing_stop_pct: trailSl ? trailSl : null,
@@ -229,6 +236,36 @@ export default function CreateBotForm({ onCreated }: { onCreated: (bot: Bot) => 
         </Field>
         <Field label="Minimum signal score" hint="Each setup scores its evidence 0–5. Below this, the signal is skipped.">
           <input id="bot-min-score" type="number" min={0} max={10} value={minScore} onChange={(e) => setMinScore(e.target.value)} className={monoInputClass} />
+        </Field>
+
+        <Field
+          label="Extended-hours minimum score"
+          hint="Pre-market and after-hours only. Blank uses the backend's own stricter default (min score + 2) for a bot whose market allows those phases — that tape is thin, so the same score rests on much less evidence."
+        >
+          <input
+            id="bot-eh-min-score"
+            type="number"
+            min={0}
+            max={10}
+            placeholder="auto"
+            value={extendedMinScore}
+            onChange={(e) => setExtendedMinScore(e.target.value)}
+            className={monoInputClass}
+          />
+        </Field>
+        <Field
+          label="Direction"
+          hint="The setups have always produced short signals; a long-only bot discards them. Shorts are collateralised at 100% cash on the paper broker, which has no margin model."
+        >
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <input
+              id="bot-allow-short"
+              type="checkbox"
+              checked={allowShort}
+              onChange={(e) => setAllowShort(e.target.checked)}
+            />
+            Allow short as well as long
+          </label>
         </Field>
 
         <Field label="Stop loss" hint="Auto = the setup's own structural stop. Max = the tighter of that and this % below entry.">

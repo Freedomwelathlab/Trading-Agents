@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_INDICATORS,
   atr,
   bollinger,
   ema,
   macd,
   pivots,
+  planIndicators,
   rsi,
   sma,
   volumeBars,
@@ -171,5 +173,52 @@ describe("pivots", () => {
     const r = pivots([bar(0, 10)]);
     expect(r.levels).toBeNull();
     expect(r.unavailable).toContain("previous session");
+  });
+});
+
+describe("planIndicators", () => {
+  const ramp = closes(Array.from({ length: 60 }, (_, i) => 100 + i));
+
+  it("plans nothing at all when no settings are given", () => {
+    const plan = planIndicators(ramp, undefined);
+    expect(plan).toEqual({ overlays: [], pivotLines: [], panes: [], notes: [] });
+  });
+
+  it("puts RSI, MACD, volume and ATR in their own panes, not on the price axis", () => {
+    const plan = planIndicators(ramp, {
+      ...DEFAULT_INDICATORS,
+      rsi: { on: true, period: 14 },
+      macd: { on: true, fast: 12, slow: 26, signal: 9 },
+      volume: { on: true },
+      atr: { on: true, period: 14 },
+    });
+    expect(plan.panes).toHaveLength(4);
+    expect(plan.overlays).toHaveLength(0);
+    // RSI carries its own 70/30 reference lines.
+    const rsiPane = plan.panes.find((p) => p.kind === "line" && p.series[0].title === "RSI");
+    expect(rsiPane && rsiPane.kind === "line" ? rsiPane.levels : null).toEqual([70, 30]);
+  });
+
+  it("reports why a series is missing instead of quietly drawing nothing", () => {
+    // Three bars cannot support a 20-period Bollinger, and one of them has
+    // no volume so VWAP cannot be computed either. Both must SAY so.
+    const plan = planIndicators(
+      [bar(0, 10), bar(1, 11), { ...bar(2, 12), volume: null }],
+      { ...DEFAULT_INDICATORS, bollinger: { on: true, period: 20, mult: 2 }, vwap: { on: true } },
+    );
+    expect(plan.overlays).toHaveLength(0);
+    expect(plan.notes.join(" ")).toContain("Bollinger");
+    expect(plan.notes.join(" ")).toContain("VWAP");
+  });
+
+  it("names the session its pivots came from", () => {
+    const plan = planIndicators([bar(0, 10), bar(1, 50)], {
+      ...DEFAULT_INDICATORS,
+      pivot: { on: true },
+    });
+    expect(plan.pivotLines.map((l) => l.title)).toEqual([
+      "R3", "R2", "R1", "P", "S1", "S2", "S3",
+    ]);
+    expect(plan.notes.join(" ")).toContain("2026-01-01");
   });
 });

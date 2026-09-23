@@ -383,3 +383,193 @@ export const DEFAULT_INDICATORS: IndicatorSettings = {
   sessionLevels: { on: true },
   signals: { on: true },
 };
+
+/** A colour ROLE, resolved against the live theme by the chart. Keeping
+ *  the plan free of literal colours is what lets it be computed during
+ *  render, before any DOM exists to read theme tokens from. */
+export type Tone =
+  | "series-a"
+  | "series-b"
+  | "series-c"
+  | "series-d"
+  | "faint"
+  | "band"
+  | "vwap"
+  | "accent"
+  | "up"
+  | "down"
+  | "pivot";
+
+export type OverlayPlan = {
+  points: Point[];
+  tone: Tone;
+  title: string;
+  width: 1 | 2;
+  dashed: boolean;
+};
+
+export type PivotLinePlan = { title: string; price: number; tone: Tone };
+
+export type PanePlan =
+  | {
+      kind: "line";
+      series: { points: Point[]; tone: Tone; title: string }[];
+      stretch: number;
+      /** Horizontal reference lines drawn on the FIRST series of the pane. */
+      levels: number[];
+    }
+  | {
+      kind: "histogram";
+      bars: { time: number; value: number; up: boolean }[];
+      title: string;
+      stretch: number;
+      volumeFormat: boolean;
+      /** Lines drawn in the same pane, e.g. MACD and its signal. */
+      series: { points: Point[]; tone: Tone; title: string }[];
+    };
+
+export type IndicatorPlan = {
+  overlays: OverlayPlan[];
+  pivotLines: PivotLinePlan[];
+  panes: PanePlan[];
+  notes: string[];
+};
+
+const OVERLAY_TONES: Tone[] = ["series-a", "series-b", "series-c", "series-d"];
+
+/**
+ * Turn settings plus bars into everything the chart must draw — a pure
+ * function, so the notes it produces ("VWAP: 3 bars carry no volume") are
+ * available during render instead of having to be pushed into state from
+ * inside the drawing effect.
+ */
+export function planIndicators(
+  candles: Candle[],
+  settings: IndicatorSettings | undefined,
+): IndicatorPlan {
+  const plan: IndicatorPlan = { overlays: [], pivotLines: [], panes: [], notes: [] };
+  if (!settings || candles.length === 0) return plan;
+
+  const note = (name: string, why?: string) => {
+    if (why) plan.notes.push(`${name}: ${why}`);
+  };
+  const overlay = (
+    points: Point[],
+    tone: Tone,
+    title: string,
+    width: 1 | 2 = 1,
+    dashed = false,
+  ) => plan.overlays.push({ points, tone, title, width, dashed });
+
+  if (settings.sma.on) {
+    settings.sma.periods.forEach((p, i) => {
+      const r = sma(candles, p);
+      if (r.unavailable) note(`SMA(${p})`, r.unavailable);
+      else overlay(r.points, OVERLAY_TONES[i % OVERLAY_TONES.length], `SMA ${p}`);
+    });
+  }
+  if (settings.ema.on) {
+    settings.ema.periods.forEach((p, i) => {
+      const r = ema(candles, p);
+      if (r.unavailable) note(`EMA(${p})`, r.unavailable);
+      else overlay(r.points, OVERLAY_TONES[(i + 2) % OVERLAY_TONES.length], `EMA ${p}`, 1, true);
+    });
+  }
+  if (settings.bollinger.on) {
+    const { middle, upper, lower } = bollinger(
+      candles,
+      settings.bollinger.period,
+      settings.bollinger.mult,
+    );
+    if (middle.unavailable) note("Bollinger", middle.unavailable);
+    else {
+      overlay(upper.points, "band", `BB +${settings.bollinger.mult}σ`);
+      overlay(middle.points, "faint", `BB ${settings.bollinger.period}`, 1, true);
+      overlay(lower.points, "band", `BB -${settings.bollinger.mult}σ`);
+    }
+  }
+  if (settings.vwap.on) {
+    const r = vwap(candles);
+    if (r.unavailable) note("VWAP", r.unavailable);
+    else overlay(r.points, "vwap", "VWAP", 2);
+  }
+  if (settings.pivot.on) {
+    const { levels, unavailable } = pivots(candles);
+    if (unavailable || !levels) note("Pivots", unavailable ?? "No previous session.");
+    else {
+      plan.pivotLines = [
+        { title: "R3", price: levels.r3, tone: "band" },
+        { title: "R2", price: levels.r2, tone: "band" },
+        { title: "R1", price: levels.r1, tone: "down" },
+        { title: "P", price: levels.p, tone: "pivot" },
+        { title: "S1", price: levels.s1, tone: "up" },
+        { title: "S2", price: levels.s2, tone: "band" },
+        { title: "S3", price: levels.s3, tone: "band" },
+      ];
+      plan.notes.push(`Pivots computed from the ${levels.basedOn} session.`);
+    }
+  }
+
+  if (settings.volume.on) {
+    const { bars, unavailable } = volumeBars(candles);
+    if (bars.length === 0) note("Volume", unavailable);
+    else {
+      note("Volume", unavailable);
+      plan.panes.push({
+        kind: "histogram",
+        bars,
+        title: "Vol",
+        stretch: 0.25,
+        volumeFormat: true,
+        series: [],
+      });
+    }
+  }
+  if (settings.rsi.on) {
+    const r = rsi(candles, settings.rsi.period);
+    if (r.unavailable) note(`RSI(${settings.rsi.period})`, r.unavailable);
+    else {
+      plan.panes.push({
+        kind: "line",
+        series: [{ points: r.points, tone: "accent", title: "RSI" }],
+        stretch: 0.3,
+        levels: [70, 30],
+      });
+    }
+  }
+  if (settings.macd.on) {
+    const m = macd(candles, settings.macd.fast, settings.macd.slow, settings.macd.signal);
+    if (m.macd.unavailable) note("MACD", m.macd.unavailable);
+    else {
+      const series = [{ points: m.macd.points, tone: "series-a" as Tone, title: "MACD" }];
+      if (m.signal.unavailable) note("MACD signal", m.signal.unavailable);
+      else series.push({ points: m.signal.points, tone: "series-b", title: "signal" });
+      plan.panes.push({
+        kind: "histogram",
+        bars: m.histogram.points.map((p) => ({
+          time: p.time,
+          value: p.value,
+          up: p.value >= 0,
+        })),
+        title: "MACD hist",
+        stretch: 0.3,
+        volumeFormat: false,
+        series,
+      });
+    }
+  }
+  if (settings.atr.on) {
+    const r = atr(candles, settings.atr.period);
+    if (r.unavailable) note(`ATR(${settings.atr.period})`, r.unavailable);
+    else {
+      plan.panes.push({
+        kind: "line",
+        series: [{ points: r.points, tone: "pivot", title: "ATR" }],
+        stretch: 0.25,
+        levels: [],
+      });
+    }
+  }
+
+  return plan;
+}
