@@ -143,3 +143,80 @@ contract-resolution model and its order states are each their own problem.
 Nothing here requires touching the risk engine, the portfolio manager, the
 OMS's decision sequence, or any strategy. That is the point, and it is why
 the answer to "can we add other brokers" is yes without a rewrite.
+
+
+---
+
+## Update, 2026-09-23 — steps 1 and 2 are built, and the order changed
+
+Phase 90 (D109) implemented the credential store and the adapter registry
+described above. What follows revises section 3 with two things learned
+while building it, both verified rather than reasoned about.
+
+### The deciding constraint is not API quality. It is reachability.
+
+Two of the six brokers do not expose a public REST endpoint at all. They
+expose a **gateway process you run on your own machine**:
+
+* **Interactive Brokers** — the Client Portal API talks to a local gateway
+  at (typically) `https://localhost:5000/v1/api`, whose session expires
+  daily and must be re-authenticated by a human.
+* **moomoo / Futu** — the API talks to **OpenD**, likewise a local
+  process, which also has to be unlocked per session with a trade
+  password.
+
+Trading OS's API runs on Railway. It cannot reach `localhost` on your
+desktop. This is not an adapter problem and no adapter solves it; it is a
+topology problem with exactly three answers:
+
+1. **A bridge agent.** A small process on the machine running the gateway,
+   which holds an outbound connection to Trading OS and relays orders. It
+   is the only option that keeps the platform hosted AND reaches these two
+   venues, and it is a component that does not exist yet.
+2. **Self-host the API** next to the gateway. Simplest, and it gives up
+   the hosted deployment.
+3. **Use these two venues manually** and let the platform trade the
+   REST-reachable ones.
+
+**So the revised build order is by reachability, not by API quality:**
+
+| Order | Broker | Why here |
+|---|---|---|
+| 1 | **Kraken** | Plain REST, key + secret, no gateway, 24/7 — the shortest path from "bridge exists" to "bridge places a real order". |
+| 2 | **IG Markets** | Plain REST, and the only REST-reachable venue in the list that quotes FX. |
+| 3 | **Binance** | Plain REST. Jurisdiction decides the host, so the adapter must be told which one rather than assume. |
+| 4 | **IBKR** | Needs the bridge agent (or a self-hosted API) first. Widest coverage by far, and the only venue here with spot FX *and* equities *and* options *and* futures. |
+| 5 | **moomoo** | Needs the bridge agent, same as IBKR. |
+
+Alpaca was recommended above as the first adapter and is not in the user's
+list; the reasoning that made it first — an identical paper and live API —
+applies to Kraken's sandbox too, which is why Kraken takes that slot.
+
+### Verified against the live IBKR connector, 2026-09-23
+
+Spot FX is real and reachable: `EUR` on **IDEALPRO**, contract id
+`12087792`, security type `CASH`. A five-minute history request returns
+genuine OHLC.
+
+It also returns **no volume field**, and `source: "MidPoint"`. That is not
+a gap in the response; spot FX has no central tape to have a volume on.
+The consequence for this platform is concrete and has to be designed for
+rather than discovered later:
+
+* **Every volume-gated setup cannot run on FX.** `quiet_pullback` compares
+  impulse volume to pullback volume; `volume_climax_reversal` is entirely
+  a volume test. Neither has an input on a currency pair.
+* **Session VWAP cannot be computed on FX**, and the chart already refuses
+  it correctly — `apps/web/lib/indicators.ts::vwap` declines the whole
+  series when any bar carries no volume rather than treating "not
+  reported" as zero. That rule was written for equities and pays for
+  itself here.
+* **The bars are mid-price, not traded prints.** A backtest filling at the
+  mid is assuming half the spread it would actually pay, and on FX the
+  spread is the entire transaction cost. Any FX cost model has to be
+  spread-based, not the equity fee-plus-slippage model
+  `backtesting/costs.py` uses today.
+
+None of that blocks a Forex build. All of it changes what an honest one
+looks like, and it is cheaper to know now than after a strategy has been
+measured on a VWAP that was never there.

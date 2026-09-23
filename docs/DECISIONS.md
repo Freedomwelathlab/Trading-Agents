@@ -10896,3 +10896,73 @@ layer, an options bot, and option order routing.
 Status: Implemented, tested: `tests/marketdata/test_option_chain.py` (8),
 `tests/api/test_option_chain_routes.py` (6),
 `apps/web/test/OptionChainTerminal.test.tsx` (5).
+
+
+## D109 — The broker bridge: a provider catalogue, and credentials the database cannot reveal (Phase 90, migration 0034)
+Date: 2026-09-23
+Decision: `brokers.provider` was always a free string. `execution/registry.py`
+makes it a lookup carrying what a venue trades, which order types it takes,
+whether it can short or accept a fractional quantity, and which credential
+fields it needs. Seven entries: paper, longbridge, ibkr, ig, moomoo,
+kraken, binance.
+
+**Every entry carries `adapter_status`.** Six of the seven are
+`catalogued`: this platform knows what the venue is and has no adapter for
+it. That distinction is load-bearing, not cosmetic — a capability list for
+an unreachable venue reads as a promise, and an operator who wires
+credentials against one has to be told that no order will flow.
+`build_adapter` raises `AdapterNotImplementedError` rather than returning a
+stand-in, because a stand-in accepts orders nothing will ever execute.
+
+**`check_supported()` refuses before the order exists.** The difference
+between `BROKER_CANNOT: Kraken trades crypto, not option` and
+`VENDOR_ERROR: 40004` is the difference between a platform and a wrapper:
+in both cases the answer was already knowable, and only one of them says
+it. It is wired into bot creation today, so shorting cannot be enabled on
+a venue that cannot hold a short — caught at creation, not mid-session on
+a bot a human already approved. `opens_short()` is deliberately not
+`side is SELL`: selling ten of ten held is an exit, and conflating the two
+would block every close on a no-short venue.
+
+**Credentials are one Fernet token per broker** (`execution/credentials.py`,
+`broker_credentials`), so a database dump is not a set of live trading
+credentials. Four rules, each with a convenient wrong alternative:
+
+* *No key, no write.* With `BROKER_CREDENTIAL_ENCRYPTION_KEY` unset the
+  store RAISES. It does not store plaintext, and it does not generate a
+  key — a generated key lives in one process's memory and everything
+  encrypted under it becomes unreadable at the next restart, silently,
+  discovered only when a bot cannot trade.
+* *The key is fingerprinted, never stored.* A rotated key then produces
+  "re-enter these credentials" instead of an opaque `InvalidToken`.
+* *Field NAMES are in the clear; values never are.* The UI must show what
+  is set without the key, and "an access token is present" is not a
+  secret.
+* *Nothing returns a secret.* A field the registry marks PUBLIC (an
+  account id, DEMO vs LIVE) IS returned, because an operator has to be
+  able to confirm WHICH account is wired and a wrong account is a worse
+  failure than a visible one.
+
+`cryptography` is a new dependency. The standard library has no AES, and
+hand-rolling authenticated encryption to protect live trading credentials
+is not a trade this project should make.
+
+**Router registration order in `main.py` is load-bearing**, and this was
+measured rather than reasoned about: with the discovery router first,
+`/brokers/providers` was matched by its `/brokers/{broker_id}` and answered
+422 on a UUID parse. FastAPI matches in registration order with no
+preference for a static segment over a path parameter. The bridge router
+is registered first and a test pins it.
+
+Two findings from building it, recorded in `docs/BROKER_INTEGRATION.md`:
+IBKR and moomoo are reachable only through a gateway process on the
+operator's own machine, which a Railway-hosted API cannot see — so the
+build order is now by reachability (Kraken, IG, Binance, then the two that
+need a bridge agent). And IBKR's spot FX returns no volume and a
+mid-price source, which disqualifies every volume-gated setup and the
+session VWAP on currency pairs, and means an FX cost model must be
+spread-based.
+Status: Implemented, tested: `tests/execution/test_registry.py` (10),
+`tests/api/test_broker_bridge.py` (8),
+`apps/web/test/BrokerBridgeAdmin.test.tsx` (4). No adapter is implemented;
+nothing can trade through a catalogued provider.

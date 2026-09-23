@@ -31,6 +31,7 @@ from apps.api.app.api.routes.monte_carlo import router as monte_carlo_router
 from apps.api.app.api.routes.monte_carlo import (
     runs_router as monte_carlo_runs_router,
 )
+from apps.api.app.api.routes.option_plans import router as option_plans_router
 from apps.api.app.api.routes.orders import fills_router as order_fills_router
 from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
@@ -450,6 +451,7 @@ app.include_router(backtests_router)
 # it). The two `/{broker_id}` routes do not collide either way - they sit
 # at different path depths.
 app.include_router(broker_bridge_router)
+app.include_router(option_plans_router)
 app.include_router(brokers_router)
 # Phase 50: user-scoped, not broker-scoped - registered next to the
 # market-data router it shares a resolution path with rather than with the

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { classifyWithAbsences, useKeyedFetch } from "@/lib/useKeyedFetch";
 import OrderBookPanel from "@/components/markets/OrderBookPanel";
+import OptionPlanner from "@/components/options/OptionPlanner";
 import {
   Alert,
   EmptyNote,
@@ -349,6 +350,13 @@ export default function OptionChainTerminal({
         <div className="xl:col-span-3 flex flex-col gap-4">
           <OrderBookPanel symbol={symbol} />
         </div>
+      </div>
+
+      {/* Phase 91 (D110). Below the chain deliberately: the planner's own
+          prices are modelled, and the ladder above is the real market to
+          check them against. */}
+      <div className="grid gap-4">
+        <OptionPlanner symbol={symbol} spot={quote?.price ?? null} />
       </div>
     </div>
   );

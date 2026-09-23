@@ -2351,3 +2351,23 @@ Adds `by_symbol` and `by_hour` (same row shape as `setups`, with `symbol` / `hou
   read.
 
 Both are returned on every bot response.
+
+
+### Broker bridge — Phase 90 additions
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/brokers/providers` | The venue catalogue: asset classes, order types, short/extended-hours/fractional support, the credential fields each needs, and `adapter_status` (`implemented` or `catalogued`). Authentication only — public facts about public APIs. |
+| GET | `/brokers/{broker_id}/credentials` | Presence per field, plus the VALUES of non-secret fields only. A secret is never in this response. `admin:manage`. |
+| PUT | `/brokers/{broker_id}/credentials` | Store the whole credential set, encrypted. A full replace, never a merge. 503 when no encryption key is configured, 422 naming a missing or unknown field. `admin:manage`. |
+| DELETE | `/brokers/{broker_id}/credentials` | Forget them. Idempotent — 204 either way. `admin:manage`. |
+
+`BROKER_CREDENTIAL_ENCRYPTION_KEY` (a Fernet key) must be set for any of
+the writes to work. Unset, the store refuses rather than writing plaintext
+or generating a key that would be lost at the next restart.
+
+### Options — Phase 91 addition
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/options/plan` | Scores a signal against the playbook's §5 evidence table and either proposes a defined-risk vertical or refuses. **A refusal is a 200 with `planned: false`** — below the score floor, wrong IV regime for the structure, DTE outside the bands, or a risk budget too small for one contract are the decision layer working, not bad requests. Read-only: reaches no broker, writes nothing. Every price in the response is MODELLED (Black-Scholes from the supplied volatility) and `pricing_note` says so on every response. |
