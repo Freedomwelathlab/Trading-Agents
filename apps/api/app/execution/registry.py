@@ -72,6 +72,13 @@ class CredentialField:
     required: bool = True
 
 
+def _build_ig(credentials: dict[str, str]) -> object:
+    """Lazy import, same reasoning as `_build_kraken` below."""
+    from apps.api.app.execution.adapters.ig import build_ig_adapter
+
+    return build_ig_adapter(credentials)
+
+
 def _build_kraken(credentials: dict[str, str]) -> object:
     """Imported inside the call, not at module scope.
 
@@ -228,16 +235,28 @@ PROVIDERS: dict[str, BrokerProvider] = {
                 "account_type",
                 "Account type",
                 CredentialKind.PUBLIC,
-                "DEMO or LIVE - they are different hosts, and mixing them silently trades the "
-                "wrong account.",
+                "DEMO or LIVE. Different hosts with different money in them, so there is no "
+                "default and an unrecognised value is refused rather than guessed.",
+            ),
+            CredentialField(
+                "deal_currency",
+                "Deal currency",
+                CredentialKind.PUBLIC,
+                "Currency each deal is placed in. Default USD.",
+                required=False,
             ),
         ),
         notes=(
             "Everything at IG is a CFD or spread bet over the underlying, NOT the underlying: "
             "positions are leveraged, carry overnight financing, and are never delivered. A "
-            "strategy measured on cash equities does not transfer to them unchanged."
+            "strategy measured on cash equities does not transfer to them unchanged, and this "
+            "platform's cost model does not yet price financing. IG DOES have a real demo "
+            "environment (demo-api.ig.com), which makes it the venue where a live adapter can "
+            "genuinely be rehearsed. IG holds individual DEALS with their own ids, not a net "
+            "quantity per instrument, so closing one needs a dealId the aggregate position "
+            "cannot carry."
         ),
-        factory=None,
+        factory=_build_ig,
     ),
     "moomoo": BrokerProvider(
         provider="moomoo",

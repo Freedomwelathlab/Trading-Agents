@@ -11024,3 +11024,62 @@ Status: Implemented, tested: `tests/execution/test_kraken_adapter.py` (17),
 `tests/execution/test_registry.py` (13). No order has been placed at
 Kraken from this platform; the adapter defaults to validate-only and no
 credentials are stored (`BROKER_CREDENTIAL_ENCRYPTION_KEY` is unset).
+
+## D112 — IG adapter: the route to Forex, and what a "position" means there (Phase 93)
+Date: 2026-09-23
+Decision: `execution/adapters/ig.py` is the second implemented venue and
+the first that quotes FX from a host a cloud-deployed API can reach — the
+practical consequence of D109's reachability finding, since IBKR's FX sits
+behind a gateway on the operator's own machine.
+
+**Nothing at IG is the underlying.** Every instrument is a CFD or spread
+bet over it: leveraged, carrying overnight financing, never delivered.
+That is stated in the module, in the registry note and here because it is
+the single most load-bearing fact about this venue — a strategy measured
+on cash equities or spot FX does not transfer to IG unchanged, and this
+platform's cost model does not yet price financing. Recorded as an open
+gap rather than silently absorbed.
+
+**IG HAS a real demo environment** (`demo-api.ig.com`, verified reachable),
+unlike Kraken (D111). That makes IG the venue where a live adapter can
+genuinely be rehearsed. Demo and live are DIFFERENT HOSTS with different
+money in them, so `account_type` has NO DEFAULT: an unrecognised value is
+refused rather than guessed, because guessing picks one of two accounts
+and a mix-up trades the wrong one instead of failing.
+
+**Three things IG's responses do not decide for you.**
+
+*Session tokens arrive in HEADERS* (`CST`, `X-SECURITY-TOKEN`), not in the
+body. A client that reads only JSON authenticates once and then 401s on
+everything after, which is indistinguishable from a wrong password. A
+login that returns no tokens is an error here, never retried anonymously.
+
+*A `dealReference` is a receipt for a REQUEST.* Acceptance and the dealt
+level are only knowable from `GET /confirms/{ref}`. `ACCEPTED` yields a
+Fill at the level IG dealt; anything else raises the port's own
+`OrderNotConfirmedError` so the existing reconciler resolves it with no
+IG-specific branch — EXCEPT `REJECTED`, which is a definite answer and
+raises a plain error, because leaving the reconciler waiting on a deal IG
+has already declined would wait forever.
+
+*Cash is `available`, not `balance`.* `balance` includes margin already
+committed to open deals, and sizing against it double-counts money the
+account cannot deploy. The account used is the one IG marks `preferred`,
+never a sum across accounts: they are separate pots and an order goes to
+exactly one.
+
+**A position is not a quantity.** IG holds individual DEALS, each with its
+own `dealId`. `positions` aggregates signed size per epic because the Risk
+Engine and Portfolio Manager need a book-shaped view, and `open_deals()`
+sits beside it because closing requires a `dealId` the aggregate cannot
+carry. `close_deal()` therefore takes a deal id and an EXPLICIT closing
+direction rather than inferring it from a local view — inferring it from a
+stale one is how a close becomes a doubling.
+
+Symbols (IG "epics", `CS.D.EURUSD.MINI.IP`) pass through verbatim, per
+D109. The caller's reference price is never sent: IG fills at its own
+level, and recording the caller's price as a fill would put a number in
+the ledger the venue never quoted.
+Status: Implemented, tested: `tests/execution/test_ig_adapter.py` (27). No
+deal has been placed at IG from this platform; no credentials are stored
+(`BROKER_CREDENTIAL_ENCRYPTION_KEY` is unset).
