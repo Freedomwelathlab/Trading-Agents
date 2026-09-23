@@ -20,6 +20,7 @@ from apps.api.app.auth.permissions import Permission
 from apps.api.app.auth.security import hash_password
 from apps.api.app.db.models import (
     Broker,
+    BrokerGrant,
     BrokerKind,
     Role,
     Strategy,
@@ -76,6 +77,12 @@ async def _role_user(session, *, permissions: list[str], label: str):
             delete(StrategyDeployment).where(StrategyDeployment.id.in_(dep_ids))
         )
         await session.execute(delete(Strategy).where(Strategy.owner_user_id == user_id))
+        # A user cannot be deleted while a broker grant still points at it.
+        # Grants are created by several composing fixtures (and, for a bot
+        # run, committed through a session of their own), so this teardown
+        # clears the user's own grants rather than relying on every caller
+        # tearing its grant down first and in the right order.
+        await session.execute(delete(BrokerGrant).where(BrokerGrant.user_id == user_id))
         await session.execute(delete(User).where(User.id == user_id))
         await session.execute(delete(Role).where(Role.id == role_id))
         await session.commit()
