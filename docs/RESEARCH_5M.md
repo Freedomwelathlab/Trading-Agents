@@ -163,3 +163,80 @@ Every figure above is reproducible:
 python scripts/research_5m_structure.py --symbol TQQQ.US --days 130
 python scripts/backtest_5m_setups.py --symbol TQQQ.US
 ```
+
+---
+
+## Phase 88 — the four remaining playbook strategies, and a rolling walk-forward
+
+Four detectors the playbook scoped and nothing had built were added to
+`apps/api/app/backtesting/setups.py`, bringing the registry to twelve:
+`rsi_divergence` (strategy 3), `order_block_fvg` (strategy 9),
+`fib_confluence` (strategy 10) and `bollinger_confluence` (strategy 6).
+
+Measured the same way as the eight before them — this platform's own
+stored 5-minute bars, 129 sessions, `min_score=0`, real costs (1bp fee +
+2bps slippage), no parameter search:
+
+| setup | TQQQ trades / expR / t | QQQ trades / expR / t |
+|---|---|---|
+| `rsi_divergence` | 249 / **−0.279** / −3.68 | 240 / **−0.569** / −7.95 |
+| `order_block_fvg` | 360 / **−0.127** / −2.16 | 314 / **−0.317** / −4.98 |
+| `fib_confluence` | 121 / −0.089 / −0.88 | 121 / **−0.346** / −3.36 |
+| `bollinger_confluence` | 66 / −0.061 / −0.40 | 60 / −0.222 / −1.36 |
+
+Nothing here changes the conclusion the earlier phases reached. Two of the
+four are negative with a t-statistic that is not ambiguous on either
+symbol, and `rsi_divergence` is the worst result this study has produced
+from any setup: taking the far side of a new extreme because the
+oscillator disagreed with it lost 0.28R per trade on TQQQ and 0.57R on
+QQQ. That is a finding, not a failure of the implementation — the
+divergence is detected correctly, against confirmed swings only, with RSI
+recomputed as of the comparison swing rather than read off the present
+bar, and it still loses.
+
+`fib_confluence` and `bollinger_confluence` are negative but small and
+statistically indistinguishable from zero on TQQQ. They fire rarely (121
+and 66 trades over 129 sessions), which is what requiring independent
+confluence is for, and it also means neither has a sample worth drawing a
+conclusion from. Neither was loosened to produce one.
+
+### The rolling walk-forward (§22)
+
+`scripts/walk_forward_5m.py` automates the procedure §22 describes and
+that this engine had only ever had one hand-made 60/40 split of. Each fold
+selects the best setup by expectancy on a train window of sessions, then
+scores ONLY that setup on the immediately following, non-overlapping test
+window. Folds are sliced by session date, never by bar count, so a
+boundary never lands mid-session.
+
+40 train / 20 test, stepping 20, over the same 129 sessions:
+
+| symbol | folds | distinct picks | pooled OOS trades | pooled OOS expR | t |
+|---|---|---|---|---|---|
+| TQQQ.US | 4 | 3 | 55 | **−0.070** | −0.54 |
+| QQQ.US | 4 | 2 | 41 | **−0.087** | −0.46 |
+
+The per-fold tables matter more than the pooled number. On TQQQ the
+procedure picked a different setup in three of four folds, and in three of
+four the setup that looked best in training lost in testing — including
+`sweep_mss` at +0.18 expR in training and −0.16 in testing, twice. That is
+the signature of selecting on noise: the training figure is real, and it
+does not survive contact with the next twenty sessions.
+
+**The conclusion is unchanged and now has a procedure behind it rather
+than a per-setup table.** Selecting the best-performing intraday setup on
+recent history and trading it forward would have lost money over this
+window, on both symbols. Nothing in this study has earned a paper
+deployment, let alone a live one.
+
+### What was deliberately NOT done
+
+* No parameter search on any of the four new detectors. Each was written
+  once, to the playbook's description, and measured once.
+* No loosening of `fib_confluence`/`bollinger_confluence` to manufacture a
+  sample. `require_confluence` stays on by default.
+* No retuning of the walk-forward windows after seeing the result. 40/20
+  was chosen before the first run because it gives four folds on 129
+  sessions; the negative pooled figure is not a reason to search for a
+  train/test split that produces a positive one, and doing so would be the
+  overfitting this procedure exists to detect.

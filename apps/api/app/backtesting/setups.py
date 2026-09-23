@@ -33,6 +33,8 @@ from apps.api.app.marketdata.candles import (
     Trend,
     detect_at,
 )
+from apps.api.app.marketdata.indicators import InsufficientDataError
+from apps.api.app.marketdata.indicators import rsi as _indicator_rsi
 from apps.api.app.marketdata.sessions import SessionLevels, VwapPoint
 from apps.api.app.marketdata.structure import (
     Direction,
@@ -870,6 +872,487 @@ def gap_fade_setup(
     )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Strategy 3 / Section 27 - RSI divergence at a swing
+# ---------------------------------------------------------------------------
+
+
+def _bar_index_at(ctx: BarContext, ts) -> int | None:
+    """Index of the bar that printed at `ts`, or None if it is not in this
+    window. Linear because a session is a few hundred bars and a dict keyed
+    on timestamps would have to be rebuilt every bar anyway."""
+    for k in range(ctx.index, -1, -1):
+        if ctx.bars[k].ts == ts:
+            return k
+    return None
+
+
+def _rsi_at(ctx: BarContext, index: int, period: int) -> Decimal | None:
+    closes = [b.close for b in ctx.bars[: index + 1]]
+    try:
+        return _indicator_rsi(closes, period)
+    except InsufficientDataError:
+        return None
+
+
+def rsi_divergence_setup(
+    ctx: BarContext,
+    *,
+    period: int = 14,
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+    min_rsi_gap: Decimal = Decimal("2"),
+    max_bars_since_swing: int = 40,
+) -> SetupSignal | None:
+    """Price makes a new extreme; the oscillator does not.
+
+    Bullish: this bar's low is BELOW the last confirmed swing low while
+    RSI here is HIGHER than RSI was at that swing. Bearish is the mirror.
+
+    Two things make this honest rather than a curve-fit:
+
+    **The comparison swing must be CONFIRMED.** A pivot is only
+    identifiable `strength` bars after it printed, so comparing against the
+    lowest low in a lookback - the easy version - compares against a pivot
+    the market had not yet revealed and manufactures divergences that were
+    not visible in real time. `last_confirmed_swing` is asked for one that
+    was known at THIS bar's timestamp.
+
+    **RSI at the swing is recomputed from the bars up to that swing**, not
+    read off the current value. The current RSI is a fact about now; what
+    the comparison needs is what the oscillator read then.
+
+    `min_rsi_gap` exists because a divergence of 0.2 RSI points is noise
+    wearing the name of a signal.
+    """
+    i = ctx.index
+    if ctx.atr is None or ctx.atr <= 0 or i < period + 2:
+        return None
+
+    now_ts = ctx.bar.ts
+    for kind, direction in (
+        (SwingKind.LOW, Direction.LONG),
+        (SwingKind.HIGH, Direction.SHORT),
+    ):
+        swing = last_confirmed_swing(ctx.swings, kind, as_of=now_ts)
+        if swing is None:
+            continue
+        k = _bar_index_at(ctx, swing.ts)
+        if k is None or k >= i or i - k > max_bars_since_swing:
+            continue
+
+        if direction is Direction.LONG:
+            made_new_extreme = _low(ctx.bar) < swing.price
+        else:
+            made_new_extreme = _high(ctx.bar) > swing.price
+        if not made_new_extreme:
+            continue
+
+        here = ctx.rsi if ctx.rsi is not None else _rsi_at(ctx, i, period)
+        there = _rsi_at(ctx, k, period)
+        if here is None or there is None:
+            continue
+        gap = here - there if direction is Direction.LONG else there - here
+        if gap < min_rsi_gap:
+            continue
+
+        extreme = _low(ctx.bar) if direction is Direction.LONG else _high(ctx.bar)
+        stop = _stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer)
+
+        score = 2
+        evidence = {
+            "swing_price": f"{swing.price}",
+            "rsi_then": f"{there:.1f}",
+            "rsi_now": f"{here:.1f}",
+            "rsi_gap": f"{gap:.1f}",
+            "bars_since_swing": str(i - k),
+        }
+        if direction is Direction.LONG and here < Decimal(40):
+            score += 1
+            evidence["oscillator_zone"] = "oversold"
+        if direction is Direction.SHORT and here > Decimal(60):
+            score += 1
+            evidence["oscillator_zone"] = "overbought"
+        if ctx.higher_tf_bias is direction:
+            score += 1
+            evidence["higher_tf_bias"] = direction.value
+        if gap >= min_rsi_gap * 3:
+            score += 1
+            evidence["divergence_size"] = "wide"
+
+        return SetupSignal(
+            setup_name="rsi_divergence",
+            direction=direction,
+            entry_index=i,
+            entry_price=ctx.bar.close,
+            stop_price=stop,
+            score=score,
+            evidence=evidence,
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Strategy 9 / Section 33 - Order block / fair value gap retest
+# ---------------------------------------------------------------------------
+
+
+def order_block_fvg_setup(
+    ctx: BarContext,
+    *,
+    lookback: int = 20,
+    min_gap_atr: Decimal = Decimal("0.25"),
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+    max_bars_to_retest: int = 12,
+) -> SetupSignal | None:
+    """Entry on the retest of an unfilled three-bar imbalance.
+
+    A bullish fair value gap is a three-bar window whose FIRST bar's high
+    sits below its THIRD bar's low: price moved so quickly that the range
+    between them never traded. The order block is the last opposite-colour
+    candle before that move. The setup is not the gap itself - it is price
+    coming BACK to the gap and holding it.
+
+    The playbook scopes this as entry refinement on strategy 1 rather than
+    a standalone edge, and that scoping is preserved here: alignment with
+    the higher-timeframe bias is scored, and without it the signal still
+    fires but carries the lower score. Making the bias mandatory would be
+    a stronger claim than the playbook makes.
+
+    **The gap must still be unfilled at entry.** A gap price has already
+    traded back through is not an imbalance any more; entering on it is
+    entering on a level the market has already resolved. The window
+    between the gap and the retest is bounded for the same reason - a gap
+    from forty bars ago is a fact about a different regime.
+    """
+    i = ctx.index
+    if ctx.atr is None or ctx.atr <= 0 or i < 4:
+        return None
+
+    start = max(2, i - lookback)
+    # Newest gap first: the most recent imbalance is the one price is
+    # reacting to now.
+    for g in range(i - 1, start - 1, -1):
+        first, third = ctx.bars[g - 2], ctx.bars[g]
+        if i - g > max_bars_to_retest:
+            break
+
+        bullish_gap = _high(first) < _low(third)
+        bearish_gap = _low(first) > _high(third)
+        if not (bullish_gap or bearish_gap):
+            continue
+
+        if bullish_gap:
+            direction = Direction.LONG
+            gap_low, gap_high = _high(first), _low(third)
+        else:
+            direction = Direction.SHORT
+            gap_low, gap_high = _high(third), _low(first)
+
+        size = gap_high - gap_low
+        if size < min_gap_atr * ctx.atr:
+            continue
+
+        # Unfilled: no bar between the gap and the bar before this one
+        # closed through the far side of it.
+        between = ctx.bars[g + 1 : i]
+        if direction is Direction.LONG and any(_low(b) < gap_low for b in between):
+            continue
+        if direction is Direction.SHORT and any(_high(b) > gap_high for b in between):
+            continue
+
+        # The retest: this bar traded into the gap and closed back out of
+        # it on the correct side.
+        if direction is Direction.LONG:
+            touched = _low(ctx.bar) <= gap_high
+            held = ctx.bar.close >= gap_low
+        else:
+            touched = _high(ctx.bar) >= gap_low
+            held = ctx.bar.close <= gap_high
+        if not (touched and held):
+            continue
+
+        extreme = _low(ctx.bar) if direction is Direction.LONG else _high(ctx.bar)
+        origin = gap_low if direction is Direction.LONG else gap_high
+        extreme = min(extreme, origin) if direction is Direction.LONG else max(extreme, origin)
+        stop = _stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer)
+
+        score = 2
+        evidence = {
+            "gap_low": f"{gap_low}",
+            "gap_high": f"{gap_high}",
+            "gap_atr": f"{size / ctx.atr:.2f}",
+            "bars_since_gap": str(i - g),
+        }
+        if ctx.higher_tf_bias is direction:
+            score += 1
+            evidence["higher_tf_bias"] = direction.value
+        if ctx.vwap is not None:
+            above = ctx.bar.close > ctx.vwap.vwap
+            if (direction is Direction.LONG) == above:
+                score += 1
+                evidence["vwap_side"] = "with trend"
+        if size >= min_gap_atr * 3 * ctx.atr:
+            score += 1
+            evidence["imbalance"] = "large"
+
+        return SetupSignal(
+            setup_name="order_block_fvg",
+            direction=direction,
+            entry_index=i,
+            entry_price=ctx.bar.close,
+            stop_price=stop,
+            score=score,
+            evidence=evidence,
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Strategy 10 / Section 34 - Fibonacci confluence
+# ---------------------------------------------------------------------------
+
+_FIB_LEVELS = (Decimal("0.618"), Decimal("0.705"), Decimal("0.786"))
+"""The playbook's discount/premium zone. 0.705 is the midpoint of the
+other two and is included because the zone is what the setup trades, not
+any one ratio - a detector that fired only at 0.618 to six decimals would
+almost never fire at all."""
+
+
+def fib_confluence_setup(
+    ctx: BarContext,
+    *,
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+    zone_tolerance_atr: Decimal = Decimal("0.20"),
+    confluence_tolerance_atr: Decimal = Decimal("0.35"),
+    require_confluence: bool = True,
+    max_bars_since_leg: int = 40,
+) -> SetupSignal | None:
+    """A retracement into the 0.618-0.786 zone of the last impulse leg,
+    with a second, independent level agreeing.
+
+    The leg is measured between the two most recent CONFIRMED swings, one
+    of each kind. Using the running high and low of a lookback instead
+    would measure a leg whose endpoints the market had not yet revealed -
+    the same look-ahead trap `docs/RESEARCH_5M.md` records being caught in
+    the structure study.
+
+    **Confluence is required by default and it must be INDEPENDENT.** A
+    Fibonacci level agreeing with a Fibonacci level is one observation
+    counted twice. What counts here is a session level or VWAP - computed
+    from the session clock and from volume respectively, neither of which
+    knows anything about the retracement.
+    """
+    i = ctx.index
+    if ctx.atr is None or ctx.atr <= 0:
+        return None
+
+    now_ts = ctx.bar.ts
+    high = last_confirmed_swing(ctx.swings, SwingKind.HIGH, as_of=now_ts)
+    low = last_confirmed_swing(ctx.swings, SwingKind.LOW, as_of=now_ts)
+    if high is None or low is None:
+        return None
+    hi_i, lo_i = _bar_index_at(ctx, high.ts), _bar_index_at(ctx, low.ts)
+    if hi_i is None or lo_i is None:
+        return None
+    if i - min(hi_i, lo_i) > max_bars_since_leg:
+        return None
+    span = high.price - low.price
+    if span <= 0:
+        return None
+
+    # The leg runs from the older swing to the newer one; a retracement is
+    # a move back toward the older one.
+    if lo_i < hi_i:
+        direction = Direction.LONG
+        zone = [high.price - span * f for f in _FIB_LEVELS]
+    else:
+        direction = Direction.SHORT
+        zone = [low.price + span * f for f in _FIB_LEVELS]
+
+    zone_lo, zone_hi = min(zone), max(zone)
+    pad = zone_tolerance_atr * ctx.atr
+    price = ctx.bar.close
+    if not (zone_lo - pad <= price <= zone_hi + pad):
+        return None
+
+    # The bar must have REACTED, not merely be sitting in the zone.
+    if direction is Direction.LONG and ctx.bar.close <= ctx.bar.open:
+        return None
+    if direction is Direction.SHORT and ctx.bar.close >= ctx.bar.open:
+        return None
+
+    tol = confluence_tolerance_atr * ctx.atr
+    confluences: list[str] = []
+    candidates: list[tuple[str, Decimal | None]] = [
+        ("previous_close", ctx.levels.previous_close),
+        ("previous_high", ctx.levels.previous_high),
+        ("previous_low", ctx.levels.previous_low),
+        ("premarket_high", ctx.levels.premarket_high),
+        ("premarket_low", ctx.levels.premarket_low),
+        ("opening_range_high", ctx.levels.opening_range_high),
+        ("opening_range_low", ctx.levels.opening_range_low),
+        ("vwap", ctx.vwap.vwap if ctx.vwap is not None else None),
+    ]
+    for name, level in candidates:
+        if level is not None and abs(level - price) <= tol:
+            confluences.append(name)
+    if require_confluence and not confluences:
+        return None
+
+    extreme = _low(ctx.bar) if direction is Direction.LONG else _high(ctx.bar)
+    anchor = zone_lo if direction is Direction.LONG else zone_hi
+    extreme = min(extreme, anchor) if direction is Direction.LONG else max(extreme, anchor)
+    stop = _stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer)
+
+    score = 2
+    evidence = {
+        "leg_low": f"{low.price}",
+        "leg_high": f"{high.price}",
+        "zone": f"{zone_lo:.2f}-{zone_hi:.2f}",
+        "confluence": ",".join(confluences) if confluences else "none",
+    }
+    if len(confluences) >= 2:
+        score += 1
+        evidence["confluence_count"] = str(len(confluences))
+    if ctx.higher_tf_bias is direction:
+        score += 1
+        evidence["higher_tf_bias"] = direction.value
+    if ctx.vwap is not None:
+        above = price > ctx.vwap.vwap
+        if (direction is Direction.LONG) == above:
+            score += 1
+            evidence["vwap_side"] = "with trend"
+
+    return SetupSignal(
+        setup_name="fib_confluence",
+        direction=direction,
+        entry_index=i,
+        entry_price=ctx.bar.close,
+        stop_price=stop,
+        score=score,
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 6 / Section 30 - Bollinger band confluence
+# ---------------------------------------------------------------------------
+
+
+def _bollinger(closes: Sequence[Decimal], period: int, mult: Decimal):
+    """Middle, upper and lower, population sigma - the same convention the
+    chart's own Bollinger uses (`apps/web/lib/indicators.ts`), so a band a
+    trader is looking at and a band a setup fired on are the same band."""
+    if len(closes) < period:
+        return None
+    window = list(closes[-period:])
+    mean = sum(window, Decimal(0)) / period
+    var = sum(((c - mean) ** 2 for c in window), Decimal(0)) / period
+    sigma = var.sqrt()
+    return mean, mean + mult * sigma, mean - mult * sigma
+
+
+def bollinger_confluence_setup(
+    ctx: BarContext,
+    *,
+    period: int = 20,
+    mult: Decimal = Decimal("2"),
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+    confluence_tolerance_atr: Decimal = Decimal("0.35"),
+    require_confluence: bool = True,
+) -> SetupSignal | None:
+    """A close back INSIDE the band after a close outside it.
+
+    Not "price touched the band". A band tag is the single most common
+    thing an instrument does in a trend - a 3x ETF can ride the upper band
+    for twenty bars - and trading every tag is trading against every trend.
+    What is traded here is the rejection: the previous bar closed outside,
+    this one closed back in.
+
+    Confluence with a session level or VWAP is required by default for the
+    same reason it is in `fib_confluence`: on its own, mean reversion at a
+    band is the weakest claim in the playbook, and the band and the level
+    are computed from unrelated inputs, so their agreement is evidence
+    rather than restatement.
+    """
+    i = ctx.index
+    if ctx.atr is None or ctx.atr <= 0 or i < period:
+        return None
+
+    closes = [b.close for b in ctx.bars[: i + 1]]
+    now = _bollinger(closes, period, mult)
+    prev = _bollinger(closes[:-1], period, mult)
+    if now is None or prev is None:
+        return None
+    _, upper_now, lower_now = now
+    _, upper_prev, lower_prev = prev
+
+    previous = ctx.bars[i - 1]
+    price = ctx.bar.close
+    if previous.close < lower_prev and price > lower_now:
+        direction = Direction.LONG
+        band = lower_now
+    elif previous.close > upper_prev and price < upper_now:
+        direction = Direction.SHORT
+        band = upper_now
+    else:
+        return None
+
+    tol = confluence_tolerance_atr * ctx.atr
+    confluences: list[str] = []
+    for name, level in (
+        ("previous_close", ctx.levels.previous_close),
+        ("previous_high", ctx.levels.previous_high),
+        ("previous_low", ctx.levels.previous_low),
+        ("premarket_high", ctx.levels.premarket_high),
+        ("premarket_low", ctx.levels.premarket_low),
+        ("vwap", ctx.vwap.vwap if ctx.vwap is not None else None),
+    ):
+        if level is not None and abs(level - price) <= tol:
+            confluences.append(name)
+    if require_confluence and not confluences:
+        return None
+
+    extreme = _low(ctx.bars[i - 1]) if direction is Direction.LONG else _high(ctx.bars[i - 1])
+    extreme = (
+        min(extreme, _low(ctx.bar)) if direction is Direction.LONG else max(extreme, _high(ctx.bar))
+    )
+    stop = _stop_from_extreme(extreme, direction, ctx.atr, atr_stop_buffer)
+
+    score = 2
+    evidence = {
+        "band": f"{band:.2f}",
+        "prev_close": f"{previous.close}",
+        "close": f"{price}",
+        "confluence": ",".join(confluences) if confluences else "none",
+    }
+    if len(confluences) >= 2:
+        score += 1
+        evidence["confluence_count"] = str(len(confluences))
+    if ctx.rsi is not None:
+        if direction is Direction.LONG and ctx.rsi < Decimal(35):
+            score += 1
+            evidence["oscillator_zone"] = "oversold"
+        if direction is Direction.SHORT and ctx.rsi > Decimal(65):
+            score += 1
+            evidence["oscillator_zone"] = "overbought"
+    if ctx.higher_tf_bias is direction:
+        score += 1
+        evidence["higher_tf_bias"] = direction.value
+
+    return SetupSignal(
+        setup_name="bollinger_confluence",
+        direction=direction,
+        entry_index=i,
+        entry_price=ctx.bar.close,
+        stop_price=stop,
+        score=score,
+        evidence=evidence,
+    )
+
+
 SETUPS: dict[str, SetupDetector] = {
     "sweep_mss": sweep_mss_setup,
     "vwap_reversion": vwap_reversion_setup,
@@ -879,6 +1362,11 @@ SETUPS: dict[str, SetupDetector] = {
     "quiet_pullback": quiet_pullback_setup,
     "volume_climax_reversal": volume_climax_reversal_setup,
     "gap_fade": gap_fade_setup,
+    # Phase 88 (D107) - the four the playbook scoped and nothing had built.
+    "rsi_divergence": rsi_divergence_setup,
+    "order_block_fvg": order_block_fvg_setup,
+    "fib_confluence": fib_confluence_setup,
+    "bollinger_confluence": bollinger_confluence_setup,
 }
 """Registry, so a run can name which setups to enable and a caller can
 add one without touching the engine."""
