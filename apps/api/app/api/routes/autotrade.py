@@ -89,6 +89,15 @@ class CreateBotRequest(BaseModel):
     strategy_mode: str = "auto"
     setups: list[str] = Field(default_factory=list)
     min_score: int = Field(default=3, ge=0, le=10)
+    extended_hours_min_score: int | None = Field(default=None, ge=0, le=10)
+    """Phase 87 (D106): the score a signal must reach on a PRE-MARKET or
+    AFTER-HOURS bar. Left unset on a bot whose `market_type` admits those
+    phases, the route fills in a stricter figure than `min_score` rather
+    than treating a 04:30 print as evidence equal to a 10:30 one."""
+    allow_short: bool = False
+    """Both directions. Off by default: the setups have always emitted
+    short signals and the bot has always discarded them, so turning this
+    on is a genuine change in what the bot may do."""
     stop_loss_mode: str = "auto"
     stop_loss_max_pct: Decimal | None = None
     trailing_stop_pct: Decimal | None = None
@@ -117,6 +126,8 @@ class BotResponse(BaseModel):
     strategy_mode: str
     setups: list[str]
     min_score: int
+    extended_hours_min_score: int | None
+    allow_short: bool
     stop_loss_mode: str
     stop_loss_max_pct: Decimal | None
     trailing_stop_pct: Decimal | None
@@ -138,6 +149,7 @@ class BotResponse(BaseModel):
             bar_interval=b.bar_interval, max_trades_per_session=b.max_trades_per_session,
             max_trades_per_day=b.max_trades_per_day, capital_per_trade=b.capital_per_trade,
             strategy_mode=b.strategy_mode, setups=list(b.setups), min_score=b.min_score,
+            extended_hours_min_score=b.extended_hours_min_score, allow_short=b.allow_short,
             stop_loss_mode=b.stop_loss_mode, stop_loss_max_pct=b.stop_loss_max_pct,
             trailing_stop_pct=b.trailing_stop_pct, take_profit_mode=b.take_profit_mode,
             take_profit_min_pct=b.take_profit_min_pct,
@@ -314,6 +326,8 @@ async def create_autotrade_bot(
         max_trades_per_day=payload.max_trades_per_day,
         capital_per_trade=payload.capital_per_trade, strategy_mode=payload.strategy_mode,
         setups=payload.setups, min_score=payload.min_score,
+        extended_hours_min_score=payload.extended_hours_min_score,
+        allow_short=payload.allow_short,
         stop_loss_mode=payload.stop_loss_mode, stop_loss_max_pct=payload.stop_loss_max_pct,
         trailing_stop_pct=payload.trailing_stop_pct, take_profit_mode=payload.take_profit_mode,
         take_profit_min_pct=payload.take_profit_min_pct,

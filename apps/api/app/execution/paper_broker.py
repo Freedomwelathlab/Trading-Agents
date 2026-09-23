@@ -27,11 +27,35 @@ class InsufficientPositionError(Exception):
 
 
 class PaperBrokerAdapter:
+    """
+    `allow_short` (Phase 87, D106) is opt-in per adapter, not a global
+    behaviour change. Every existing caller - agent trades, strategy
+    deployments, the backtest replay - is long-only, and for them a sell
+    beyond the held quantity is a bug that must keep raising rather than
+    quietly open a short position nobody asked for. Only the intraday bot,
+    and only when its operator ticked `allow_short`, constructs one of
+    these with shorting enabled.
+
+    **Short collateral is 100% cash.** A short's loss is unbounded, and
+    this simulator has no margin model, no borrow availability and no
+    financing cost. Rather than invent one, it refuses to open a short
+    whose notional is not covered by cash already in the account. That is
+    stricter than any real broker, which is the correct direction for a
+    simulator to be wrong in: a paper account that can open positions the
+    real one would reject produces a track record the live account could
+    not have earned.
+    """
+
     def __init__(
-        self, *, starting_cash: Decimal, positions: dict[str, Decimal] | None = None
+        self,
+        *,
+        starting_cash: Decimal,
+        positions: dict[str, Decimal] | None = None,
+        allow_short: bool = False,
     ) -> None:
         self._cash = starting_cash
         self._positions: dict[str, Decimal] = dict(positions) if positions else {}
+        self._allow_short = allow_short
         self.fills: list[Fill] = []
 
     @property
@@ -74,10 +98,21 @@ class PaperBrokerAdapter:
         else:
             held = self._positions.get(order.symbol, Decimal(0))
             if order.quantity > held:
-                raise InsufficientPositionError(
-                    f"Cannot sell {order.quantity} of {order.symbol}; only {held} held. "
-                    "Short selling is not supported by the paper broker."
-                )
+                if not self._allow_short:
+                    raise InsufficientPositionError(
+                        f"Cannot sell {order.quantity} of {order.symbol}; only {held} held. "
+                        "Short selling is not enabled on this paper broker."
+                    )
+                # Only the part that goes past what is held is a new short,
+                # and only that part needs collateral - selling 10 held
+                # shares and shorting 2 is not a 12-share short.
+                shorted = (order.quantity - max(held, Decimal(0))) * market_price
+                if shorted > self._cash:
+                    raise InsufficientFundsError(
+                        f"Short notional {shorted} exceeds available cash {self._cash}; "
+                        "this paper broker collateralises shorts at 100% cash because it "
+                        "has no margin model to price the risk with."
+                    )
             self._positions[order.symbol] = held - order.quantity
             self._cash += notional
 

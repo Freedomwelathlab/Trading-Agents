@@ -75,8 +75,9 @@ from apps.api.app.execution.persistence import load_paper_broker, save_paper_bro
 from apps.api.app.marketdata.bar_router import BarBackfillRouter, UnroutableSymbolError
 from apps.api.app.marketdata.news_provider import NewsProvider
 from apps.api.app.marketdata.portfolio_risk import load_market_risk_inputs
-from apps.api.app.marketdata.sessions import session_date, session_phase
+from apps.api.app.marketdata.sessions import SessionPhase, session_date, session_phase
 from apps.api.app.marketdata.store import MarketDataStore
+from apps.api.app.marketdata.structure import Direction
 from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
 from apps.api.app.oms.service import OMSStatus
 from apps.api.app.portfolio_manager.manager import portfolio_state_from_positions
@@ -234,6 +235,7 @@ async def _manage_open_trades(
                 take_profit_price=trade.take_profit_price,
                 peak_price=trade.peak_price,
                 take_profit_armed=trade.take_profit_armed,
+                direction=Direction(trade.direction),
             ),
             bar_high=high,
             bar_low=low,
@@ -245,13 +247,24 @@ async def _manage_open_trades(
         )
         trade.stop_price = decision.state.stop_price
         trade.peak_price = decision.state.peak_price
-        trade.trough_price = min(trade.trough_price, low)
+        # Maximum ADVERSE excursion: the lowest low for a long, the highest
+        # high for a short. Recording the low for both would make every
+        # short look as though it never went against the position.
+        trade.trough_price = (
+            min(trade.trough_price, low)
+            if trade.direction == Direction.LONG.value
+            else max(trade.trough_price, high)
+        )
         trade.take_profit_armed = decision.state.take_profit_armed
         if not decision.should_exit:
             continue
 
-        held = broker.positions.get(trade.symbol, Decimal(0))
-        quantity = min(trade.quantity, held)
+        # Closing a long SELLS what is held; closing a short BUYS back what
+        # is owed, and the broker position for it is negative.
+        is_long = trade.direction == Direction.LONG.value
+        position = broker.positions.get(trade.symbol, Decimal(0))
+        exposure = position if is_long else -position
+        quantity = min(trade.quantity, exposure)
         if quantity <= 0:
             # The broker no longer holds it (closed by hand on the desk).
             # Record the bot's own ledger as closed by the operator at the
@@ -267,7 +280,7 @@ async def _manage_open_trades(
 
         proposal = TradeProposal(
             symbol=trade.symbol,
-            side=Side.SELL,
+            side=Side.SELL if is_long else Side.BUY,
             quantity=quantity,
             estimated_price=last.close,
             stop_price=None,
@@ -299,13 +312,24 @@ async def _manage_open_trades(
 
 
 def _settle(trade: AutotradeBotTrade) -> None:
+    """P&L and R, signed by direction.
+
+    A short profits when the exit is BELOW the entry and its risk is the
+    distance UP to the stop, so both figures are the long formulas with
+    entry and exit exchanged. Leaving the long formula in place for a short
+    reports every profitable short as a loss of the same size - a sign
+    error that reads as a strategy result rather than as a bug.
+    """
     if trade.exit_price is None:
         return
-    trade.realized_pnl = (trade.exit_price - trade.entry_price) * trade.quantity
-    risk = trade.entry_price - trade.initial_stop_price
-    trade.r_multiple = (
-        (trade.exit_price - trade.entry_price) / risk if risk > 0 else None
-    )
+    if trade.direction == Direction.LONG.value:
+        move = trade.exit_price - trade.entry_price
+        risk = trade.entry_price - trade.initial_stop_price
+    else:
+        move = trade.entry_price - trade.exit_price
+        risk = trade.initial_stop_price - trade.entry_price
+    trade.realized_pnl = move * trade.quantity
+    trade.r_multiple = move / risk if risk > 0 else None
 
 
 async def _submit(
@@ -434,7 +458,10 @@ async def run_bot_cycle(
 
     store = MarketDataStore(session)
     paper = await load_paper_broker(
-        session, bot.broker_id, default_starting_cash=settings.paper_broker_starting_cash
+        session,
+        bot.broker_id,
+        default_starting_cash=settings.paper_broker_starting_cash,
+        allow_short=bot.allow_short,
     )
     # Refresh the bot's own symbols AND anything else the broker holds (a
     # position opened by hand on the same broker): the risk engine values
@@ -515,9 +542,22 @@ async def run_bot_cycle(
             list(bot.setups), strategy_mode=bot.strategy_mode, symbol=symbol,
             by_setup=by_setup, by_pair=by_pair,
         )
+        symbol_bars = bars_by_symbol.get(symbol) or []
+        # Phase 87 (D106): an extended-hours bar clears a higher bar when
+        # the operator set one. The phase is read from the BAR the signal
+        # would fire on, not from the wall clock, so a cycle that runs late
+        # still judges the bar it is actually looking at.
+        effective_min = bot.min_score
+        if bot.extended_hours_min_score is not None and symbol_bars:
+            phase = session_phase(symbol_bars[-1].ts)
+            if phase in (SessionPhase.PRE_MARKET, SessionPhase.AFTER_HOURS):
+                effective_min = max(bot.min_score, bot.extended_hours_min_score)
         scan = scan_latest_bar(
-            symbol, bars_by_symbol.get(symbol) or [], setups=symbol_setups,
-            market_type=bot.market_type, min_score=bot.min_score, plan=plan,
+            symbol, symbol_bars, setups=symbol_setups,
+            market_type=bot.market_type, min_score=effective_min, plan=plan,
+            allow_directions=(
+                (Direction.LONG, Direction.SHORT) if bot.allow_short else (Direction.LONG,)
+            ),
         )
         if scan.hit is None:
             if scan.reason.startswith("rejected:"):
@@ -561,18 +601,25 @@ async def run_bot_cycle(
                 f"{hit.symbol}: capital per trade {bot.capital_per_trade} buys 0 shares at {price}"
             )
             continue
+        direction = hit.signal.direction
+        is_long = direction is Direction.LONG
         bracket = initial_bracket(
-            entry_price=price, structural_stop=hit.signal.stop_price, rules=rules
+            entry_price=price, structural_stop=hit.signal.stop_price, rules=rules,
+            direction=direction,
         )
-        if bracket.stop_price >= price:
+        stop_invalid = bracket.stop_price >= price if is_long else bracket.stop_price <= price
+        if stop_invalid:
             outcome.signals_skipped += 1
-            outcome.notes.append(f"{hit.symbol}: no valid stop below entry; not traded")
+            outcome.notes.append(
+                f"{hit.symbol}: no valid stop "
+                f"{'below' if is_long else 'above'} entry; not traded"
+            )
             continue
 
         marks[hit.symbol] = price
         proposal = TradeProposal(
             symbol=hit.symbol,
-            side=Side.BUY,
+            side=Side.BUY if is_long else Side.SELL,
             quantity=quantity,
             estimated_price=price,
             stop_price=bracket.stop_price,
@@ -599,7 +646,8 @@ async def run_bot_cycle(
         # Re-anchor the bracket on the actual fill so R is measured from
         # what was paid, not from the bar close the signal was priced at.
         bracket = initial_bracket(
-            entry_price=fill.fill_price, structural_stop=hit.signal.stop_price, rules=rules
+            entry_price=fill.fill_price, structural_stop=hit.signal.stop_price, rules=rules,
+            direction=direction,
         )
         session.add(
             AutotradeBotTrade(
@@ -608,6 +656,7 @@ async def run_bot_cycle(
                 open_run_id=run.id,
                 symbol=hit.symbol,
                 session_date=today,
+                direction=direction.value,
                 setup_name=hit.signal.setup_name,
                 score=hit.signal.score,
                 evidence=dict(hit.signal.evidence),

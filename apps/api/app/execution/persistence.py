@@ -24,8 +24,17 @@ from apps.api.app.execution.paper_broker import PaperBrokerAdapter
 
 
 async def load_paper_broker(
-    session: AsyncSession, broker_id: uuid.UUID, *, default_starting_cash: Decimal
+    session: AsyncSession,
+    broker_id: uuid.UUID,
+    *,
+    default_starting_cash: Decimal,
+    allow_short: bool = False,
 ) -> PaperBrokerAdapter:
+    """`allow_short` defaults to False so every existing caller keeps the
+    long-only adapter it has always had (Phase 87, D106). It is a property
+    of the CALLER, not of the stored broker row: the same paper broker can
+    back a long-only strategy deployment and a short-enabled bot, and the
+    account state itself does not change either way."""
     account = (
         await session.execute(
             select(BrokerAccount).where(BrokerAccount.broker_id == broker_id).with_for_update()
@@ -42,7 +51,9 @@ async def load_paper_broker(
     ).scalars().all()
     positions = {row.symbol: row.quantity for row in position_rows}
 
-    return PaperBrokerAdapter(starting_cash=account.cash, positions=positions)
+    return PaperBrokerAdapter(
+        starting_cash=account.cash, positions=positions, allow_short=allow_short
+    )
 
 
 async def save_paper_broker(

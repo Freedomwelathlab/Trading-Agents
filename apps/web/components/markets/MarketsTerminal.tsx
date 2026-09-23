@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { classifyWithAbsences, useKeyedFetch } from "@/lib/useKeyedFetch";
 import { PriceChart, type PriceBar, type ScoredSignal } from "@/components/PriceChart";
 import SignalScoreTable from "@/components/markets/SignalScoreTable";
+import IndicatorsMenu from "@/components/markets/IndicatorsMenu";
+import { DEFAULT_INDICATORS, type IndicatorSettings } from "@/lib/indicators";
 import OrderBookPanel from "@/components/markets/OrderBookPanel";
 import SessionLevelsPanel, {
   toPriceLines,
@@ -146,8 +148,12 @@ export default function MarketsTerminal({
   });
   const bars = barsPayload?.bars ?? [];
 
-  // --- setup signals (Phase 85, D102) ------------------------------------
-  const [showSignals, setShowSignals] = useState(true);
+  // --- indicators (Phase 86, D103) ---------------------------------------
+  // One settings object drives both the chart's overlays and whether the
+  // session-level lines and B/S markers are drawn at all, so the menu is
+  // the single answer to "what is on this chart".
+  const [indicators, setIndicators] = useState<IndicatorSettings>(DEFAULT_INDICATORS);
+  const showSignals = indicators.signals.on;
   const signalsUrl = useMemo(
     () =>
       `/api/market-data/${encodeURIComponent(symbol)}/signals?` +
@@ -243,7 +249,7 @@ export default function MarketsTerminal({
         <Panel
           className="xl:col-span-8"
           title="Chart"
-          description={`${interval} · ${bars.length} bars${priceLines.length ? ` · ${priceLines.length} session levels drawn` : ""}`}
+          description={`${interval} · ${bars.length} bars${indicators.sessionLevels.on && priceLines.length ? ` · ${priceLines.length} session levels drawn` : ""}`}
           actions={
             <div className="flex flex-wrap gap-1" role="group" aria-label="Bar interval">
               {INTERVALS.map((iv) => (
@@ -257,6 +263,7 @@ export default function MarketsTerminal({
                   {iv}
                 </button>
               ))}
+              <IndicatorsMenu value={indicators} onChange={setIndicators} />
             </div>
           }
         >
@@ -287,26 +294,17 @@ export default function MarketsTerminal({
               ) : null}
               <PriceChart
                 bars={bars}
-                priceLines={priceLines}
+                priceLines={indicators.sessionLevels.on ? priceLines : []}
                 scoredSignals={chartSignals}
+                indicators={indicators}
                 height={420}
               />
-              <div className="flex flex-wrap items-center gap-2 text-xs text-ink-faint">
-                <label className="inline-flex cursor-pointer items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    checked={showSignals}
-                    onChange={(e) => setShowSignals(e.target.checked)}
-                  />
-                  Setup signals
-                </label>
-                {showSignals ? (
-                  <span>
-                    {chartSignals.length} marker(s) over the last {SIGNAL_DAYS} sessions ·
-                    hover a row above for its score and evidence
-                  </span>
-                ) : null}
-              </div>
+              {showSignals ? (
+                <p className="text-xs text-ink-faint">
+                  {chartSignals.length} marker(s) over the last {SIGNAL_DAYS} sessions · hover a
+                  row above for its score and evidence
+                </p>
+              ) : null}
             </div>
           ) : null}
         </Panel>

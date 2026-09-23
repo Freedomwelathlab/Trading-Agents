@@ -2234,6 +2234,16 @@ class AutotradeBot(Base):
     own closed trades; `single`/`multi` run exactly `setups`."""
     setups: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False)
     min_score: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    extended_hours_min_score: Mapped[int | None] = mapped_column(Integer)
+    """Phase 87 (D106): the score a signal must reach to be taken on a
+    PRE-MARKET or AFTER-HOURS bar. NULL means the same bar as the regular
+    session. Only consulted when `market_type` admits those phases."""
+    allow_short: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    """Phase 87 (D106): may this bot open SHORT positions as well as long?
+    Off by default — a human approved a long-only bot and shorting is a
+    different risk, so it is a separate, explicit choice."""
     stop_loss_mode: Mapped[str] = mapped_column(String(8), nullable=False, default="auto")
     """auto = the setup's own structural stop; max = the tighter of the
     structural stop and `stop_loss_max_pct` below entry."""
@@ -2321,6 +2331,12 @@ class AutotradeBotTrade(Base):
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    direction: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="long", server_default="long"
+    )
+    """long | short (Phase 87, D106). Decides which side of entry the stop
+    sits on and which side of the bar triggers it, so it is stored rather
+    than inferred from the entry order's side at read time."""
     setup_name: Mapped[str] = mapped_column(String(32), nullable=False)
     score: Mapped[int] = mapped_column(Integer, nullable=False)
     evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")

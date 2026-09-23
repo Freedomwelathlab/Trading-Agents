@@ -60,6 +60,36 @@ class BotSpec:
     take_profit_min_pct: Decimal | None
     trailing_take_profit_pct: Decimal | None
     news_blackout_minutes: int
+    # Phase 87 (D106). Defaulted, and therefore last: both are additions to
+    # a spec every existing caller already builds positionally.
+    extended_hours_min_score: int | None = None
+    allow_short: bool = False
+
+
+EXTENDED_HOURS_SCORE_PREMIUM = 2
+"""How much higher an extended-hours signal must score than a regular one
+when the operator did not name a figure (Phase 87, D106).
+
+Not a tuned parameter - nothing has measured the right premium, and this
+file would be the wrong place to claim one. It is a deliberate default in
+the safe direction, chosen because extended-hours prints are thin: over
+the window this platform's setups were built against, TQQQ traded roughly
+1.9M shares pre-market to 53M in the regular session. The same score is
+computed from materially less tape at 04:30, so the bar is raised until
+somebody measures what it should be. An operator who disagrees passes
+their own `extended_hours_min_score`.
+"""
+
+
+def _extended_hours_bar(spec: BotSpec) -> int | None:
+    """None for a regular-session-only bot: the field would never be read,
+    and storing a number that is never consulted invites someone to trust
+    it later."""
+    if spec.extended_hours_min_score is not None:
+        return spec.extended_hours_min_score
+    if spec.market_type in ("auto", "pre_market", "post_market"):
+        return min(10, spec.min_score + EXTENDED_HOURS_SCORE_PREMIUM)
+    return None
 
 
 def _normalize_symbols(raw: Sequence[str]) -> list[str]:
@@ -182,6 +212,8 @@ async def create_bot(
         strategy_mode=spec.strategy_mode,
         setups=setups,
         min_score=spec.min_score,
+        extended_hours_min_score=_extended_hours_bar(spec),
+        allow_short=spec.allow_short,
         stop_loss_mode=spec.stop_loss_mode,
         stop_loss_max_pct=spec.stop_loss_max_pct,
         trailing_stop_pct=spec.trailing_stop_pct,

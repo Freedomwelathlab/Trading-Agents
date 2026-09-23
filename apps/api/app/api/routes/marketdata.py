@@ -15,7 +15,9 @@ from apps.api.app.api.schemas_marketdata import (
     ChartSignal,
     ChartSignalsResponse,
     DepthLevelResponse,
+    ExtendedHoursResponse,
     OrderBookResponse,
+    PhaseMoveResponse,
     QuoteResponse,
     SessionLevelsResponse,
 )
@@ -28,7 +30,10 @@ from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 from apps.api.app.marketdata.resolution import resolve_quote
 from apps.api.app.marketdata.router import MarketDataRouter
 from apps.api.app.marketdata.sessions import (
+    PhaseMove,
+    SessionPhase,
     build_session_levels,
+    extended_hours_moves,
     group_by_session,
     session_date,
     session_vwap,
@@ -279,6 +284,80 @@ async def get_session_levels(
         vwap_upper_2sigma=_price(upper),
         vwap_lower_2sigma=_price(lower),
         bars_in_session=len(session_bars),
+    )
+
+
+EXTENDED_HOURS_NOTE = (
+    "Computed from this platform's own stored bars, not from a vendor's extended-hours "
+    "quote. A phase with no bars is absent rather than flat: nothing traded is not the "
+    "same as traded unchanged. Extended-hours prints are thin - on the window this was "
+    "built against, TQQQ traded ~1.9M shares pre-market to ~53M regular - so a move here "
+    "is a much weaker signal than the same move in the regular session."
+)
+
+
+def _phase_move_response(move: PhaseMove | None) -> PhaseMoveResponse | None:
+    if move is None:
+        return None
+    return PhaseMoveResponse(
+        phase=move.phase.value,
+        bars=move.bars,
+        first=move.first,
+        last=move.last,
+        high=move.high,
+        low=move.low,
+        volume=move.volume,
+        reference=move.reference,
+        reference_label=move.reference_label,
+        change=move.change,
+        change_pct=None if move.change_pct is None else move.change_pct.quantize(Decimal("0.01")),
+    )
+
+
+@router.get("/{symbol}/extended-hours", response_model=ExtendedHoursResponse)
+async def get_extended_hours(
+    symbol: str,
+    bar_interval: BarInterval = Query("5m"),
+    session: AsyncSession = Depends(get_session),
+    _current_user: User = Depends(get_current_user),
+) -> ExtendedHoursResponse:
+    """Pre-market, regular and after-hours movement for the latest stored
+    session (Phase 86, D105).
+
+    Derived from `market_data_bars` for the same reason the session levels
+    are: which phase a print belongs to is a fact about the exchange clock,
+    and the bars this platform trades from are the only ones whose phase it
+    can vouch for. 404 when nothing is stored - an absent series is a gap to
+    backfill, never a session of zeros.
+    """
+    store = MarketDataStore(session)
+    end = date.today()
+    bars = await store.get_bars(
+        symbol, bar_interval=bar_interval, start_date=end - timedelta(days=10), end_date=end
+    )
+    if not bars:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"DATA_UNAVAILABLE: no {bar_interval} bars stored for {symbol!r} in the "
+                "last 10 days. Backfill via POST /admin/market-data/backfill first."
+            ),
+        )
+
+    session_day, moves = extended_hours_moves(bars)
+    if session_day is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"DATA_UNAVAILABLE: no bar in {symbol!r} falls inside a session phase.",
+        )
+    return ExtendedHoursResponse(
+        symbol=symbol,
+        bar_interval=bar_interval,
+        session_date=session_day,
+        pre_market=_phase_move_response(moves.get(SessionPhase.PRE_MARKET)),
+        regular=_phase_move_response(moves.get(SessionPhase.REGULAR)),
+        after_hours=_phase_move_response(moves.get(SessionPhase.AFTER_HOURS)),
+        note=EXTENDED_HOURS_NOTE,
     )
 
 

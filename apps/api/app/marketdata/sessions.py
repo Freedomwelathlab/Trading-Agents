@@ -316,3 +316,125 @@ def session_vwap(
         points.append(VwapPoint(ts=bar.ts, vwap=vwap, sigma=sigma))
 
     return points
+
+
+@dataclass(frozen=True)
+class PhaseMove:
+    """What a single session phase actually did, from our own bars.
+
+    `change`/`change_pct` are `None` when the phase has no reference price
+    in the data. That is common and ordinary — a pre-market phase on the
+    first session of a window has no previous close to be measured against
+    — and reporting it as zero would say "unchanged", which is a claim
+    about the market rather than about the data.
+    """
+
+    phase: SessionPhase
+    bars: int
+    first: Decimal
+    last: Decimal
+    high: Decimal
+    low: Decimal
+    volume: int | None
+    """Summed across the phase, or None when any bar in it reported none."""
+    reference: Decimal | None
+    reference_label: str
+    change: Decimal | None
+    change_pct: Decimal | None
+
+
+def _phase_move(
+    phase: SessionPhase,
+    bars: Sequence[OHLCVBar],
+    reference: Decimal | None,
+    reference_label: str,
+) -> PhaseMove | None:
+    if not bars:
+        return None
+    volumes = [b.volume for b in bars]
+    total = None if any(v is None for v in volumes) else sum(v for v in volumes if v is not None)
+    last = bars[-1].close
+    change = change_pct = None
+    if reference is not None and reference != 0:
+        change = last - reference
+        change_pct = (change / reference) * Decimal(100)
+    return PhaseMove(
+        phase=phase,
+        bars=len(bars),
+        first=bars[0].open if bars[0].open is not None else bars[0].close,
+        last=last,
+        high=max(_high(b) for b in bars),
+        low=min(_low(b) for b in bars),
+        volume=total,
+        reference=reference,
+        reference_label=reference_label,
+        change=change,
+        change_pct=change_pct,
+    )
+
+
+def extended_hours_moves(
+    bars: Sequence[OHLCVBar],
+) -> tuple[date | None, dict[SessionPhase, PhaseMove]]:
+    """Pre-market, regular and after-hours movement for the latest stored
+    session (Phase 86, D105).
+
+    Each phase is measured against the price a trader would actually
+    compare it to, and the comparison is named in the response rather than
+    left implicit:
+
+      * **pre-market** against the PREVIOUS session's regular close — the
+        last price at which the market agreed on anything.
+      * **regular** against that same previous close, which is what every
+        quoted daily % change means.
+      * **after-hours** against THIS session's regular close, because an
+        after-hours move is by definition a move away from the close.
+
+    A phase with no bars is absent from the mapping. It is not synthesised
+    from the neighbouring phase: an empty pre-market means nothing traded
+    before the open, and carrying the previous close into it would draw a
+    flat pre-market that looks like a quiet market rather than no market.
+    """
+    grouped = group_by_session(bars)
+    if not grouped:
+        return None, {}
+    days = sorted(grouped)
+    today = days[-1]
+
+    previous_close: Decimal | None = None
+    if len(days) >= 2:
+        prior_regular = [
+            b for b in grouped[days[-2]] if session_phase(b.ts) is SessionPhase.REGULAR
+        ]
+        if prior_regular:
+            previous_close = prior_regular[-1].close
+
+    by_phase: dict[SessionPhase, list[OHLCVBar]] = {}
+    for bar in grouped[today]:
+        phase = session_phase(bar.ts)
+        if phase is None:
+            continue
+        by_phase.setdefault(phase, []).append(bar)
+
+    regular = by_phase.get(SessionPhase.REGULAR) or []
+    regular_close = regular[-1].close if regular else None
+
+    prev_label = (
+        f"previous regular close ({days[-2].isoformat()})" if previous_close is not None
+        else "no previous regular close in this window"
+    )
+    moves: dict[SessionPhase, PhaseMove] = {}
+    for phase, reference, label in (
+        (SessionPhase.PRE_MARKET, previous_close, prev_label),
+        (SessionPhase.REGULAR, previous_close, prev_label),
+        (
+            SessionPhase.AFTER_HOURS,
+            regular_close,
+            "this session's regular close" if regular_close is not None
+            else "no regular close stored for this session",
+        ),
+    ):
+        move = _phase_move(phase, by_phase.get(phase) or [], reference, label)
+        if move is not None:
+            moves[phase] = move
+    return today, moves

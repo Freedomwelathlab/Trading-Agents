@@ -144,3 +144,34 @@ class ChartSignalsResponse(BaseModel):
     note: str
     """Stated on every response: these markers are measurement, not
     advice. See docs/RESEARCH_5M.md."""
+
+
+class PhaseMoveResponse(BaseModel):
+    """One session phase's movement (Phase 86, D105).
+
+    `change`/`change_pct` are nullable on purpose and `reference_label`
+    always names what the change was measured against, so a client never
+    has to assume which close a percentage refers to.
+    """
+
+    phase: str
+    bars: int
+    first: Decimal
+    last: Decimal
+    high: Decimal
+    low: Decimal
+    volume: int | None = None
+    reference: Decimal | None = None
+    reference_label: str
+    change: Decimal | None = None
+    change_pct: Decimal | None = None
+
+
+class ExtendedHoursResponse(BaseModel):
+    symbol: str
+    bar_interval: str
+    session_date: date
+    pre_market: PhaseMoveResponse | None = None
+    regular: PhaseMoveResponse | None = None
+    after_hours: PhaseMoveResponse | None = None
+    note: str

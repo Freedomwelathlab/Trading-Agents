@@ -1,15 +1,33 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
   createChart,
   createSeriesMarkers,
   type IChartApi,
+  type IPriceLine,
+  type ISeriesApi,
   type SeriesMarker,
+  type SeriesType,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { EmptyNote } from "@/components/ui/primitives";
+import {
+  atr as calcAtr,
+  bollinger as calcBollinger,
+  ema as calcEma,
+  macd as calcMacd,
+  pivots as calcPivots,
+  rsi as calcRsi,
+  sma as calcSma,
+  volumeBars as calcVolume,
+  vwap as calcVwap,
+  type Candle,
+  type IndicatorSettings,
+} from "@/lib/indicators";
 
 export type PriceBar = {
   ts: string;
@@ -40,7 +58,8 @@ export type SignalMarker = {
 
 /**
  * A TradingView-style candlestick chart of OUR OWN bars, with THIS
- * platform's signals marked on them (Phase 70, D088).
+ * platform's signals marked on them (Phase 70, D088; indicators and a
+ * stable viewport added in Phase 86, D103).
  *
  * **Why `lightweight-charts` and not TradingView's free embed widget.** The
  * widget renders TradingView's own data inside a sealed cross-origin
@@ -55,13 +74,23 @@ export type SignalMarker = {
  * **Every bar comes from `market_data_bars`**, through the same
  * `MarketDataStore` the backtest engine reads. That identity is the point:
  * a BUY marker is only meaningful sitting on the bar the engine actually
- * saw when it decided to buy.
+ * saw when it decided to buy. Every indicator here is computed from those
+ * same bars for the same reason — an indicator taken from a vendor's own
+ * endpoint would be drawn from a different feed than the candles under it.
  *
  * **A bar with no high/low is skipped, never completed from its close.**
  * Those columns are nullable — a vendor may return a close-only record —
  * and inventing a body and wicks from one number would draw market
  * structure that never existed. The skipped count is surfaced to the caller
  * rather than hidden, so a chart with gaps says so.
+ *
+ * **The chart object outlives the data (Phase 86).** It is created once per
+ * mount and afterwards only fed: `setData` on the existing series, markers
+ * and price lines replaced in place. It used to be torn down and rebuilt
+ * whenever any prop changed identity — including the `[]` defaults, which
+ * are new arrays on every render — so a poll, or any parent re-render,
+ * destroyed the canvas and `fitContent()` threw away whatever the user had
+ * zoomed into. That is the "it resets a second after I zoom in" bug.
  */
 
 /** Series colours resolved from the app's CSS custom properties. */
@@ -79,6 +108,7 @@ function readThemeColors(el: HTMLElement) {
     inkFaint: token("--ink-faint", "#64748b"),
     grid: token("--grid", "#e2e8f0"),
     surface: token("--surface", "#ffffff"),
+    accent: token("--accent", "#7c3aed"),
     // Session levels, keyed by ROLE rather than by colour, so a caller
     // names what a line means and this decides how it reads (Phase 74).
     // Each falls back to a literal only if the token is missing, which
@@ -130,6 +160,32 @@ export function toCandles(bars: PriceBar[]) {
     });
   }
   return { candles, skipped };
+}
+
+/**
+ * The same drawable bars, carrying volume, for the indicator layer.
+ *
+ * Separate from `toCandles` because the candlestick series does not take a
+ * volume and an indicator cannot do without one: `volume: null` stays null
+ * all the way through, so a volume-dependent indicator can refuse rather
+ * than treat "not reported" as zero.
+ */
+export function toIndicatorCandles(bars: PriceBar[]): Candle[] {
+  const out: Candle[] = [];
+  for (const bar of bars) {
+    const time = Math.floor(new Date(bar.ts).getTime() / 1000);
+    if (!Number.isFinite(time) || bar.open == null || bar.high == null || bar.low == null)
+      continue;
+    out.push({
+      time,
+      open: Number(bar.open),
+      high: Number(bar.high),
+      low: Number(bar.low),
+      close: Number(bar.close),
+      volume: bar.volume,
+    });
+  }
+  return out;
 }
 
 /**
@@ -188,11 +244,23 @@ export type ScoredSignal = {
   evidence: Record<string, string>;
 };
 
+/**
+ * How long the chart leaves a hand-set viewport alone before snapping back
+ * to the full window (Phase 86).
+ *
+ * The brief asked for a minute, and a minute is also about the length of a
+ * real look: long enough to read a cluster of bars and hover a few signals,
+ * short enough that a chart left alone returns to a view that shows
+ * everything rather than staying stuck where it was nudged an hour ago.
+ */
+export const VIEW_HOLD_MS = 60_000;
+
 export function PriceChart({
   bars,
   signals = [],
   scoredSignals = [],
   priceLines = [],
+  indicators,
   height = 360,
 }: {
   bars: PriceBar[];
@@ -209,21 +277,68 @@ export function PriceChart({
    * and reads as a level price never reached.
    */
   priceLines?: PriceLine[];
+  /**
+   * Which indicators to draw (Phase 86, D103). Omitted entirely on the
+   * backtest detail page, which wants the bare chart it has always had.
+   */
+  indicators?: IndicatorSettings;
   height?: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const mainRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const lineRefs = useRef<IPriceLine[]>([]);
+  /** Pivot lines are kept apart from the session-level lines so that a
+   *  refreshed level set does not silently erase them, and vice versa. */
+  const pivotRefs = useRef<IPriceLine[]>([]);
+  const overlayRefs = useRef<ISeriesApi<SeriesType>[]>([]);
+  const colorsRef = useRef<ReturnType<typeof readThemeColors> | null>(null);
   const [hovered, setHovered] = useState<{ x: number; y: number; items: ScoredSignal[] } | null>(
     null,
   );
+  /**
+   * Epoch ms until which the user's own viewport is left alone. A ref, not
+   * state, because the data effect reads it while deciding whether to
+   * re-fit and must not itself re-run when it changes.
+   */
+  const holdUntilRef = useRef(0);
+  const [holdUntil, setHoldUntil] = useState(0);
+  const [now, setNow] = useState(0);
 
-  const { candles, skipped } = toCandles(bars);
+  const { candles, skipped } = useMemo(() => toCandles(bars), [bars]);
+  const indicatorCandles = useMemo(() => toIndicatorCandles(bars), [bars]);
 
+  /** Content keys: the `[]` defaults are new identities every render, so a
+   *  raw prop in a dep array re-runs its effect forever. */
+  const linesKey = useMemo(() => JSON.stringify(priceLines), [priceLines]);
+  const signalsKey = useMemo(() => JSON.stringify(signals), [signals]);
+  const scoredKey = useMemo(() => JSON.stringify(scoredSignals), [scoredSignals]);
+  const candlesKey = useMemo(
+    () => `${candles.length}:${candles[0]?.time ?? 0}:${candles[candles.length - 1]?.time ?? 0}:${candles[candles.length - 1]?.close ?? 0}`,
+    [candles],
+  );
+  const indicatorsKey = useMemo(() => JSON.stringify(indicators ?? null), [indicators]);
+
+  const fitNow = useCallback(() => {
+    holdUntilRef.current = 0;
+    setHoldUntil(0);
+    chartRef.current?.timeScale().fitContent();
+  }, []);
+
+  /** The user touched the viewport: hold it, and start the clock back. */
+  const holdView = useCallback(() => {
+    const until = Date.now() + VIEW_HOLD_MS;
+    holdUntilRef.current = until;
+    setHoldUntil(until);
+  }, []);
+
+  // --- the chart itself: created once per mount ---------------------------
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || candles.length === 0) return;
+    if (!container) return;
 
     const colors = readThemeColors(container);
+    colorsRef.current = colors;
     const chart = createChart(container, {
       height,
       layout: {
@@ -259,8 +374,7 @@ export function PriceChart({
       autoSize: true,
     });
     chartRef.current = chart;
-
-    const series = chart.addSeries(CandlestickSeries, {
+    mainRef.current = chart.addSeries(CandlestickSeries, {
       upColor: colors.up,
       downColor: colors.down,
       borderUpColor: colors.up,
@@ -268,23 +382,94 @@ export function PriceChart({
       wickUpColor: colors.up,
       wickDownColor: colors.down,
     });
-    series.setData(candles);
 
+    // Any deliberate gesture on the canvas counts as "I am reading this" —
+    // wheel zoom, drag-pan, pinch. Listening on the container rather than
+    // subscribing to visible-range changes matters: a range change also
+    // fires when WE re-fit, which would make the chart hold a viewport it
+    // set itself and never come back.
+    const hold = () => {
+      const until = Date.now() + VIEW_HOLD_MS;
+      holdUntilRef.current = until;
+      setHoldUntil(until);
+    };
+    container.addEventListener("wheel", hold, { passive: true });
+    container.addEventListener("pointerdown", hold);
+    container.addEventListener("touchstart", hold, { passive: true });
+
+    return () => {
+      container.removeEventListener("wheel", hold);
+      container.removeEventListener("pointerdown", hold);
+      container.removeEventListener("touchstart", hold);
+      chart.remove();
+      chartRef.current = null;
+      mainRef.current = null;
+      lineRefs.current = [];
+      pivotRefs.current = [];
+      overlayRefs.current = [];
+    };
+  }, [height]);
+
+  // --- candles ------------------------------------------------------------
+  useEffect(() => {
+    const series = mainRef.current;
+    if (!series || candles.length === 0) return;
+    series.setData(candles);
+    // Re-fit ONLY if the user is not currently holding a view. `setData`
+    // itself preserves the visible logical range, so a poll that adds a bar
+    // no longer yanks the viewport either way.
+    if (Date.now() >= holdUntilRef.current) chartRef.current?.timeScale().fitContent();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candlesKey]);
+
+  // --- the hold clock: ticks only while a view is actually held -----------
+  useEffect(() => {
+    if (holdUntil === 0) return;
+    setNow(Date.now());
+    const id = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= holdUntilRef.current) {
+        holdUntilRef.current = 0;
+        setHoldUntil(0);
+        chartRef.current?.timeScale().fitContent();
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [holdUntil]);
+
+  // --- horizontal levels --------------------------------------------------
+  useEffect(() => {
+    const series = mainRef.current;
+    const colors = colorsRef.current;
+    if (!series || !colors) return;
+    for (const line of lineRefs.current) series.removePriceLine(line);
+    lineRefs.current = [];
     for (const line of priceLines) {
       const price = Number(line.price);
       // A level that is not a finite number is not drawn. Charting `NaN`
       // silently produces a line at an arbitrary position rather than an
       // error, which is the worst of both outcomes.
       if (!Number.isFinite(price)) continue;
-      series.createPriceLine({
-        price,
-        color: colors.levels[line.tone],
-        lineWidth: 1,
-        lineStyle: line.tone === "vwap" ? 0 : 2,
-        axisLabelVisible: true,
-        title: line.label,
-      });
+      lineRefs.current.push(
+        series.createPriceLine({
+          price,
+          color: colors.levels[line.tone],
+          lineWidth: 1,
+          lineStyle: line.tone === "vwap" ? 0 : 2,
+          axisLabelVisible: true,
+          title: line.label,
+        }),
+      );
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linesKey, candlesKey]);
+
+  // --- markers and the hover box -----------------------------------------
+  useEffect(() => {
+    const series = mainRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart || candles.length === 0) return;
 
     const times = candles.map((c) => c.time);
     const markers = toMarkers(signals, times);
@@ -309,35 +494,252 @@ export function PriceChart({
         position: isBuy ? "belowBar" : "aboveBar",
         shape: isBuy ? "arrowUp" : "arrowDown",
         color: isBuy ? "#047857" : "#b91c1c",
-        text: group.length > 1 ? `${isBuy ? "B" : "S"}×${group.length}` : `${isBuy ? "B" : "S"} ${best.score}`,
+        text:
+          group.length > 1
+            ? `${isBuy ? "B" : "S"}×${group.length}`
+            : `${isBuy ? "B" : "S"} ${best.score}`,
       });
     }
     markers.sort((a, b) => (a.time as number) - (b.time as number));
-    if (markers.length > 0) createSeriesMarkers(series, markers);
+    // Always call it, including with an empty list: turning markers OFF has
+    // to clear the ones already drawn, and skipping the call when the list
+    // is empty would leave them on screen.
+    createSeriesMarkers(series, markers);
 
-    if (byTime.size > 0) {
-      chart.subscribeCrosshairMove((param) => {
-        const t = param.time as number | undefined;
-        const group = t === undefined ? undefined : byTime.get(t);
-        if (!group || !param.point) {
-          setHovered(null);
-          return;
-        }
-        setHovered({ x: param.point.x, y: param.point.y, items: group });
-      });
+    const onMove = (param: Parameters<Parameters<IChartApi["subscribeCrosshairMove"]>[0]>[0]) => {
+      const t = param.time as number | undefined;
+      const group = t === undefined ? undefined : byTime.get(t);
+      if (!group || !param.point) {
+        setHovered(null);
+        return;
+      }
+      setHovered({ x: param.point.x, y: param.point.y, items: group });
+    };
+    chart.subscribeCrosshairMove(onMove);
+    return () => {
+      chart.unsubscribeCrosshairMove(onMove);
+      setHovered(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signalsKey, scoredKey, candlesKey]);
+
+  // --- indicators ---------------------------------------------------------
+  const [indicatorNotes, setIndicatorNotes] = useState<string[]>([]);
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = mainRef.current;
+    const colors = colorsRef.current;
+    if (!chart || !series || !colors) return;
+
+    for (const s of overlayRefs.current) chart.removeSeries(s);
+    overlayRefs.current = [];
+    for (const l of pivotRefs.current) series.removePriceLine(l);
+    pivotRefs.current = [];
+    // Panes are removed back-to-front: removing pane 1 renumbers pane 2.
+    for (let i = chart.panes().length - 1; i >= 1; i--) chart.removePane(i);
+
+    if (!indicators || indicatorCandles.length === 0) {
+      setIndicatorNotes([]);
+      return;
     }
 
-    chart.timeScale().fitContent();
-
-    return () => {
-      chart.remove();
-      chartRef.current = null;
+    const notes: string[] = [];
+    const overlay = (points: { time: number; value: number }[], color: string, title: string,
+                     width: 1 | 2 = 1, dashed = false) => {
+      const s = chart.addSeries(LineSeries, {
+        color,
+        lineWidth: width,
+        lineStyle: dashed ? 2 : 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        title,
+      });
+      s.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+      overlayRefs.current.push(s);
     };
-    // `candles`/`markers` are derived fresh each render from these two
-    // props; depending on the derived arrays instead would rebuild the
-    // chart on every render, since they are new identities each time.
+    const note = (name: string, why?: string) => {
+      if (why) notes.push(`${name}: ${why}`);
+    };
+
+    const PALETTE = ["#2563eb", "#ea580c", "#0891b2", "#9333ea"];
+
+    if (indicators.sma.on) {
+      indicators.sma.periods.forEach((p, i) => {
+        const r = calcSma(indicatorCandles, p);
+        if (r.unavailable) note(`SMA(${p})`, r.unavailable);
+        else overlay(r.points, PALETTE[i % PALETTE.length], `SMA ${p}`);
+      });
+    }
+    if (indicators.ema.on) {
+      indicators.ema.periods.forEach((p, i) => {
+        const r = calcEma(indicatorCandles, p);
+        if (r.unavailable) note(`EMA(${p})`, r.unavailable);
+        else overlay(r.points, PALETTE[(i + 2) % PALETTE.length], `EMA ${p}`, 1, true);
+      });
+    }
+    if (indicators.bollinger.on) {
+      const { middle, upper, lower } = calcBollinger(
+        indicatorCandles,
+        indicators.bollinger.period,
+        indicators.bollinger.mult,
+      );
+      if (middle.unavailable) note("Bollinger", middle.unavailable);
+      else {
+        overlay(upper.points, colors.levels.band, `BB +${indicators.bollinger.mult}σ`);
+        overlay(middle.points, colors.inkFaint, `BB ${indicators.bollinger.period}`, 1, true);
+        overlay(lower.points, colors.levels.band, `BB -${indicators.bollinger.mult}σ`);
+      }
+    }
+    if (indicators.vwap.on) {
+      const r = calcVwap(indicatorCandles);
+      if (r.unavailable) note("VWAP", r.unavailable);
+      else overlay(r.points, colors.levels.vwap, "VWAP", 2);
+    }
+    if (indicators.pivot.on) {
+      const { levels, unavailable } = calcPivots(indicatorCandles);
+      if (unavailable || !levels) note("Pivots", unavailable ?? "No previous session.");
+      else {
+        const rows: [string, number, string][] = [
+          ["R3", levels.r3, colors.levels.band],
+          ["R2", levels.r2, colors.levels.band],
+          ["R1", levels.r1, colors.down],
+          ["P", levels.p, colors.levels.opening],
+          ["S1", levels.s1, colors.up],
+          ["S2", levels.s2, colors.levels.band],
+          ["S3", levels.s3, colors.levels.band],
+        ];
+        for (const [title, price, color] of rows) {
+          pivotRefs.current.push(
+            series.createPriceLine({
+              price,
+              color,
+              lineWidth: 1,
+              lineStyle: 3,
+              axisLabelVisible: true,
+              title,
+            }),
+          );
+        }
+        notes.push(`Pivots computed from the ${levels.basedOn} session.`);
+      }
+    }
+
+    // Panes below the price. Each is its own scale, which is the whole
+    // point: an RSI plotted on the price axis is a flat line at the bottom
+    // of the chart.
+    let pane = 0;
+    const nextPane = () => {
+      pane += 1;
+      chart.addPane();
+      return pane;
+    };
+    if (indicators.volume.on) {
+      const { bars: vb, unavailable } = calcVolume(indicatorCandles);
+      if (vb.length === 0) note("Volume", unavailable);
+      else {
+        if (unavailable) note("Volume", unavailable);
+        const idx = nextPane();
+        const s = chart.addSeries(
+          HistogramSeries,
+          { priceFormat: { type: "volume" }, priceLineVisible: false, title: "Vol" },
+          idx,
+        );
+        s.setData(
+          vb.map((b) => ({
+            time: b.time as UTCTimestamp,
+            value: b.value,
+            color: b.up ? colors.up : colors.down,
+          })),
+        );
+        overlayRefs.current.push(s);
+        chart.panes()[idx]?.setStretchFactor(0.25);
+      }
+    }
+    if (indicators.rsi.on) {
+      const r = calcRsi(indicatorCandles, indicators.rsi.period);
+      if (r.unavailable) note(`RSI(${indicators.rsi.period})`, r.unavailable);
+      else {
+        const idx = nextPane();
+        const s = chart.addSeries(
+          LineSeries,
+          { color: colors.accent, lineWidth: 1, priceLineVisible: false, title: "RSI" },
+          idx,
+        );
+        s.setData(r.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        for (const level of [70, 30])
+          s.createPriceLine({
+            price: level,
+            color: colors.inkFaint,
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: String(level),
+          });
+        overlayRefs.current.push(s);
+        chart.panes()[idx]?.setStretchFactor(0.3);
+      }
+    }
+    if (indicators.macd.on) {
+      const m = calcMacd(
+        indicatorCandles,
+        indicators.macd.fast,
+        indicators.macd.slow,
+        indicators.macd.signal,
+      );
+      if (m.macd.unavailable) note("MACD", m.macd.unavailable);
+      else {
+        const idx = nextPane();
+        const hist = chart.addSeries(
+          HistogramSeries,
+          { priceLineVisible: false, title: "MACD hist" },
+          idx,
+        );
+        hist.setData(
+          m.histogram.points.map((p) => ({
+            time: p.time as UTCTimestamp,
+            value: p.value,
+            color: p.value >= 0 ? colors.up : colors.down,
+          })),
+        );
+        const line = chart.addSeries(
+          LineSeries,
+          { color: "#2563eb", lineWidth: 1, priceLineVisible: false, title: "MACD" },
+          idx,
+        );
+        line.setData(m.macd.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        overlayRefs.current.push(hist, line);
+        if (m.signal.unavailable) note("MACD signal", m.signal.unavailable);
+        else {
+          const sig = chart.addSeries(
+            LineSeries,
+            { color: "#ea580c", lineWidth: 1, priceLineVisible: false, title: "signal" },
+            idx,
+          );
+          sig.setData(m.signal.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+          overlayRefs.current.push(sig);
+        }
+        chart.panes()[idx]?.setStretchFactor(0.3);
+      }
+    }
+    if (indicators.atr.on) {
+      const r = calcAtr(indicatorCandles, indicators.atr.period);
+      if (r.unavailable) note(`ATR(${indicators.atr.period})`, r.unavailable);
+      else {
+        const idx = nextPane();
+        const s = chart.addSeries(
+          LineSeries,
+          { color: "#b45309", lineWidth: 1, priceLineVisible: false, title: "ATR" },
+          idx,
+        );
+        s.setData(r.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        overlayRefs.current.push(s);
+        chart.panes()[idx]?.setStretchFactor(0.25);
+      }
+    }
+
+    setIndicatorNotes(notes);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bars, signals, scoredSignals, priceLines, height]);
+  }, [indicatorsKey, candlesKey]);
 
   if (bars.length === 0) {
     return (
@@ -357,6 +759,8 @@ export function PriceChart({
       </EmptyNote>
     );
   }
+
+  const secondsLeft = holdUntil > 0 ? Math.max(0, Math.ceil((holdUntil - now) / 1000)) : 0;
 
   return (
     <div className="flex flex-col gap-2">
@@ -403,6 +807,42 @@ export function PriceChart({
           </div>
         ) : null}
       </div>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
+        {secondsLeft > 0 ? (
+          <span data-testid="chart-view-hold">
+            Your view is held for {secondsLeft}s, then it fits the window again.
+          </span>
+        ) : (
+          <span data-testid="chart-view-auto">
+            Auto-fit. Scroll or drag the chart to hold your own view for {VIEW_HOLD_MS / 1000}s.
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={fitNow}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="underline underline-offset-2 hover:text-ink"
+        >
+          Reset view
+        </button>
+        <button
+          type="button"
+          onClick={holdView}
+          className="underline underline-offset-2 hover:text-ink"
+        >
+          Hold view
+        </button>
+      </div>
+
+      {indicatorNotes.length > 0 && (
+        <ul className="text-[11px] leading-relaxed text-ink-faint" data-testid="indicator-notes">
+          {indicatorNotes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      )}
+
       {skipped > 0 && (
         <p className="text-xs" style={{ color: "var(--ink-faint)" }}>
           {skipped} of {bars.length} bar(s) omitted: close-only records with no open/high/low.
