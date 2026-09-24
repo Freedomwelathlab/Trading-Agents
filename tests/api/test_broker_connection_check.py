@@ -222,3 +222,124 @@ async def test_the_probe_is_admin_only():
             token = await _get_token(client, email)
             r = await client.post(f"/brokers/{broker_id}/connection-check", headers=_h(token))
     assert r.status_code == 403
+
+# --- Phase 95 (D114): which account answered, and probing without a row -----
+
+
+@pytest.mark.asyncio
+async def test_the_probe_says_which_account_answered_and_never_a_secret(monkeypatch):
+    """A green tick that does not name the account is the dangerous kind.
+
+    Two IG credential sets can sit in one environment and only one of them
+    is the demo. `account_type` is PUBLIC in the registry precisely so an
+    operator can tell them apart; `password` is SECRET and must not appear
+    in any shape.
+    """
+    monkeypatch.setenv("IG_API_KEY", "ig-key")
+    monkeypatch.setenv("IG_USERNAME", "ig-user")
+    monkeypatch.setenv("IG_PASSWORD", "SUPER-SECRET-PASSWORD")
+    monkeypatch.setenv("IG_ACCOUNT_TYPE", "DEMO")
+
+    class Reachable:
+        def get_account_state(self, *, marks):
+            return _account("500")
+
+        @property
+        def positions(self):
+            return {}
+
+    monkeypatch.setattr(BUILD_ADAPTER, lambda provider, credentials: Reachable())
+
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with broker(session, "ig") as broker_id, api_client() as client:
+            async with encryption_key(KEY):
+                token = await _get_token(client, email)
+                r = await client.post(f"/brokers/{broker_id}/connection-check", headers=_h(token))
+
+    body = r.json()
+    assert body["reachable"] is True
+    account = {f["name"]: f["value"] for f in body["account"]}
+    assert account["account_type"] == "DEMO"
+    assert account["username"] == "ig-user"
+    # The secret is absent from the field list AND from the whole body.
+    assert "password" not in account
+    assert "SUPER-SECRET-PASSWORD" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_provider_can_be_probed_with_no_broker_row(monkeypatch):
+    """The point of this route: answer "does this key work" before asking
+    anyone to create a broker row and grant it to themselves."""
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+
+    class Reachable:
+        def get_account_state(self, *, marks):
+            return _account("42.5")
+
+        @property
+        def positions(self):
+            return {}
+
+    monkeypatch.setattr(BUILD_ADAPTER, lambda provider, credentials: Reachable())
+
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(
+                "/brokers/providers/kraken/connection-check", headers=_h(token)
+            )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["reachable"] is True
+    assert body["broker_id"] is None
+    assert body["credential_source"] == "environment"
+    assert body["cash"] == "42.5"
+
+
+@pytest.mark.asyncio
+async def test_the_provider_route_is_not_parsed_as_a_broker_id(monkeypatch):
+    """`providers` must not be read as a UUID.
+
+    FastAPI matches in registration order with no preference for a static
+    segment, so this is an ordering property of the router and not a
+    property of the path. Phase 90 hit exactly this on GET /providers;
+    asserting it here is what stops a later edit reintroducing it.
+    """
+    for name in ("KRAKEN_API_KEY", "KRAKEN_API_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(
+                "/brokers/providers/kraken/connection-check", headers=_h(token)
+            )
+
+    assert r.status_code == 200, r.text  # not 422 from a UUID parse
+    assert r.json()["reachable"] is False
+    assert "KRAKEN_API_SECRET" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_probing_an_unknown_provider_is_a_404():
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(
+                "/brokers/providers/not-a-venue/connection-check", headers=_h(token)
+            )
+    assert r.status_code == 404
+    assert "UNKNOWN_PROVIDER" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_the_provider_probe_is_admin_only():
+    async with db_session() as session, non_admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(
+                "/brokers/providers/kraken/connection-check", headers=_h(token)
+            )
+    assert r.status_code == 403

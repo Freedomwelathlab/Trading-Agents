@@ -88,9 +88,66 @@ type ConnectionCheck = {
   detail: string;
   cash: string | null;
   position_symbols: string[];
+  /** Non-secret credential fields, so the answer says WHICH account it
+   *  reached. For IG that is DEMO or LIVE, which is the most consequential
+   *  thing about a green tick. */
+  account: { name: string; label: string; value: string }[];
 };
 
+/** Shared by both probes: the per-provider one in the catalogue and the
+ *  per-broker one in the credential form. */
+function ProbeResult({ probe }: { probe: ConnectionCheck }) {
+  return (
+    <div className="flex flex-col gap-1 text-xs">
+      <span className="flex flex-wrap items-center gap-2">
+        <Pill tone={probe.reachable ? "pos" : "neg"}>
+          {probe.reachable ? "reachable" : "not reachable"}
+        </Pill>
+        {probe.credential_source ? (
+          <span className="text-ink-faint">using the {probe.credential_source} credentials</span>
+        ) : null}
+        {probe.account.map((f) => (
+          <span key={f.name} className="font-mono text-[11px]">
+            {f.label}: {f.value}
+          </span>
+        ))}
+      </span>
+      <span className="leading-snug text-ink-faint">{probe.detail}</span>
+      {probe.reachable ? (
+        <span className="font-mono text-[11px]">
+          cash {probe.cash}
+          {probe.position_symbols.length > 0
+            ? ` · holding ${probe.position_symbols.join(", ")}`
+            : " · no open positions"}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function BrokerCatalogue() {
+  const [probes, setProbes] = useState<Record<string, ConnectionCheck | string>>({});
+  const [probing, setProbing] = useState<string | null>(null);
+
+  async function probe(provider: string) {
+    setProbing(provider);
+    try {
+      const res = await fetch(`/api/brokers/providers/${provider}/connection-check`, {
+        method: "POST",
+      });
+      const body = (await res.json().catch(() => null)) as
+        | (ConnectionCheck & { detail?: string })
+        | null;
+      if (handleExpiredSession(res.status)) return;
+      setProbes((p) => ({
+        ...p,
+        [provider]: res.ok && body ? body : (body?.detail ?? `HTTP ${res.status}`),
+      }));
+    } finally {
+      setProbing(null);
+    }
+  }
+
   const classify = useMemo(
     () =>
       classifyWithAbsences<{ providers: Provider[]; note: string }>(
@@ -124,6 +181,7 @@ export function BrokerCatalogue() {
                   <th className="px-2 py-1 font-semibold">ext. hours</th>
                   <th className="px-2 py-1 font-semibold">fractional</th>
                   <th className="px-2 py-1 font-semibold">adapter</th>
+                  <th className="px-2 py-1 font-semibold">environment</th>
                 </tr>
               </thead>
               <tbody>
@@ -142,12 +200,37 @@ export function BrokerCatalogue() {
                         {p.adapter_status}
                       </Pill>
                     </td>
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        className={btnGhost}
+                        onClick={() => probe(p.provider)}
+                        disabled={probing !== null}
+                      >
+                        {probing === p.provider ? "Testing…" : "Test"}
+                      </button>
+                      {typeof probes[p.provider] === "string" ? (
+                        <p className="mt-1 max-w-[40ch] leading-snug text-neg">
+                          {probes[p.provider] as string}
+                        </p>
+                      ) : null}
+                      {probes[p.provider] && typeof probes[p.provider] !== "string" ? (
+                        <div className="mt-1 max-w-[46ch]">
+                          <ProbeResult probe={probes[p.provider] as ConnectionCheck} />
+                        </div>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <p className="text-[11px] leading-relaxed text-ink-faint">{data.note}</p>
+          <p className="text-[11px] leading-relaxed text-ink-faint">
+            <strong>Test</strong> uses the credentials in this deployment&rsquo;s environment —
+            no broker row needed. It logs in and reads the balance; it places no order. To test a
+            credential you stored against one broker instead, use the panel below.
+          </p>
         </div>
       ) : null}
     </Panel>
@@ -359,29 +442,7 @@ export function BrokerCredentialsAdmin() {
               {error ? <Alert>{error}</Alert> : null}
               {saved ? <p className="text-xs text-pos">{saved}</p> : null}
 
-              {probe ? (
-                <div className="flex flex-col gap-1 text-xs">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <Pill tone={probe.reachable ? "pos" : "neg"}>
-                      {probe.reachable ? "reachable" : "not reachable"}
-                    </Pill>
-                    {probe.credential_source ? (
-                      <span className="text-ink-faint">
-                        using the {probe.credential_source} credentials
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="leading-snug text-ink-faint">{probe.detail}</span>
-                  {probe.reachable ? (
-                    <span className="font-mono text-[11px]">
-                      cash {probe.cash}
-                      {probe.position_symbols.length > 0
-                        ? ` · holding ${probe.position_symbols.join(", ")}`
-                        : " · no open positions"}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
+              {probe ? <ProbeResult probe={probe} /> : null}
 
               {status.fields.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2">

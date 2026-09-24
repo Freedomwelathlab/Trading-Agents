@@ -3683,7 +3683,10 @@ has been measured on a VWAP that was never there.
 * **`BROKER_CREDENTIAL_ENCRYPTION_KEY`** is unset on Railway. Since Phase 94
   that no longer blocks reaching a venue (env vars are a second source),
   but the per-broker encrypted store still cannot hold anything until it is
-  set. Operator action.
+  set. Operator action. As of 2026-09-24 production reports
+  `broker_credentials: env:ig,kraken`, so both implemented venues are
+  configured from the environment; one IG account at a time, because the
+  environment is per-deployment and the store is what holds two.
 * **Options**: chain snapshots (the blocker on the bot and on any options
   backtest), a Greeks dashboard, the bot, and option order routing. The
   planner is live but prices from a model — re-pricing a plan against the
@@ -3745,6 +3748,36 @@ rather than failing (D112).
 `tests/test_health.py`.
 
 **Not done here.** No order has been placed at any venue. The probe is
+read-only by construction, and the OMS still does not route through the
+bridge.
+
+## Phase 95 — The probe names the account, and needs no broker row
+
+Shipped 2026-09-24. Decision: `docs/DECISIONS.md` D114.
+
+Phase 94 gave the operator a way to supply credentials and a way to test
+them. Production then showed two things wrong with the test.
+
+**It did not say which account answered.** The environment held two IG
+credential sets (`IG_*` and `IG_*2`), only one of them the demo, and
+`reachable: true` looked identical either way. The response now carries
+`account`: the fields the registry marks PUBLIC, with values — for IG that
+is `DEMO` or `LIVE`. Secrets are never included, and a test asserts the
+password appears nowhere in the body.
+
+**It asked for a broker row first.** Finding out whether a key works meant
+creating a broker, granting it to yourself, selecting it and pressing a
+button. `POST /brokers/providers/{provider}/connection-check` does it with
+none of that, reading the environment only. It is registered before the
+`{broker_id}` route because FastAPI matches in registration order — the
+same trap D109 hit — and a test asserts that ordering.
+
+The catalogue table in the admin UI grew a **Test** button per venue,
+which is now the first thing an operator can press after setting variables.
+
+**Tests**: `tests/api/test_broker_connection_check.py` (13, up from 8).
+
+**Not done here.** No order has been placed at any venue. Both probes are
 read-only by construction, and the OMS still does not route through the
 bridge.
 

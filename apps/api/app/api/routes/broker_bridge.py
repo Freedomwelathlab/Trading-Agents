@@ -45,15 +45,21 @@ from apps.api.app.execution.credentials import (
     CredentialStatus,
     CredentialsUnreadableError,
     MissingCredentialFieldError,
+    ResolvedCredentials,
     credential_status,
     delete_credentials,
     resolve_credentials,
     save_credentials,
 )
-from apps.api.app.execution.env_credentials import env_credential_status, env_var_names
+from apps.api.app.execution.env_credentials import (
+    env_credential_status,
+    env_var_names,
+    load_env_credentials,
+)
 from apps.api.app.execution.registry import (
     PROVIDERS,
     AdapterNotImplementedError,
+    CredentialKind,
     UnknownProviderError,
     build_adapter,
     get_provider,
@@ -279,10 +285,20 @@ async def delete_broker_credentials(
     await session.commit()
 
 
+class PublicFieldValue(BaseModel):
+    """One non-secret credential field, echoed back so an operator can see
+    WHICH account answered."""
+
+    name: str
+    label: str
+    value: str
+
+
 class ConnectionCheckResponse(BaseModel):
     """The outcome of a READ-ONLY probe. No order is placed."""
 
-    broker_id: uuid.UUID
+    broker_id: uuid.UUID | None = None
+    """Null for a probe run against a PROVIDER rather than a broker row."""
     provider: str
     reachable: bool
     credential_source: str | None = None
@@ -295,6 +311,132 @@ class ConnectionCheckResponse(BaseModel):
     position_symbols: list[str] = Field(default_factory=list)
     """Symbols only. A position's SIZE is this account's business and is
     not needed to prove the credentials work."""
+    account: list[PublicFieldValue] = Field(default_factory=list)
+    """The PUBLIC credential fields behind this probe — for IG that means
+    DEMO or LIVE, which is the single most consequential thing about the
+    answer.
+
+    A green tick that does not say which account it reached is the
+    dangerous kind: two IG credential sets can both be present in an
+    environment and only one of them is the demo. Which fields are public
+    is the registry's classification, not a judgement made here, and it is
+    the same one `credential_status` already applies — a SECRET is never
+    in this list under any circumstances.
+    """
+
+
+def _public_fields(provider: str, credentials: dict[str, str]) -> list[PublicFieldValue]:
+    """Non-secret fields only, by the registry's own classification."""
+    return [
+        PublicFieldValue(name=f.name, label=f.label, value=credentials[f.name])
+        for f in get_provider(provider).credential_fields
+        if f.kind is not CredentialKind.SECRET and f.name in credentials
+    ]
+
+
+async def _probe(
+    provider_name: str,
+    resolved: ResolvedCredentials,
+    *,
+    broker_id: uuid.UUID | None,
+) -> ConnectionCheckResponse:
+    """Build the adapter and read the account. Shared by both probes so
+    the two cannot drift into disagreeing about what a refusal looks
+    like."""
+    provider = get_provider(provider_name)
+    account = _public_fields(provider_name, resolved.credentials)
+
+    def answer(*, reachable: bool, detail: str, **extra: object) -> ConnectionCheckResponse:
+        return ConnectionCheckResponse(
+            broker_id=broker_id,
+            provider=provider_name,
+            reachable=reachable,
+            credential_source=resolved.source,
+            detail=detail,
+            account=account,
+            **extra,  # type: ignore[arg-type]
+        )
+
+    try:
+        adapter = build_adapter(provider_name, resolved.credentials)
+    except AdapterNotImplementedError as exc:
+        return answer(reachable=False, detail=f"NO_ADAPTER: {exc}")
+    except Exception as exc:  # noqa: BLE001 - a vendor error is an answer, not a 500
+        return answer(reachable=False, detail=f"{type(exc).__name__}: {exc}")
+
+    def _read() -> tuple[str, list[str]]:
+        # Synchronous vendor clients, off the event loop - the same shape
+        # marketdata/providers/coinbase.py uses for the same reason.
+        # `AccountState` carries cash/equity/exposure; the held symbols are
+        # the adapter's own `positions` property, not part of that model.
+        state = adapter.get_account_state(marks={})  # type: ignore[attr-defined]
+        held = adapter.positions  # type: ignore[attr-defined]
+        return format(state.cash, "f"), sorted(held)
+
+    try:
+        cash, symbols = await asyncio.to_thread(_read)
+    except Exception as exc:  # noqa: BLE001 - the venue's refusal IS the finding
+        return answer(reachable=False, detail=f"{type(exc).__name__}: {exc}")
+
+    return answer(
+        reachable=True,
+        detail=(
+            f"Reached {provider.display_name} and read the account using the "
+            f"{resolved.source} credentials. No order was placed."
+        ),
+        cash=cash,
+        position_symbols=symbols,
+    )
+
+
+@router.post(
+    "/providers/{provider}/connection-check", response_model=ConnectionCheckResponse
+)
+async def check_provider_connection(
+    provider: str,
+    _current_user: User = Depends(require_permission(Permission.ADMIN)),
+) -> ConnectionCheckResponse:
+    """Probe a venue straight from the ENVIRONMENT, with no broker row.
+
+    Registered before `/{broker_id}/connection-check` deliberately:
+    FastAPI matches in registration order with no preference for a static
+    segment, so the other way round `providers` is parsed as a UUID and
+    this 422s. The same trap `/brokers/providers` hit in Phase 90, and the
+    same fix.
+
+    Exists because the per-broker probe asks an operator to create a
+    broker row and grant it to themselves before they can find out whether
+    a key even works — three steps in two panels to answer one question.
+    This answers it with none, which matters most when the answer is "that
+    key is wrong".
+
+    Environment credentials only. A broker row is what makes a STORED
+    credential addressable, so a probe with no broker row has nothing
+    stored to consult and says so rather than quietly falling back.
+    """
+    try:
+        entry = get_provider(provider)
+    except UnknownProviderError as exc:
+        raise HTTPException(status_code=404, detail=f"UNKNOWN_PROVIDER: {exc}") from None
+
+    from_env = load_env_credentials(provider)
+    if from_env is None:
+        status = env_credential_status(provider)
+        missing = ", ".join(status.missing_required)
+        return ConnectionCheckResponse(
+            provider=provider,
+            reachable=False,
+            detail=(
+                f"NOT_CONFIGURED: the environment does not configure "
+                f"{entry.display_name}. Set {missing}."
+            ),
+        )
+
+    return await _probe(
+        provider,
+        ResolvedCredentials(credentials=from_env, source="environment"),
+        broker_id=None,
+    )
 
 
 @router.post("/{broker_id}/connection-check", response_model=ConnectionCheckResponse)
@@ -345,54 +487,4 @@ async def check_broker_connection(
             ),
         )
 
-    try:
-        adapter = build_adapter(broker.provider, resolved.credentials)
-    except AdapterNotImplementedError as exc:
-        return ConnectionCheckResponse(
-            broker_id=broker.id,
-            provider=broker.provider,
-            reachable=False,
-            credential_source=resolved.source,
-            detail=f"NO_ADAPTER: {exc}",
-        )
-    except Exception as exc:  # noqa: BLE001 - a vendor error is an answer, not a 500
-        return ConnectionCheckResponse(
-            broker_id=broker.id,
-            provider=broker.provider,
-            reachable=False,
-            credential_source=resolved.source,
-            detail=f"{type(exc).__name__}: {exc}",
-        )
-
-    def _probe() -> tuple[str, list[str]]:
-        # Synchronous vendor clients, off the event loop - the same shape
-        # marketdata/providers/coinbase.py uses for the same reason.
-        # `AccountState` carries cash/equity/exposure; the held symbols are
-        # the adapter's own `positions` property, not part of that model.
-        state = adapter.get_account_state(marks={})  # type: ignore[attr-defined]
-        held = adapter.positions  # type: ignore[attr-defined]
-        return format(state.cash, "f"), sorted(held)
-
-    try:
-        cash, symbols = await asyncio.to_thread(_probe)
-    except Exception as exc:  # noqa: BLE001 - the venue's refusal IS the finding
-        return ConnectionCheckResponse(
-            broker_id=broker.id,
-            provider=broker.provider,
-            reachable=False,
-            credential_source=resolved.source,
-            detail=f"{type(exc).__name__}: {exc}",
-        )
-
-    return ConnectionCheckResponse(
-        broker_id=broker.id,
-        provider=broker.provider,
-        reachable=True,
-        credential_source=resolved.source,
-        detail=(
-            f"Reached {provider.display_name} and read the account using the "
-            f"{resolved.source} credentials. No order was placed."
-        ),
-        cash=cash,
-        position_symbols=symbols,
-    )
+    return await _probe(broker.provider, resolved, broker_id=broker.id)

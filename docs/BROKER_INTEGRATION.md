@@ -306,8 +306,19 @@ used.
 
 ### Proving it works, without trading
 
-`POST /brokers/{id}/connection-check` (admin only, **Test connection** in
-the UI) logs in and reads the balance. That exercises the credential, the
+Two ways, both admin-only and both read-only.
+
+**By provider**, with nothing set up: `POST /brokers/providers/{provider}/connection-check`,
+or the **Test** button on each row of the Supported brokers table. It reads
+the environment only and needs no broker row and no grant — this is the one
+to press first, right after setting the variables.
+
+**By broker row**: `POST /brokers/{id}/connection-check`, or **Test
+connection** in the credential form. This is the one that can exercise a
+STORED credential, because a broker row is what makes a stored credential
+addressable.
+
+Both log in and read the balance. That exercises the credential, the
 signing, the host and the account selection — every part of the path that
 can be wrong — and none of the part that moves money. There is no order and
 no size.
@@ -318,3 +329,10 @@ probe ran and its answer was no; that is a finding, not a server error. A
 success reports the venue's real cash figure and the symbols it holds.
 `cash` is null on any failure — never `0`, which would be
 indistinguishable from an empty account.
+
+**The answer names the account it reached.** `account` carries the PUBLIC
+credential fields, which for IG means `DEMO` or `LIVE`. This matters more
+than it sounds: an environment can hold two IG credential sets and only one
+of them is the demo, and a green tick that does not say which is the
+dangerous kind. Secrets are never included — the split is the registry's
+own PUBLIC/SECRET classification, the same one the credential form uses.

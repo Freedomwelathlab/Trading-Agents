@@ -11159,3 +11159,49 @@ left the stored path with no say in precedence.
 Status: Implemented, tested: `tests/execution/test_env_credentials.py` (16),
 `tests/api/test_broker_connection_check.py` (8). No order has been placed at
 any venue.
+
+## D114 — A probe must name the account it reached, and must not require a broker row (Phase 95)
+Date: 2026-09-24
+Decision: the connection probe now returns the PUBLIC credential fields
+behind its answer, and there is a second probe addressed by PROVIDER that
+needs no broker row at all.
+
+**A green tick that does not say WHICH account is the dangerous kind.**
+Measured, not hypothetical: after D113 landed, the production environment
+held `IG_API_KEY`/`IG_ACCOUNT_TYPE` *and* `IG_API_KEY2`/`IG_ACCOUNT_TYPE2`
+— two IG credential sets, one of them the demo, and nothing in the probe's
+answer distinguished them. `reachable: true` against IG means something
+very different depending on which account answered, and the operator could
+not tell. So the response now carries `account`: the fields the registry
+classifies PUBLIC, with their values.
+
+Which fields those are is the registry's classification and not a second
+judgement made at the route — the same one `credential_status` has applied
+since D109, so a field cannot be public in one response and secret in the
+other. A SECRET is never in this list; `tests/api/test_broker_connection_check.py`
+asserts the password is absent from the whole response body, not merely
+from the field list.
+
+**The per-provider probe exists because the per-broker one asks too much
+of the question it answers.** To find out whether a key works, D113 made
+an operator create a broker row, grant it to themselves, select it, and
+press a button — four steps across two panels to learn something the
+platform already knew. That is worst precisely when the answer is "that
+key is wrong", which is the common case on first setup.
+`POST /brokers/providers/{provider}/connection-check` answers it with no
+setup at all.
+
+It reads the ENVIRONMENT only. A broker row is what makes a stored
+credential addressable, so a probe with no broker row has nothing stored
+to consult; it says so rather than appearing to test something it did not.
+
+Registered BEFORE `/{broker_id}/connection-check`. FastAPI matches in
+registration order with no preference for a static segment, so the other
+way round `providers` is parsed as a UUID and the route 422s — the same
+trap `/brokers/providers` hit in D109, and there is now a test asserting
+the ordering rather than a comment hoping for it.
+
+Both probes share one `_probe()` helper so they cannot drift into
+disagreeing about what a refusal looks like.
+Status: Implemented, tested: `tests/api/test_broker_connection_check.py` (13).
+No order has been placed at any venue.
