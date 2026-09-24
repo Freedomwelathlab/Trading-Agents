@@ -93,6 +93,10 @@ async def test_a_venue_refusal_is_a_finding_not_a_server_error(monkeypatch):
     monkeypatch.setenv("KRAKEN_API_SECRET", "s")
 
     class Refusing:
+        @property
+        def cash(self):
+            raise RuntimeError("EAPI:Invalid key")
+
         def get_account_state(self, *, marks):
             raise RuntimeError("EAPI:Invalid key")
 
@@ -121,6 +125,10 @@ async def test_a_reachable_venue_reports_its_real_balance_and_places_no_order(mo
     monkeypatch.setenv("KRAKEN_API_SECRET", "s")
 
     class Reachable:
+        @property
+        def cash(self):
+            return Decimal("1234.56")
+
         def get_account_state(self, *, marks):
             return _account("1234.56")
 
@@ -157,6 +165,10 @@ async def test_the_probe_works_with_no_encryption_key_set(monkeypatch):
     monkeypatch.setenv("KRAKEN_API_SECRET", "s")
 
     class Reachable:
+        @property
+        def cash(self):
+            return Decimal("10")
+
         def get_account_state(self, *, marks):
             return _account("10")
 
@@ -186,6 +198,10 @@ async def test_stored_credentials_beat_the_environment(monkeypatch):
     seen: dict[str, str] = {}
 
     class Recording:
+        @property
+        def cash(self):
+            return Decimal("1")
+
         def get_account_state(self, *, marks):
             return _account("1")
 
@@ -241,6 +257,10 @@ async def test_the_probe_says_which_account_answered_and_never_a_secret(monkeypa
     monkeypatch.setenv("IG_ACCOUNT_TYPE", "DEMO")
 
     class Reachable:
+        @property
+        def cash(self):
+            return Decimal("500")
+
         def get_account_state(self, *, marks):
             return _account("500")
 
@@ -274,6 +294,10 @@ async def test_a_provider_can_be_probed_with_no_broker_row(monkeypatch):
     monkeypatch.setenv("KRAKEN_API_SECRET", "s")
 
     class Reachable:
+        @property
+        def cash(self):
+            return Decimal("42.5")
+
         def get_account_state(self, *, marks):
             return _account("42.5")
 
@@ -343,3 +367,44 @@ async def test_the_provider_probe_is_admin_only():
                 "/brokers/providers/kraken/connection-check", headers=_h(token)
             )
     assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_the_probe_does_not_need_a_price_for_every_asset_held(monkeypatch):
+    """Regression for the first production probe of a working Kraken key.
+
+    The account held SOL; the probe called `get_account_state(marks={})`;
+    that correctly refused to value SOL with no price. Proving a credential
+    needs the venue to ANSWER, not a mark for every holding, so the probe
+    reads cash and positions and never asks for a valuation.
+    """
+    monkeypatch.setenv("KRAKEN_API_KEY", "k")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+
+    class HoldsSol:
+        @property
+        def cash(self):
+            return Decimal("12.34")
+
+        @property
+        def positions(self):
+            return {"SOL": Decimal("3.5")}
+
+        def get_account_state(self, *, marks):
+            raise AssertionError(
+                "the probe must not value the account - it has no mark for SOL"
+            )
+
+    monkeypatch.setattr(BUILD_ADAPTER, lambda provider, credentials: HoldsSol())
+
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(
+                "/brokers/providers/kraken/connection-check", headers=_h(token)
+            )
+
+    body = r.json()
+    assert body["reachable"] is True, body["detail"]
+    assert body["cash"] == "12.34"
+    assert body["position_symbols"] == ["SOL"]

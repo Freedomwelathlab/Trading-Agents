@@ -367,11 +367,19 @@ async def _probe(
     def _read() -> tuple[str, list[str]]:
         # Synchronous vendor clients, off the event loop - the same shape
         # marketdata/providers/coinbase.py uses for the same reason.
-        # `AccountState` carries cash/equity/exposure; the held symbols are
-        # the adapter's own `positions` property, not part of that model.
-        state = adapter.get_account_state(marks={})  # type: ignore[attr-defined]
+        #
+        # `cash` and `positions`, NOT `get_account_state`. Proving a
+        # credential needs the venue to answer; VALUING the account needs a
+        # price for every asset held, which a probe does not have - and
+        # inventing one is precisely what `get_account_state` correctly
+        # refuses to do. Measured, not reasoned: the first production probe
+        # of a perfectly good Kraken key failed with "No mark supplied for
+        # held asset SOL", because the account held SOL and this passed
+        # `marks={}`. Kraken had authenticated and returned the balances;
+        # the probe then asked a question it had no data to answer.
+        cash = adapter.cash  # type: ignore[attr-defined]
         held = adapter.positions  # type: ignore[attr-defined]
-        return format(state.cash, "f"), sorted(held)
+        return format(cash, "f"), sorted(held)
 
     try:
         cash, symbols = await asyncio.to_thread(_read)

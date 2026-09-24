@@ -165,6 +165,41 @@ def test_an_error_code_in_a_200_body_is_still_a_refusal():
     assert "api-key-invalid" in str(err.value)
 
 
+def test_a_rejected_login_says_the_key_was_accepted_and_the_password_was_not():
+    """`invalid-details` is NOT a bad key. Measured against IG: a fake key
+    gets 403 `api-key-invalid` on both hosts. Telling an operator to check
+    "their credentials" sends them to re-paste a key that was fine."""
+    client = StubClient(
+        routes({("POST", "/session"): (401, {}, {"errorCode": "error.security.invalid-details"})})
+    )
+    with pytest.raises(IgError) as err:
+        _ = adapter(client).cash
+    message = str(err.value)
+    assert "error.security.invalid-details" in message  # IG's own code survives
+    assert "ACCEPTED the API key" in message
+    assert "DEMO" in message  # names the host it was talking to
+    assert "not an email" in message
+
+
+def test_an_unrecognised_key_names_the_host_it_was_refused_by():
+    client = StubClient(
+        routes({("POST", "/session"): (403, {}, {"errorCode": "error.security.api-key-invalid"})})
+    )
+    with pytest.raises(IgError) as err:
+        _ = adapter(client, account_type="LIVE").cash
+    assert "LIVE host" in str(err.value)
+    assert "per environment" in str(err.value)
+
+
+def test_an_unmapped_login_error_still_carries_the_venues_own_code():
+    client = StubClient(
+        routes({("POST", "/session"): (403, {}, {"errorCode": "error.security.account-suspended"})})
+    )
+    with pytest.raises(IgError) as err:
+        _ = adapter(client).cash
+    assert "account-suspended" in str(err.value)
+
+
 # --- account ----------------------------------------------------------------
 
 

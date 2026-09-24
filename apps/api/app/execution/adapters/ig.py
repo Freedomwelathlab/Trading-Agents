@@ -94,6 +94,32 @@ def _decimal(raw: Any, *, field: str) -> Decimal:
         raise IgError(f"IG returned an unreadable {field}: {raw!r}.") from exc
 
 
+# What IG's login error codes mean, for an operator about to fix them.
+#
+# Measured against IG's own hosts on 2026-09-24 rather than taken from
+# memory: a fabricated API key gets HTTP 403 `error.security.api-key-invalid`
+# from BOTH demo-api.ig.com and api.ig.com. So `invalid-details` - which is a
+# different status (401) and a different code - is IG accepting the key and
+# rejecting the username/password paired with it. That distinction is the
+# whole value of this table: "check your credentials" sends an operator to
+# re-paste a key that was never the problem.
+LOGIN_ERRORS = {
+    "error.security.api-key-invalid": (
+        "IG does not recognise this API key on the {host} host. Keys are issued per "
+        "environment - a live key is refused by the demo host and the other way round - so "
+        "check IG_ACCOUNT_TYPE matches the environment the key was created in."
+    ),
+    "error.security.invalid-details": (
+        "IG ACCEPTED the API key and rejected the username/password for the {host} host. "
+        "IG demo and live are separate logins with separate usernames and passwords, so "
+        "the likeliest cause is a {host} key paired with the other environment's login. "
+        "IG_USERNAME must be the IG username, not an email address. IG can lock an account "
+        "after repeated failed logins, so correct the credentials before testing again "
+        "rather than retrying."
+    ),
+}
+
+
 def _check(status: int, body: Mapping[str, Any], *, what: str) -> Mapping[str, Any]:
     """IG uses real HTTP status codes AND an `errorCode` body. Both are
     read: a 200 carrying an errorCode is still a refusal."""
@@ -175,6 +201,15 @@ class IgAdapter:
                 "Accept": "application/json; charset=UTF-8",
             },
         )
+        code = body.get("errorCode")
+        if code in LOGIN_ERRORS:
+            # The venue's own code stays in the message: the translation
+            # is guidance, and an operator searching IG's docs needs the
+            # string IG actually sent.
+            raise IgError(
+                f"IG refused a login: HTTP {status} {code!r}. "
+                + LOGIN_ERRORS[code].format(host=self.account_type)
+            )
         _check(status, body, what="a login")
         lowered = {k.lower(): v for k, v in headers.items()}
         cst = lowered.get("cst")

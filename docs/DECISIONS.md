@@ -11205,3 +11205,41 @@ Both probes share one `_probe()` helper so they cannot drift into
 disagreeing about what a refusal looks like.
 Status: Implemented, tested: `tests/api/test_broker_connection_check.py` (13).
 No order has been placed at any venue.
+
+## D115 — The first real probes: a working Kraken key reported as broken, and what IG's 401 actually means (Phase 96)
+Date: 2026-09-24
+Decision: the probe reads `cash` and `positions` and never asks the adapter
+to VALUE the account; the IG adapter translates its two login error codes
+into which half of the login was rejected.
+
+**Kraken: the key worked, and the probe said it did not.** The first
+production probe returned `KrakenError: No mark supplied for held asset
+SOL; cannot value the account.` Kraken had authenticated and returned the
+balances — the adapter only reaches that line after a successful private
+`Balance` call. The probe then called `get_account_state(marks={})`, which
+needs a price for every non-cash holding and correctly refuses to invent
+one. The probe was asking a question it had no data to answer. Proving a
+credential needs the venue to answer; valuing an account needs marks.
+
+Rejected: fetching marks from Kraken's public Ticker inside the probe. It
+would work, and it would make a connectivity check depend on a second
+endpoint and an asset-name mapping (Kraken's `SOL` vs a pair name) that
+has nothing to do with whether the key is good.
+
+Recorded for later, because it will bite the order path: **a Kraken
+account holding anything other than its quote currency cannot be valued
+without a per-asset mark source**, and the Risk Engine needs equity.
+Routing orders through the bridge (not built) must supply one.
+
+**IG: 401 `invalid-details` is not a bad key.** Measured against IG's own
+hosts rather than recalled: a fabricated API key gets HTTP **403**
+`error.security.api-key-invalid` from both `demo-api.ig.com` and
+`api.ig.com`. So the operator's **401** `error.security.invalid-details`
+is IG accepting the key and rejecting the username/password paired with
+it. A generic "check your credentials" sends an operator to re-paste a key
+that was never the problem, so the adapter now says which half failed and
+on which host, keeps IG's own code in the message, and warns that IG can
+lock an account after repeated failed logins.
+Status: Implemented, tested (`test_ig_adapter.py` +3,
+`test_broker_connection_check.py` +1). No order has been placed at any
+venue.
