@@ -51,20 +51,29 @@ than the server ever building an unbounded response."""
 async def list_accessible_brokers(
     limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
     offset: int = Query(default=0, ge=0),
+    approved_only: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ListBrokersResponse:
     """The brokers this user holds a BrokerGrant for, ordered by
     `(name, id)`. Name alone is not unique on `brokers`, so the id is the
     tiebreaker that makes the sort total and `offset` paging
-    deterministic. Nothing here is filtered on `is_active` - see
-    BrokerResponse's docstring."""
+    deterministic.
+
+    `approved_only` (Phase 97, D116) narrows to brokers an admin has
+    approved (`is_active`). The trading desk asks for it; every other
+    caller keeps the unfiltered list BrokerResponse's docstring defends,
+    because a bot or a history view still needs to name a broker the desk
+    no longer offers."""
+    conditions = [BrokerGrant.user_id == current_user.id]
+    if approved_only:
+        conditions.append(Broker.is_active.is_(True))
     rows = (
         (
             await session.execute(
                 select(Broker)
                 .join(BrokerGrant, BrokerGrant.broker_id == Broker.id)
-                .where(BrokerGrant.user_id == current_user.id)
+                .where(*conditions)
                 .order_by(Broker.name.asc(), Broker.id.asc())
                 .limit(limit)
                 .offset(offset)

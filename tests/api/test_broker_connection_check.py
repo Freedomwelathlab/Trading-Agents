@@ -68,13 +68,15 @@ async def test_a_probe_without_credentials_names_the_variables_to_set(monkeypatc
 
 @pytest.mark.asyncio
 async def test_credentials_do_not_conjure_an_adapter_for_a_catalogued_venue(monkeypatch):
-    """Binance is catalogued only. The probe must say so rather than let
-    it read as a venue failure the operator would go and investigate."""
-    monkeypatch.setenv("BINANCE_API_KEY", "k")
-    monkeypatch.setenv("BINANCE_API_SECRET", "s")
+    """moomoo is catalogued only (gateway-only, D109). The probe must say
+    so rather than let it read as a venue failure the operator would go and
+    investigate. Binance was the example until it gained an adapter (D116)."""
+    monkeypatch.setenv("MOOMOO_OPEND_HOST", "127.0.0.1")
+    monkeypatch.setenv("MOOMOO_OPEND_PORT", "11111")
+    monkeypatch.setenv("MOOMOO_TRADE_PASSWORD", "s")
 
     async with db_session() as session, admin_user(session) as (_uid, email):
-        async with broker(session, "binance") as broker_id, api_client() as client:
+        async with broker(session, "moomoo") as broker_id, api_client() as client:
             async with encryption_key(KEY):
                 token = await _get_token(client, email)
                 r = await client.post(f"/brokers/{broker_id}/connection-check", headers=_h(token))
@@ -447,3 +449,52 @@ def test_a_short_identifier_is_masked_whole_rather_than_half_revealed():
 
     assert mask_identifier("abc123") == "\u2022" * 8
     assert "abc" not in mask_identifier("abc123")
+
+
+@pytest.mark.asyncio
+async def test_the_paper_simulator_tests_green_without_credentials():
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post("/brokers/providers/paper/connection-check", headers=_h(token))
+    body = r.json()
+    assert body["reachable"] is True
+    assert body["cash"] is None  # the provider has no book; a broker row does
+    assert "no credentials" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_paper_broker_row_reports_its_own_book_without_trading():
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with broker(session, "paper") as broker_id, api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(f"/brokers/{broker_id}/connection-check", headers=_h(token))
+    body = r.json()
+    assert r.status_code == 200, r.text
+    assert body["reachable"] is True
+    assert "not traded yet" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_an_environment_probe_names_the_variable_family_that_answered(monkeypatch):
+    for name in ("LONGBRIDGE_APP_KEY", "LONGBRIDGE_APP_SECRET", "LONGBRIDGE_ACCESS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LONGPORT_APP_KEY", "a")
+    monkeypatch.setenv("LONGPORT_APP_SECRET", "b")
+    monkeypatch.setenv("LONGPORT_ACCESS_TOKEN", "c")
+
+    class Reachable:
+        cash = Decimal("100")
+        positions: dict[str, Decimal] = {}
+
+    monkeypatch.setattr(BUILD_ADAPTER, lambda provider, credentials: Reachable())
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(
+                "/brokers/providers/longbridge/connection-check", headers=_h(token)
+            )
+    body = r.json()
+    assert body["reachable"] is True
+    assert body["credential_source"] == "environment"
+    assert body["credential_variables"] == "LONGPORT_*"

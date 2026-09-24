@@ -11259,3 +11259,70 @@ the key.
 Status: Implemented, tested (`test_ig_adapter.py` +3,
 `test_broker_connection_check.py` +3). No order has been placed at any
 venue.
+
+## D116 — Every reachable venue answers the Test button, and the desk shows only approved brokers (Phase 97)
+Date: 2026-09-24
+Decision: Longbridge and Binance move from catalogued to implemented;
+Paper is reported `built_in` and tests green without credentials; brokers
+gain admin housekeeping (approve / hide / delete) and the trading desk
+lists approved brokers only.
+
+**IG: the demo API does not take the web login.** The operator's IG
+account has one 2FA-protected web login that opens both live and demo in
+the browser, and the demo probe returned `401 invalid-details` with it.
+IG's demo REST API authenticates with the separate "Web API demo login
+details" set on the API-keys page while switched to demo, and no 2FA code
+is involved on that path — so 2FA is not what blocks it. The adapter's
+DEMO advice now says exactly that.
+
+**Longbridge reuses the adapter the live path already uses.** The
+registry factory builds the Phase 43 `LiveBrokerAdapter`, not a second
+implementation, so a green probe exercises the code a real order would.
+Credentials: `LONGBRIDGE_*`, or — when none of those is set — the whole
+`LONGPORT_*` trio already on Railway for market data (`env_aliases`, a
+PREFIX family, never per-field, so a set is never blended from two
+families; a half-set `LONGBRIDGE_*` is reported half-set rather than
+bypassed). This does not move Longbridge onto the order path: `trades.py`
+still reaches it only through `build_live_broker_adapter` behind
+`TRADING_MODE=live`, `LIVE_TRADING_ENABLED` and `LONGPORT_LIVE_*`.
+
+**Measured on the real Longbridge account (read-only):** `account_balance()`
+returns one HKD row (800,000.00) and no USD row, so the adapter refused an
+account that trades US stocks. `account_balance("USD")` returns
+Longbridge's own USD statement of that cash (114,284.08). The adapter now
+asks for its configured currency; if the venue still returns no row in it,
+the existing refusal stands. That is the venue converting, not this code
+substituting another currency's cash.
+
+**Binance.** Three venues (LIVE / US / TESTNET), required `environment`
+with no default, HMAC-SHA256 signing verified against Binance's own worked
+example. Cash is the quote asset's FREE balance (locked is committed to
+resting orders). A spot TESTNET exists — unlike Kraken — so orders are
+placed by default only there; LIVE and US use `/api/v3/order/test` until
+`live_orders` is set. HTTP 451 is translated as a LOCATION refusal:
+binance.com blocks the US, this API runs in a US region, and "regenerate
+the key" is the wrong response to it. Order ids are `SYMBOL:orderId`
+because Binance cannot address an order by id alone.
+
+**Paper.** Reported `catalogued` because it has no credential factory —
+the one venue that always works was labelled as the kind that never does.
+Now `built_in`; the provider probe is green with no credentials, and a
+paper broker row's probe reads its own book (without the trade path's
+`FOR UPDATE` lock — a report must not stall a trade).
+
+**Broker housekeeping.** `is_active` (present since 0001, read by nothing)
+becomes "approved for the desk"; `GET /brokers?approved_only=true` is what
+the desk asks for, and every other caller keeps the unfiltered list.
+`POST /admin/brokers/delete` answers per broker: deleted (no orders,
+nothing running — with its paper book, snapshots, credentials, grants),
+archived (has order history — hidden, history kept, because orders and
+fills are the audit trail), or refused (a bot or deployment not stopped).
+No migration.
+
+Rejected: filtering `GET /brokers` for everyone. Bots, deployments and
+history views must still be able to name a broker the desk no longer
+offers.
+
+**Still not reachable, and why.** IBKR and moomoo need a gateway on the
+operator's own machine (D109); nothing on Railway can reach it.
+Status: Implemented, tested. No order has been placed at any venue.

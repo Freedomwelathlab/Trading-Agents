@@ -11,6 +11,7 @@ from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
 from apps.api.app.api.routes.autotrade import router as autotrade_router
 from apps.api.app.api.routes.backtests import router as backtests_router
+from apps.api.app.api.routes.broker_admin import router as broker_admin_router
 from apps.api.app.api.routes.broker_bridge import router as broker_bridge_router
 from apps.api.app.api.routes.brokers import router as brokers_router
 from apps.api.app.api.routes.deployments import (
@@ -426,6 +427,7 @@ app.include_router(session_router)
 app.include_router(trades_router)
 app.include_router(agent_trades_router)
 app.include_router(admin_router)
+app.include_router(broker_admin_router)
 # D039: registered before nothing in particular but kept next to the admin
 # router it shares a prefix with. The status route is a separate router
 # because it is authentication-only, not admin:manage-gated.

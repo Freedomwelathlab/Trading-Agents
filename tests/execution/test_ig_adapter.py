@@ -181,6 +181,29 @@ def test_a_rejected_login_says_the_key_was_accepted_and_the_password_was_not():
     assert "not an email" in message
 
 
+def test_a_rejected_demo_login_points_at_the_web_api_demo_login_not_2fa():
+    """The operator's single 2FA-protected web login opens demo in the
+    browser and is still the wrong pair for the demo API."""
+    client = StubClient(
+        routes({("POST", "/session"): (401, {}, {"errorCode": "error.security.invalid-details"})})
+    )
+    with pytest.raises(IgError) as err:
+        _ = adapter(client).cash
+    message = str(err.value)
+    assert "Web API demo login details" in message
+    assert "2FA is not what is blocking it" in message
+
+
+def test_a_rejected_live_login_does_not_give_demo_advice():
+    client = StubClient(
+        routes({("POST", "/session"): (401, {}, {"errorCode": "error.security.invalid-details"})})
+    )
+    with pytest.raises(IgError) as err:
+        _ = adapter(client, account_type="LIVE").cash
+    assert "Web API demo login details" not in str(err.value)
+    assert "LIVE host" in str(err.value)
+
+
 def test_an_unrecognised_key_names_the_host_it_was_refused_by():
     client = StubClient(
         routes({("POST", "/session"): (403, {}, {"errorCode": "error.security.api-key-invalid"})})

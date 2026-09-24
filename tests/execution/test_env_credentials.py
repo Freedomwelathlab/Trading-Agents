@@ -164,3 +164,47 @@ def test_env_credentials_build_the_real_adapter(provider, environ):
     assert credentials is not None
     adapter = build_adapter(provider, credentials)
     assert adapter is not None
+
+
+LONGPORT = {
+    "LONGPORT_APP_KEY": "a",
+    "LONGPORT_APP_SECRET": "b",
+    "LONGPORT_ACCESS_TOKEN": "c",
+}
+
+
+def test_longbridge_falls_back_to_the_longport_trio_already_on_railway():
+    """Phase 97 (D116): the same three values were already set for market
+    data; asking for them again under LONGBRIDGE_* invites a typo."""
+    status = env_credential_status("longbridge", LONGPORT)
+    assert status.complete and status.prefix == "LONGPORT"
+    assert load_env_credentials("longbridge", LONGPORT) == {
+        "app_key": "a",
+        "app_secret": "b",
+        "access_token": "c",
+    }
+    assert "longbridge" in configured_providers(LONGPORT)
+
+
+def test_the_providers_own_prefix_wins_and_is_never_blended_with_the_alias():
+    own = {
+        "LONGBRIDGE_APP_KEY": "x",
+        "LONGBRIDGE_APP_SECRET": "y",
+        "LONGBRIDGE_ACCESS_TOKEN": "z",
+    }
+    assert load_env_credentials("longbridge", {**LONGPORT, **own}) == {
+        "app_key": "x",
+        "app_secret": "y",
+        "access_token": "z",
+    }
+    # A HALF-set own family is reported half-set, not bypassed for the
+    # complete alias: the operator started typing LONGBRIDGE_* and would
+    # otherwise believe values are live that are not.
+    half = {**LONGPORT, "LONGBRIDGE_APP_KEY": "x"}
+    status = env_credential_status("longbridge", half)
+    assert status.prefix == "LONGBRIDGE" and not status.complete
+    assert load_env_credentials("longbridge", half) is None
+
+
+def test_the_variable_names_shown_to_an_operator_stay_the_providers_own():
+    assert env_var_names("longbridge")["app_key"] == "LONGBRIDGE_APP_KEY"

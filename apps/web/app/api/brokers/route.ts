@@ -6,7 +6,7 @@ import { AUTH_COOKIE_NAME, backendUrl } from "@/lib/backend";
  * actually holds a grant for. Same route-handler pattern as every other
  * authenticated call in this app: the JWT stays in the httpOnly cookie
  * and is read server-side here, never by the browser. Only the backend's
- * own `limit`/`offset` params are forwarded.
+ * own `limit`/`offset`/`approved_only` params are forwarded.
  */
 export async function GET(request: NextRequest) {
   const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
 
   const incoming = request.nextUrl.searchParams;
   const query = new URLSearchParams();
-  for (const key of ["limit", "offset"]) {
+  for (const key of ["limit", "offset", "approved_only"]) {
     const value = incoming.get(key);
     if (value !== null) query.set(key, value);
   }

@@ -85,6 +85,8 @@ type BrokerRow = { id: string; name: string; kind: string; provider: string };
 type ConnectionCheck = {
   reachable: boolean;
   credential_source: string | null;
+  /** The variable family that answered, e.g. `LONGPORT_*` (Phase 97). */
+  credential_variables?: string | null;
   detail: string;
   cash: string | null;
   position_symbols: string[];
@@ -104,7 +106,10 @@ function ProbeResult({ probe }: { probe: ConnectionCheck }) {
           {probe.reachable ? "reachable" : "not reachable"}
         </Pill>
         {probe.credential_source ? (
-          <span className="text-ink-faint">using the {probe.credential_source} credentials</span>
+          <span className="text-ink-faint">
+            using the {probe.credential_source} credentials
+            {probe.credential_variables ? ` (${probe.credential_variables})` : ""}
+          </span>
         ) : null}
         {probe.account.map((f) => (
           <span key={f.name} className="font-mono text-[11px]">
@@ -113,7 +118,7 @@ function ProbeResult({ probe }: { probe: ConnectionCheck }) {
         ))}
       </span>
       <span className="leading-snug text-ink-faint">{probe.detail}</span>
-      {probe.reachable ? (
+      {probe.reachable && probe.cash !== null ? (
         <span className="font-mono text-[11px]">
           cash {probe.cash}
           {probe.position_symbols.length > 0
@@ -196,7 +201,13 @@ export function BrokerCatalogue() {
                     <td className="px-2 py-1.5">{p.supports_extended_hours ? "yes" : "no"}</td>
                     <td className="px-2 py-1.5">{p.supports_fractional ? "yes" : "no"}</td>
                     <td className="px-2 py-1.5">
-                      <Pill tone={p.adapter_status === "implemented" ? "pos" : "neutral"}>
+                      <Pill
+                        tone={
+                          p.adapter_status === "implemented" || p.adapter_status === "built_in"
+                            ? "pos"
+                            : "neutral"
+                        }
+                      >
                         {p.adapter_status}
                       </Pill>
                     </td>

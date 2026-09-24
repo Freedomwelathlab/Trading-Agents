@@ -61,14 +61,14 @@ describe("BrokerDiscovery", () => {
     mockJson(200, { brokers: [], limit: 50, offset: 0 });
     render(<BrokerDiscovery />);
     await waitFor(() => expect(fetch).toHaveBeenCalled());
-    expect(fetch).toHaveBeenCalledWith("/api/brokers?limit=50&offset=0");
+    expect(fetch).toHaveBeenCalledWith("/api/brokers?limit=50&offset=0&approved_only=true");
   });
 
   it("shows a user with no grants an empty state, not sample brokers", async () => {
     mockJson(200, { brokers: [], limit: 50, offset: 0 });
     render(<BrokerDiscovery />);
     await waitFor(() =>
-      expect(screen.getByText(/No brokers on this page/i)).toBeInTheDocument(),
+      expect(screen.getByText(/No approved brokers on this page/i)).toBeInTheDocument(),
     );
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });

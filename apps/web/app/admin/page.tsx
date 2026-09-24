@@ -13,6 +13,7 @@ import {
   CreateBrokerForm,
 } from "@/components/admin/BrokerModeAdmin";
 import AdminGate from "@/components/admin/AdminGate";
+import BrokerAccountsAdmin from "@/components/admin/BrokerAccountsAdmin";
 import {
   BrokerCatalogue,
   BrokerCredentialsAdmin,
@@ -74,6 +75,7 @@ export default function AdminPage() {
           Broker bridge
         </SectionHeading>
         <BrokerCatalogue />
+        <BrokerAccountsAdmin />
         <BrokerCredentialsAdmin />
 
         <SectionHeading>Users</SectionHeading>

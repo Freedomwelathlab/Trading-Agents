@@ -111,11 +111,34 @@ LOGIN_ERRORS = {
     ),
     "error.security.invalid-details": (
         "IG ACCEPTED the API key and rejected the username/password for the {host} host. "
-        "IG demo and live are separate logins with separate usernames and passwords, so "
-        "the likeliest cause is a {host} key paired with the other environment's login. "
+        "{host_advice} "
         "IG_USERNAME must be the IG username, not an email address. IG can lock an account "
         "after repeated failed logins, so correct the credentials before testing again "
         "rather than retrying."
+    ),
+}
+
+# Why the DEMO case gets its own advice (2026-09-24). The operator's IG
+# account has ONE web login, protected by 2FA, that opens both the live and
+# the demo platform - and that login is exactly what the demo API rejects.
+# IG's demo REST API does not authenticate with the web login at all: it
+# uses the separate "Web API demo login details" (a username and password
+# the account holder sets on the API-keys page while switched to demo), and
+# no 2FA code is involved on that path. Reported by other IG API users
+# hitting this same 401 with a web login that works in the browser
+# (ig-python/trading-ig#202). So 2FA is not what blocks the demo probe; the
+# web login is simply the wrong pair for that host.
+HOST_ADVICE = {
+    "DEMO": (
+        "The DEMO API does NOT take your IG web login, even when one web login opens "
+        "both live and demo in the browser: it takes the separate 'Web API demo login "
+        "details' - a username and password you set on My IG > Settings > API keys "
+        "while switched to your demo account. Set IG_USERNAME / IG_PASSWORD to those. "
+        "No 2FA code is used on this path, so 2FA is not what is blocking it."
+    ),
+    "LIVE": (
+        "IG demo and live are separate API logins; the likeliest cause is a LIVE key "
+        "paired with the demo API login, or a mistyped live password."
     ),
 }
 
@@ -208,7 +231,9 @@ class IgAdapter:
             # string IG actually sent.
             raise IgError(
                 f"IG refused a login: HTTP {status} {code!r}. "
-                + LOGIN_ERRORS[code].format(host=self.account_type)
+                + LOGIN_ERRORS[code].format(
+                    host=self.account_type, host_advice=HOST_ADVICE.get(self.account_type, "")
+                )
             )
         _check(status, body, what="a login")
         lowered = {k.lower(): v for k, v in headers.items()}

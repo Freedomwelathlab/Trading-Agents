@@ -100,6 +100,44 @@ def _build_kraken(credentials: dict[str, str]) -> object:
     return build_kraken_adapter(credentials)
 
 
+def _build_binance(credentials: dict[str, str]) -> object:
+    """Lazy import, same reasoning as `_build_kraken`."""
+    from apps.api.app.execution.adapters.binance import build_binance_adapter
+
+    return build_binance_adapter(credentials)
+
+
+def _build_longbridge(credentials: dict[str, str]) -> object:
+    """The Longbridge adapter that has existed since Phase 43, reached
+    through the bridge for the first time (Phase 97, D116).
+
+    It is the SAME `LiveBrokerAdapter` the live order path uses - not a
+    second implementation - so a probe that passes here has exercised the
+    code a real order would. Building it here does not put it on the order
+    path: `trades.py` still reaches Longbridge only through
+    `build_live_broker_adapter`, behind TRADING_MODE=live,
+    LIVE_TRADING_ENABLED and the LONGPORT_LIVE_* trio.
+    """
+    from longport.openapi import Config, TradeContext
+
+    from apps.api.app.execution.live_broker import LiveBrokerAdapter
+
+    missing = [f for f in ("app_key", "app_secret", "access_token") if not credentials.get(f)]
+    if missing:
+        raise ValueError(
+            f"NOT_CONFIGURED: Longbridge needs {', '.join(missing)}; refusing to build an "
+            f"adapter that could not authenticate."
+        )
+    config = Config.from_apikey(
+        app_key=credentials["app_key"],
+        app_secret=credentials["app_secret"],
+        access_token=credentials["access_token"],
+    )
+    return LiveBrokerAdapter(
+        TradeContext(config), currency=credentials.get("account_currency") or "USD"
+    )
+
+
 AdapterFactory = Callable[[dict[str, str]], object]
 """Builds a live adapter from decrypted credentials. Typed loosely on
 purpose: the concrete return must satisfy `execution.broker`'s Protocol,
@@ -120,6 +158,16 @@ class BrokerProvider:
     credential_fields: tuple[CredentialField, ...]
     notes: str
     factory: AdapterFactory | None = field(default=None, compare=False)
+    env_aliases: tuple[str, ...] = ()
+    """Other variable PREFIXES this provider's whole credential set may be
+    read under, tried in order after `{PROVIDER}_` (Phase 97, D116).
+
+    Exists for one case: Longbridge's credentials were on Railway as
+    `LONGPORT_APP_KEY` / `LONGPORT_APP_SECRET` / `LONGPORT_ACCESS_TOKEN`
+    since Phase 1, and asking the operator to paste the same three values
+    a second time under `LONGBRIDGE_*` is a chance to paste them wrong. A
+    prefix, not a per-field alias, so the set is still read WHOLE from one
+    family and never assembled half from each (D015)."""
 
     @property
     def adapter_status(self) -> str:
@@ -127,6 +175,12 @@ class BrokerProvider:
         other field is actionable: the capabilities of a catalogued
         provider describe the VENUE, not this platform's ability to reach
         it."""
+        if self.provider == "paper":
+            # Phase 97 (D116): the simulator was reported `catalogued` because
+            # it has no credential factory - the one venue on the list that
+            # ALWAYS works was labelled as the kind that never does. It is
+            # built from its broker row by `execution.persistence` instead.
+            return "built_in"
         return "implemented" if self.factory is not None else "catalogued"
 
 
@@ -183,13 +237,24 @@ PROVIDERS: dict[str, BrokerProvider] = {
                 CredentialKind.SECRET,
                 "LONGPORT_ACCESS_TOKEN. Expires; re-issue and re-save when it does.",
             ),
+            CredentialField(
+                "account_currency",
+                "Account currency",
+                CredentialKind.PUBLIC,
+                "Which balance counts as cash. Default USD.",
+                required=False,
+            ),
         ),
         notes=(
-            "The platform's existing live venue. Equities and options on US and HK markets; "
-            "no futures, no spot FX and no spot crypto - its currency endpoint is a "
-            "conversion-rate lookup, not a tradeable instrument."
+            "The platform's existing live venue. Equities and options on US and HK markets "
+            "from ONE account - an option position is read back from the same account as a "
+            "stock position. No futures, no spot FX and no spot crypto - its currency "
+            "endpoint is a conversion-rate lookup, not a tradeable instrument. The token "
+            "decides the account: a paper-account token reaches the paper account. Reads "
+            "LONGBRIDGE_* or, failing that, the LONGPORT_* trio the market data already uses."
         ),
-        factory=None,
+        factory=_build_longbridge,
+        env_aliases=("LONGPORT",),
     ),
     "ibkr": BrokerProvider(
         provider="ibkr",
@@ -363,13 +428,40 @@ PROVIDERS: dict[str, BrokerProvider] = {
         supports_extended_hours=True,
         supports_fractional=True,
         supports_cancel=True,
-        credential_fields=_api_key_pair("API key", "Secret key"),
-        notes=(
-            "Spot crypto, 24/7. Availability and the permitted endpoints differ by "
-            "jurisdiction (Binance, Binance.US and others are separate venues with separate "
-            "keys); the adapter must be told which host it is talking to rather than assume."
+        credential_fields=(
+            *_api_key_pair("API key", "Secret key"),
+            CredentialField(
+                "environment",
+                "Environment",
+                CredentialKind.PUBLIC,
+                "LIVE (binance.com), US (binance.us) or TESTNET (testnet.binance.vision). "
+                "Separate venues with separate keys, so there is no default.",
+            ),
+            CredentialField(
+                "quote_asset",
+                "Quote asset",
+                CredentialKind.PUBLIC,
+                "Which balance counts as cash. Default USDT (USD on US).",
+                required=False,
+            ),
+            CredentialField(
+                "live_orders",
+                "Place real orders",
+                CredentialKind.PUBLIC,
+                "LIVE/US only. Leave empty to keep the adapter VALIDATE-ONLY (Binance checks "
+                "each order and places nothing). TESTNET always places, since its money is "
+                "not real.",
+                required=False,
+            ),
         ),
-        factory=None,
+        notes=(
+            "Spot crypto, 24/7. binance.com, binance.us and the spot TESTNET are separate "
+            "venues with separate keys; the adapter is told which. Binance HAS a spot "
+            "testnet, unlike Kraken. binance.com refuses requests from the US (HTTP 451) - "
+            "and this API is deployed in a US region - so a LIVE key is expected to be "
+            "refused by location from Railway; the probe says so in those words."
+        ),
+        factory=_build_binance,
     ),
 }
 

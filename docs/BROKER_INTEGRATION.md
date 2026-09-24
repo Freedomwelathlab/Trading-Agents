@@ -258,8 +258,8 @@ will the credential form in the admin UI.
 | --- | --- | --- |
 | Kraken | `KRAKEN_API_KEY`, `KRAKEN_API_SECRET` | `KRAKEN_QUOTE_CURRENCY` (default USD), `KRAKEN_LIVE_ORDERS` |
 | IG | `IG_API_KEY`, `IG_USERNAME`, `IG_PASSWORD`, `IG_ACCOUNT_TYPE` | `IG_DEAL_CURRENCY` (default USD) |
-| Binance | `BINANCE_API_KEY`, `BINANCE_API_SECRET` | — |
-| Longbridge | `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, `LONGBRIDGE_ACCESS_TOKEN` | — |
+| Binance | `BINANCE_API_KEY`, `BINANCE_API_SECRET`, `BINANCE_ENVIRONMENT` (LIVE / US / TESTNET) | `BINANCE_QUOTE_ASSET` (default USDT; USD on US), `BINANCE_LIVE_ORDERS` |
+| Longbridge | `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, `LONGBRIDGE_ACCESS_TOKEN` — or, if none of those is set, the `LONGPORT_*` trio already used for market data | `LONGBRIDGE_ACCOUNT_CURRENCY` (default USD) |
 
 Four things worth knowing before you set them:
 
@@ -270,12 +270,23 @@ Four things worth knowing before you set them:
   defaults to Kraken's own `validate=true` mode, in which `submit_order`
   raises rather than returning a fill. Kraken has no spot sandbox, so this
   is the only rehearsal that exists there.
-* **Binance and Longbridge are catalogued, not implemented.** Setting their
-  variables prepares them and reaches nothing; the connection probe will
-  say `NO_ADAPTER` rather than let it look like a venue failure.
-* **The market-data `LONGPORT_*` trio is a different thing** and is
-  unaffected. It feeds quotes and candles; `LONGBRIDGE_*` would feed the
-  bridge's broker adapter, which does not exist yet.
+* **Binance and Longbridge are implemented since Phase 97 (D116).**
+  Binance needs `BINANCE_ENVIRONMENT` — there is no default, because
+  binance.com, binance.us and the spot testnet are three venues with three
+  sets of keys. **binance.com refuses US traffic with HTTP 451 and this API
+  runs in a US Railway region**, so a LIVE key is expected to be refused by
+  location; use TESTNET to rehearse, or US with a Binance.US key. Orders
+  are placed by default only on TESTNET; LIVE/US validate and place nothing
+  until `BINANCE_LIVE_ORDERS=true`.
+* **Longbridge reads `LONGPORT_*` when `LONGBRIDGE_*` is absent** — the
+  same three values, so they are not pasted twice. The token decides the
+  account: a paper-account token reaches the paper account. The live ORDER
+  path is unchanged and still needs `LONGPORT_LIVE_*` behind
+  `TRADING_MODE=live` and `LIVE_TRADING_ENABLED`.
+* **IG DEMO does not take your IG web login.** The demo REST API uses the
+  separate "Web API demo login details" set on My IG > Settings > API keys
+  while switched to demo; no 2FA code is used on that path. A web login
+  that opens demo in the browser still gets `401 invalid-details` there.
 
 A **half-set** credential is the failure mode to watch for: it looks
 configured in a dashboard and is not. `/health`'s `broker_credentials` key

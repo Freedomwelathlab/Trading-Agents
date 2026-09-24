@@ -137,3 +137,17 @@ def test_selling_what_is_held_is_not_a_short():
     # A negative holding is already short; selling more extends it.
     assert opens_short(Side.SELL, held=D("-5"), quantity=D("1")) is True
     assert opens_short(Side.BUY, held=D("0"), quantity=D("100")) is False
+
+
+def test_paper_is_reported_built_in_not_catalogued():
+    # The one venue that always works was labelled as the kind that never
+    # does (Phase 97, D116).
+    assert get_provider("paper").adapter_status == "built_in"
+
+
+def test_longbridge_and_binance_are_implemented_and_refuse_an_incomplete_set():
+    assert get_provider("longbridge").adapter_status == "implemented"
+    assert get_provider("binance").adapter_status == "implemented"
+    with pytest.raises(ValueError) as err:
+        build_adapter("longbridge", {"app_key": "a"})
+    assert "app_secret" in str(err.value) and "access_token" in str(err.value)

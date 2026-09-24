@@ -59,7 +59,9 @@ export default function BrokerDiscovery() {
     setRows(null);
     setErrorDetail(null);
     setStatus(null);
-    const query = new URLSearchParams({ limit, offset });
+    // Phase 97 (D116): the desk shows only brokers an admin has approved.
+    // Housekeeping (approve / hide / delete) lives in Admin -> Broker accounts.
+    const query = new URLSearchParams({ limit, offset, approved_only: "true" });
     try {
       const res = await fetch(`/api/brokers?${query.toString()}`);
       const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
@@ -99,9 +101,10 @@ export default function BrokerDiscovery() {
       title="My brokers"
       description={
         <>
-          Brokers you hold an access grant for. “Use” fills this broker&rsquo;s id
-          into the trade, agent-trade and portfolio panels below — the backend
-          still re-checks your grant on every request.
+          Approved brokers you hold an access grant for. “Use” fills this
+          broker&rsquo;s id into the trade, agent-trade and portfolio panels below —
+          the backend still re-checks your grant on every request. Admins approve,
+          hide and delete brokers in Admin → Broker accounts.
         </>
       }
       actions={
@@ -147,8 +150,9 @@ export default function BrokerDiscovery() {
 
       {rows && rows.length === 0 && (
         <EmptyNote>
-          No brokers on this page. If you expect access to one, ask an admin for a
-          broker grant.
+          No approved brokers on this page. An admin approves brokers for the
+          desk in Admin → Broker accounts; if you expect access to one, ask an
+          admin for a grant.
         </EmptyNote>
       )}
 

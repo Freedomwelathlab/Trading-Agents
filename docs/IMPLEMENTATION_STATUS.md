@@ -3782,3 +3782,39 @@ read-only by construction, and the OMS still does not route through the
 bridge.
 
 Live ledger: https://claude.ai/artifact/1FWq7Uciqvye2dT1Kzk9EP
+
+
+## Phase 96 — The first real probes
+
+Shipped 2026-09-24. Decision: `docs/DECISIONS.md` D115.
+
+**Kraken proven** against the operator's real account (cash 0.0005 USD,
+holding SOL) after the probe stopped asking the adapter to VALUE the
+account. **IG 401 `invalid-details`** measured to mean "key accepted,
+login rejected" (a fabricated key gets 403 on both hosts). Probe reports
+mask API keys to first4…last4.
+
+## Phase 97 — Every reachable venue answers the Test button; broker housekeeping
+
+Shipped 2026-09-24. Decision: `docs/DECISIONS.md` D116.
+
+* **Longbridge implemented** through the existing `LiveBrokerAdapter`;
+  reads `LONGBRIDGE_*` or the `LONGPORT_*` trio. Verified read-only against
+  the real account: USD 114,284.08, no positions (after asking Longbridge
+  for USD — the account's base currency is HKD).
+* **Binance implemented** (`adapters/binance.py`): LIVE / US / TESTNET,
+  validate-only except on TESTNET, HTTP 451 reported as location.
+* **Paper** reported `built_in`; tests green without credentials; a paper
+  broker row reports its own book.
+* **IG** demo advice names the "Web API demo login details" and rules out
+  2FA.
+* **Broker accounts** admin panel: tick boxes, Approve for desk / Hide /
+  Delete (deleted, archived or refused per broker). The trading desk lists
+  approved brokers only.
+
+**Tests**: `test_binance_adapter.py` (12), `test_broker_admin.py` (5),
+probe +3, env +3, registry +2, IG +2, live broker +1; web
+`BrokerAccountsAdmin.test.tsx` (5).
+
+**Still catalogued**: IBKR, moomoo (gateway-only). No order has been placed
+at any venue.

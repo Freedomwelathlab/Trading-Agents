@@ -386,3 +386,20 @@ def test_the_quote_credentials_are_not_reused_as_trading_credentials():
         longport_access_token="t",
     )
     assert build_live_broker_adapter(settings) is None
+
+
+def test_the_balance_is_requested_in_the_configured_currency():
+    """A Longbridge account with an HKD base returns no USD row unless USD
+    is asked for; asked, it answers in USD itself (Phase 97, D116)."""
+    asked: list[str | None] = []
+
+    class AskingClient(FakeLiveTradeClient):
+        def account_balance(self, currency: str | None = None) -> list[_Balance]:
+            asked.append(currency)
+            if currency == "USD":
+                return [_Balance("USD", "114284.08")]
+            return [_Balance("HKD", "800000")]
+
+    adapter = LiveBrokerAdapter(AskingClient(), currency="USD")
+    assert adapter.cash == Decimal("114284.08")
+    assert asked == ["USD"]

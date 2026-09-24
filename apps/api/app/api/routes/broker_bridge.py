@@ -33,13 +33,14 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.auth.dependencies import get_current_user, require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
-from apps.api.app.db.models import Broker, User
+from apps.api.app.db.models import Broker, BrokerAccount, BrokerPosition, User
 from apps.api.app.execution.credentials import (
     CredentialsNotConfiguredError,
     CredentialStatus,
@@ -303,6 +304,10 @@ class ConnectionCheckResponse(BaseModel):
     reachable: bool
     credential_source: str | None = None
     """`"stored"`, `"environment"`, or null when nothing was found."""
+    credential_variables: str | None = None
+    """For an environment probe, the variable FAMILY that answered -
+    `KRAKEN_*`, or `LONGPORT_*` when Longbridge fell back to the trio the
+    market data uses (Phase 97, D116). Names only, never a value."""
     detail: str
     cash: str | None = None
     """The venue's own cash figure, as a string so no decimal is lost in
@@ -418,6 +423,47 @@ async def _probe(
     )
 
 
+async def _probe_paper_book(
+    session: AsyncSession, broker: Broker, *, settings: Settings
+) -> ConnectionCheckResponse:
+    """A paper broker's "venue" is its own rows. Read them WITHOUT the
+    `FOR UPDATE` lock the trade path takes - this is a report, and holding
+    a trade-serialising lock to produce one would stall a real trade."""
+    account = (
+        await session.execute(select(BrokerAccount).where(BrokerAccount.broker_id == broker.id))
+    ).scalar_one_or_none()
+    symbols = sorted(
+        (
+            await session.execute(
+                select(BrokerPosition.symbol).where(
+                    BrokerPosition.broker_id == broker.id, BrokerPosition.quantity != 0
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if account is None:
+        return ConnectionCheckResponse(
+            broker_id=broker.id,
+            provider="paper",
+            reachable=True,
+            detail=(
+                "Simulator ready. This paper broker has not traded yet; its first order opens "
+                f"a book with {settings.paper_broker_starting_cash} simulated cash. No order "
+                "was placed."
+            ),
+        )
+    return ConnectionCheckResponse(
+        broker_id=broker.id,
+        provider="paper",
+        reachable=True,
+        detail="Simulator ready; read this paper broker's own book. No order was placed.",
+        cash=format(account.cash, "f"),
+        position_symbols=symbols,
+    )
+
+
 @router.post(
     "/providers/{provider}/connection-check", response_model=ConnectionCheckResponse
 )
@@ -448,6 +494,18 @@ async def check_provider_connection(
     except UnknownProviderError as exc:
         raise HTTPException(status_code=404, detail=f"UNKNOWN_PROVIDER: {exc}") from None
 
+    if provider == "paper":
+        return ConnectionCheckResponse(
+            provider=provider,
+            reachable=True,
+            credential_source=None,
+            detail=(
+                "The in-platform simulator needs no credentials and no network, so it is "
+                "always available. Each paper broker keeps its own simulated cash and "
+                "positions - test a paper broker row to see its book. No order was placed."
+            ),
+        )
+
     from_env = load_env_credentials(provider)
     if from_env is None:
         status = env_credential_status(provider)
@@ -461,11 +519,13 @@ async def check_provider_connection(
             ),
         )
 
-    return await _probe(
+    answer = await _probe(
         provider,
         ResolvedCredentials(credentials=from_env, source="environment"),
         broker_id=None,
     )
+    answer.credential_variables = f"{env_credential_status(provider).prefix}_*"
+    return answer
 
 
 @router.post("/{broker_id}/connection-check", response_model=ConnectionCheckResponse)
@@ -492,6 +552,9 @@ async def check_broker_connection(
     """
     broker = await _load_broker(session, broker_id)
     provider = get_provider(broker.provider)
+
+    if broker.provider == "paper":
+        return await _probe_paper_book(session, broker, settings=settings)
 
     try:
         resolved = await resolve_credentials(session, broker, settings=settings)

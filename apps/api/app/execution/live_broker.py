@@ -246,7 +246,16 @@ class LiveBrokerAdapter:
             return
 
         try:
-            balances = self._client.account_balance()
+            # ASK for the configured currency (Phase 97, D116). Measured on a
+            # real Longbridge account whose base currency is HKD:
+            # `account_balance()` returns one HKD row (800,000.00) and no USD
+            # row, so this adapter refused an account that can trade US
+            # stocks; `account_balance("USD")` returns Longbridge's OWN
+            # statement of that cash in USD (114,284.08). That is the venue
+            # converting, not this code substituting another currency's
+            # cash - and if the venue still returns no row in the currency,
+            # the refusal below stands exactly as before.
+            balances = self._client.account_balance(self._currency)
         except Exception as exc:
             raise LiveBrokerError(f"Could not read live account balance: {exc}") from exc
 

@@ -87,7 +87,10 @@ async def test_the_catalogue_resolves_and_never_claims_an_adapter_it_lacks():
         assert name in by_name, name
 
     # Nothing claims an adapter this build does not have.
-    assert all(p["adapter_status"] in ("implemented", "catalogued") for p in body["providers"])
+    assert all(
+        p["adapter_status"] in ("implemented", "catalogued", "built_in")
+        for p in body["providers"]
+    )
     assert "catalogued" in body["note"]
 
     # Capabilities are the venue's, and they differ — a catalogue where

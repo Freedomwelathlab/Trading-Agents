@@ -54,8 +54,16 @@ from apps.api.app.execution.registry import PROVIDERS, get_provider
 
 
 def env_var_name(provider: str, field: str) -> str:
-    """The one rule. See the module docstring for why it is not a table."""
+    """The one rule. See the module docstring for why it is not a table.
+
+    `provider` here is really a PREFIX: a provider's own name, or one of
+    its `env_aliases` (Phase 97, D116) - `LONGPORT` for Longbridge."""
     return f"{provider}_{field}".upper()
+
+
+def _families(provider: str) -> tuple[str, ...]:
+    """The provider's own prefix first, then its aliases, in order."""
+    return (provider, *get_provider(provider).env_aliases)
 
 
 def env_var_names(provider: str) -> dict[str, str]:
@@ -79,6 +87,9 @@ class EnvCredentialStatus:
     complete: bool
     """Every REQUIRED field present. An optional field's absence never
     makes a set incomplete; the adapter's own default covers it."""
+    prefix: str = ""
+    """The variable family the set was read from (`KRAKEN`, `LONGPORT`...),
+    upper-cased, so an operator can see WHICH variables answered."""
 
     @property
     def any_present(self) -> bool:
@@ -102,29 +113,45 @@ def _index(environ: Mapping[str, str] | None) -> dict[str, str]:
     return folded
 
 
-def env_credential_status(
-    provider: str, environ: Mapping[str, str] | None = None
+def _family_status(
+    provider: str, prefix: str, folded: Mapping[str, str]
 ) -> EnvCredentialStatus:
-    """Presence only. Never returns or logs a value."""
     entry = get_provider(provider)
-    folded = _index(environ)
-
     present: list[str] = []
     missing: list[str] = []
     for field in entry.credential_fields:
-        variable = env_var_name(provider, field.name)
+        variable = env_var_name(prefix, field.name)
         value = folded.get(variable.lower())
         if value is not None and value.strip():
             present.append(field.name)
         elif field.required:
             missing.append(variable)
-
     return EnvCredentialStatus(
         provider=provider,
         present=tuple(present),
         missing_required=tuple(missing),
         complete=not missing,
+        prefix=prefix.upper(),
     )
+
+
+def env_credential_status(
+    provider: str, environ: Mapping[str, str] | None = None
+) -> EnvCredentialStatus:
+    """Presence only. Never returns or logs a value.
+
+    With aliases, the FIRST family holding anything decides, complete or
+    not. A half-set `LONGBRIDGE_*` is reported as half-set rather than
+    quietly bypassed for a complete `LONGPORT_*`: the operator started
+    typing the first family, and silently using the other one would leave
+    them believing their new values are live when they are not.
+    """
+    folded = _index(environ)
+    statuses = [_family_status(provider, prefix, folded) for prefix in _families(provider)]
+    for status in statuses:
+        if status.any_present:
+            return status
+    return statuses[0]
 
 
 def load_env_credentials(
@@ -145,7 +172,7 @@ def load_env_credentials(
     folded = _index(environ)
     credentials: dict[str, str] = {}
     for field in entry.credential_fields:
-        value = folded.get(env_var_name(provider, field.name).lower())
+        value = folded.get(env_var_name(status.prefix, field.name).lower())
         if value is not None and value.strip():
             credentials[field.name] = value.strip()
     return credentials
