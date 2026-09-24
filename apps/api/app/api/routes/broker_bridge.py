@@ -325,10 +325,31 @@ class ConnectionCheckResponse(BaseModel):
     """
 
 
+def mask_identifier(value: str) -> str:
+    """First four and last four characters, never more than a quarter of
+    the value. Enough to tell two keys apart at a glance; not enough to be
+    the key. A short value is masked whole rather than half-revealed."""
+    if len(value) < 16:
+        return "\u2022" * 8
+    return f"{value[:4]}\u2026{value[-4:]}"
+
+
 def _public_fields(provider: str, credentials: dict[str, str]) -> list[PublicFieldValue]:
-    """Non-secret fields only, by the registry's own classification."""
+    """Non-secret fields only, by the registry's own classification, with
+    key-like identifiers masked.
+
+    Masked HERE and not in `credential_status`: this is a report - it is
+    read, screenshotted and pasted, and the first production probe put a
+    whole Kraken API key into a screenshot. The credential form is an
+    editor, where the operator is looking at the value they typed in order
+    to change it, and a masked value there would be saved back as the key.
+    """
     return [
-        PublicFieldValue(name=f.name, label=f.label, value=credentials[f.name])
+        PublicFieldValue(
+            name=f.name,
+            label=f.label,
+            value=mask_identifier(credentials[f.name]) if f.masked else credentials[f.name],
+        )
         for f in get_provider(provider).credential_fields
         if f.kind is not CredentialKind.SECRET and f.name in credentials
     ]

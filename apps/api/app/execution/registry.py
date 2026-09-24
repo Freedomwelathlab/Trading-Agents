@@ -70,6 +70,13 @@ class CredentialField:
     kind: CredentialKind
     help: str
     required: bool = True
+    masked: bool = False
+    """For a PUBLIC field that is an identifier of a credential rather than
+    a fact about the account (an API key's public half). Shown MASKED
+    wherever it is reported rather than edited, because a report gets
+    screenshotted and pasted and the whole key is not needed to tell two
+    keys apart. Added after the first production probe printed a full
+    Kraken API key into a screenshot (Phase 96, D115)."""
 
 
 def _build_ig(credentials: dict[str, str]) -> object:
@@ -125,7 +132,9 @@ class BrokerProvider:
 
 def _api_key_pair(key_label: str, secret_label: str) -> tuple[CredentialField, ...]:
     return (
-        CredentialField("api_key", key_label, CredentialKind.PUBLIC, "The key's identifier."),
+        CredentialField(
+            "api_key", key_label, CredentialKind.PUBLIC, "The key's identifier.", masked=True
+        ),
         CredentialField("api_secret", secret_label, CredentialKind.SECRET, "Never shown again."),
     )
 
@@ -162,7 +171,9 @@ PROVIDERS: dict[str, BrokerProvider] = {
         supports_fractional=False,
         supports_cancel=True,
         credential_fields=(
-            CredentialField("app_key", "App key", CredentialKind.PUBLIC, "LONGPORT_APP_KEY."),
+            CredentialField(
+                "app_key", "App key", CredentialKind.PUBLIC, "LONGPORT_APP_KEY.", masked=True
+            ),
             CredentialField(
                 "app_secret", "App secret", CredentialKind.SECRET, "LONGPORT_APP_SECRET."
             ),
@@ -228,7 +239,13 @@ PROVIDERS: dict[str, BrokerProvider] = {
         supports_fractional=True,
         supports_cancel=True,
         credential_fields=(
-            CredentialField("api_key", "API key", CredentialKind.PUBLIC, "From My IG > Settings."),
+            CredentialField(
+                "api_key",
+                "API key",
+                CredentialKind.PUBLIC,
+                "From My IG > Settings.",
+                masked=True,
+            ),
             CredentialField("username", "Username", CredentialKind.PUBLIC, "IG login."),
             CredentialField("password", "Password", CredentialKind.SECRET, "IG password."),
             CredentialField(
@@ -300,7 +317,13 @@ PROVIDERS: dict[str, BrokerProvider] = {
         supports_fractional=True,
         supports_cancel=True,
         credential_fields=(
-            CredentialField("api_key", "API key", CredentialKind.PUBLIC, "The key's identifier."),
+            CredentialField(
+                "api_key",
+                "API key",
+                CredentialKind.PUBLIC,
+                "The key's identifier.",
+                masked=True,
+            ),
             CredentialField(
                 "api_secret", "Private key", CredentialKind.SECRET, "Never shown again."
             ),

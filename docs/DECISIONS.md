@@ -11240,6 +11240,22 @@ it. A generic "check your credentials" sends an operator to re-paste a key
 that was never the problem, so the adapter now says which half failed and
 on which host, keeps IG's own code in the message, and warns that IG can
 lock an account after repeated failed logins.
+**Kraken, proven.** After the fix the production probe reported
+`reachable`, cash `0.0005` (USD, the configured quote currency) and a SOL
+holding. That is the first venue this platform has authenticated against
+with a real account.
+
+**A key-like public field is masked in a report.** That same successful
+probe printed the whole Kraken API key, because D114's `account` list
+echoed PUBLIC fields verbatim and the registry classes an API key's public
+half as PUBLIC. The classification is right — the key cannot sign a request
+without the private key, which was never shown — but a probe result is a
+REPORT: it is read, screenshotted and pasted, and the whole key is not
+needed to tell two keys apart. `CredentialField.masked` marks the
+identifiers (every `api_key`, Longbridge's `app_key`), and the probe shows
+them as first-four…last-four. The credential FORM is unchanged, on purpose:
+it is an editor, and a masked value in an edit box would be saved back as
+the key.
 Status: Implemented, tested (`test_ig_adapter.py` +3,
-`test_broker_connection_check.py` +1). No order has been placed at any
+`test_broker_connection_check.py` +3). No order has been placed at any
 venue.

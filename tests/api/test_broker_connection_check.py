@@ -408,3 +408,42 @@ async def test_the_probe_does_not_need_a_price_for_every_asset_held(monkeypatch)
     assert body["reachable"] is True, body["detail"]
     assert body["cash"] == "12.34"
     assert body["position_symbols"] == ["SOL"]
+
+
+@pytest.mark.asyncio
+async def test_the_probe_masks_an_api_key_it_reports(monkeypatch):
+    """A report gets screenshotted. The first production probe printed a
+    whole Kraken API key; the key's first and last four characters are
+    enough to tell two keys apart."""
+    full_key = "HxEBabcdefghijklmnopqrstuvwxyz0123456789ZZZZ"
+    monkeypatch.setenv("KRAKEN_API_KEY", full_key)
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+
+    class Reachable:
+        @property
+        def cash(self):
+            return Decimal("1")
+
+        @property
+        def positions(self):
+            return {}
+
+    monkeypatch.setattr(BUILD_ADAPTER, lambda provider, credentials: Reachable())
+
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            r = await client.post(
+                "/brokers/providers/kraken/connection-check", headers=_h(token)
+            )
+
+    assert full_key not in r.text
+    account = {f["name"]: f["value"] for f in r.json()["account"]}
+    assert account["api_key"] == "HxEB\u2026ZZZZ"
+
+
+def test_a_short_identifier_is_masked_whole_rather_than_half_revealed():
+    from apps.api.app.api.routes.broker_bridge import mask_identifier
+
+    assert mask_identifier("abc123") == "\u2022" * 8
+    assert "abc" not in mask_identifier("abc123")
