@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { ScoredSignal } from "@/components/PriceChart";
 import { EmptyNote, Pill } from "@/components/ui/primitives";
+import type { SignalFilterValue } from "@/components/markets/SignalFilter";
 
 /**
  * The signal-score table that sits above the chart (Phase 85, D102).
@@ -28,10 +29,18 @@ export default function SignalScoreTable({
   signals,
   note,
   unavailable,
+  found,
+  maxScore = null,
+  maxConfidence = null,
+  filter,
 }: {
   signals: ScoredSignal[];
   note?: string;
   unavailable?: string | null;
+  found?: number;
+  maxScore?: number | null;
+  maxConfidence?: string | null;
+  filter?: SignalFilterValue;
 }) {
   const [open, setOpen] = useState<number | null>(null);
 
@@ -39,6 +48,19 @@ export default function SignalScoreTable({
     return <EmptyNote>{unavailable}</EmptyNote>;
   }
   if (signals.length === 0) {
+    if (found && filter) {
+      // Phase 98: say WHY the chart is empty. "Nothing met your bar" and
+      // "nothing happened" look identical on a chart and are opposites.
+      return (
+        <EmptyNote>
+          No signal meets your filter (score {filter.scores.join(",") || "none"}, confidence ≥
+          {filter.minConfidence}%). The detectors found {found} signal(s) in these sessions; the
+          highest score was {maxScore ?? "—"} and the highest measured confidence{" "}
+          {maxConfidence !== null ? `${Number(maxConfidence).toFixed(1)}%` : "—"}. Loosen the
+          filter to see them.
+        </EmptyNote>
+      );
+    }
     return <EmptyNote>No setup fired on these sessions.</EmptyNote>;
   }
 
@@ -58,6 +80,7 @@ export default function SignalScoreTable({
               <th className="px-2 py-1 font-semibold">entry</th>
               <th className="px-2 py-1 font-semibold">stop</th>
               <th className="px-2 py-1 font-semibold">score</th>
+              <th className="px-2 py-1 font-semibold">confidence</th>
             </tr>
           </thead>
           <tbody>
@@ -92,6 +115,12 @@ export default function SignalScoreTable({
                 <td className="px-2 py-1">
                   <Pill tone={scoreTone(s.score)}>{s.score}</Pill>
                 </td>
+                <td
+                  className="px-2 py-1 tabular-nums"
+                  title={`measured on ${s.confidence_sample ?? 0} resolved signals`}
+                >
+                  {s.confidence != null ? `${Number(s.confidence).toFixed(1)}%` : "—"}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -108,6 +137,10 @@ export default function SignalScoreTable({
               {rows[open].side === "B" ? "BUY" : "SELL"}
             </span>{" "}
             · {rows[open].setup} · score {rows[open].score} ·{" "}
+            {rows[open].confidence != null
+              ? `${Number(rows[open].confidence).toFixed(1)}% won (n=${rows[open].confidence_sample ?? 0}) · `
+              : "confidence not measured (too few) · "}
+            {rows[open].phase && rows[open].phase !== "regular" ? `${rows[open].phase} · ` : ""}
             <span className="font-mono">
               entry {Number(rows[open].price).toFixed(2)} → stop{" "}
               {Number(rows[open].stop_price).toFixed(2)}

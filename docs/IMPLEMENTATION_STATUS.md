@@ -3818,3 +3818,24 @@ probe +3, env +3, registry +2, IG +2, live broker +1; web
 
 **Still catalogued**: IBKR, moomoo (gateway-only). No order has been placed
 at any venue.
+
+
+## Phase 98 — IG suspension guard, option chains via Cboe, whole-day signals with measured confidence
+
+Shipped 2026-09-26. Decision: `docs/DECISIONS.md` D117.
+
+* IG `client-suspended` translated; the probe will not re-send a refused
+  credential set for 15 minutes (fingerprinted; `force=true` overrides).
+* `marketdata/providers/cboe.py`: Cboe delayed chains + a fallback that
+  switches from Longbridge on `301604`; expired expiries dropped.
+* `backtesting/signal_calibration.py`: chart signals scan pre-market to
+  after-hours; each carries a measured confidence (+1R before stop, per
+  setup/direction/score, n >= 10). `GET /market-data/{symbol}/signals`
+  gains `scores`, `min_confidence`, `market_type` and reports `found`,
+  `max_score_found`, `max_confidence_found`.
+* Markets page: **Signals** filter beside Indicators (score tick boxes,
+  confidence floor; defaults 7+ / 70%), confidence column, and an empty
+  state that says what was filtered out.
+
+**Tests**: cboe 10, calibration 6, IG +1, probe cooldown +1; web
+SignalFilter 5.

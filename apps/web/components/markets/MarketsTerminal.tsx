@@ -5,6 +5,10 @@ import { classifyWithAbsences, useKeyedFetch } from "@/lib/useKeyedFetch";
 import { PriceChart, type PriceBar, type ScoredSignal } from "@/components/PriceChart";
 import SignalScoreTable from "@/components/markets/SignalScoreTable";
 import IndicatorsMenu from "@/components/markets/IndicatorsMenu";
+import SignalFilter, {
+  DEFAULT_SIGNAL_FILTER,
+  type SignalFilterValue,
+} from "@/components/markets/SignalFilter";
 import { DEFAULT_INDICATORS, type IndicatorSettings } from "@/lib/indicators";
 import OrderBookPanel from "@/components/markets/OrderBookPanel";
 import ExtendedHoursPanel from "@/components/markets/ExtendedHoursPanel";
@@ -155,11 +159,22 @@ export default function MarketsTerminal({
   // the single answer to "what is on this chart".
   const [indicators, setIndicators] = useState<IndicatorSettings>(DEFAULT_INDICATORS);
   const showSignals = indicators.signals.on;
+  // Phase 98 (D117): markers only when they meet the operator's bar -
+  // score 7+ and measured confidence 70%+ by default, adjustable beside
+  // the Indicators tab. The backend applies it and still reports how many
+  // fired before filtering.
+  const [signalFilter, setSignalFilter] = useState<SignalFilterValue>(DEFAULT_SIGNAL_FILTER);
   const signalsUrl = useMemo(
     () =>
       `/api/market-data/${encodeURIComponent(symbol)}/signals?` +
-      new URLSearchParams({ bar_interval: interval, days: String(SIGNAL_DAYS) }),
-    [symbol, interval],
+      new URLSearchParams({
+        bar_interval: interval,
+        days: String(SIGNAL_DAYS),
+        market_type: "auto",
+        scores: signalFilter.scores.length ? signalFilter.scores.join(",") : "0",
+        min_confidence: String(signalFilter.minConfidence),
+      }),
+    [symbol, interval, signalFilter],
   );
   const classifySignals = useMemo(
     () =>
@@ -172,8 +187,11 @@ export default function MarketsTerminal({
   const { data: signalsPayload, unavailable: signalsUnavailable } = useKeyedFetch<{
     signals: ScoredSignal[];
     note: string;
+    found?: number;
+    max_score_found?: number | null;
+    max_confidence_found?: string | null;
   }>({
-    key: `sig:${symbol}|${interval}`,
+    key: `sig:${symbol}|${interval}|${signalFilter.scores.join(",")}|${signalFilter.minConfidence}`,
     url: signalsUrl,
     classify: classifySignals,
     enabled: showSignals && interval !== "1d",
@@ -265,6 +283,9 @@ export default function MarketsTerminal({
                 </button>
               ))}
               <IndicatorsMenu value={indicators} onChange={setIndicators} />
+              {showSignals ? (
+                <SignalFilter value={signalFilter} onChange={setSignalFilter} />
+              ) : null}
             </div>
           }
         >
@@ -291,6 +312,10 @@ export default function MarketsTerminal({
                   signals={chartSignals}
                   note={signalsPayload?.note}
                   unavailable={signalsUnavailable}
+                  found={signalsPayload?.found}
+                  maxScore={signalsPayload?.max_score_found ?? null}
+                  maxConfidence={signalsPayload?.max_confidence_found ?? null}
+                  filter={signalFilter}
                 />
               ) : null}
               <PriceChart
@@ -302,8 +327,9 @@ export default function MarketsTerminal({
               />
               {showSignals ? (
                 <p className="text-xs text-ink-faint">
-                  {chartSignals.length} marker(s) over the last {SIGNAL_DAYS} sessions · hover a
-                  row above for its score and evidence
+                  {chartSignals.length} marker(s) shown of {signalsPayload?.found ?? 0} found over
+                  the last {SIGNAL_DAYS} sessions, pre-market to after-hours · hover a row above
+                  for its score, confidence and evidence
                 </p>
               ) : null}
             </div>

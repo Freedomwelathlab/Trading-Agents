@@ -4,6 +4,7 @@ preview the price that submitting without one would use."""
 
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +51,7 @@ from apps.api.app.marketdata.sessions import (
     session_vwap,
 )
 from apps.api.app.marketdata.store import MarketDataStore
+from apps.api.app.marketdata.structure import Direction
 from apps.api.app.options.pricing import OptionRight
 
 router = APIRouter(prefix="/market-data", tags=["market-data"])
@@ -491,6 +493,19 @@ SIGNAL_NOTE = (
 )
 
 
+_CALIBRATION_CACHE: dict[tuple[object, ...], Any] = {}
+"""In-process cache for the chart's two scans (see the route). Capped so an
+unusual mix of symbols cannot grow it without bound."""
+_CALIBRATION_CACHE_MAX = 32
+CALIBRATION_SESSIONS = 60
+
+
+def _remember(key: tuple[object, ...], value: Any) -> None:
+    if len(_CALIBRATION_CACHE) >= _CALIBRATION_CACHE_MAX:
+        _CALIBRATION_CACHE.pop(next(iter(_CALIBRATION_CACHE)))
+    _CALIBRATION_CACHE[key] = value
+
+
 @router.get("/{symbol}/signals", response_model=ChartSignalsResponse)
 async def get_chart_signals(
     symbol: str,
@@ -498,25 +513,32 @@ async def get_chart_signals(
     days: int = Query(5, ge=1, le=60),
     setups: str | None = Query(None, description="Comma-separated; default is every setup."),
     min_score: int = Query(0, ge=0, le=10),
+    scores: str | None = Query(
+        None, description="Comma-separated scores to show, e.g. 5,6,7. Default: all."
+    ),
+    min_confidence: Decimal = Query(Decimal("0"), ge=0, le=100),
+    market_type: Literal["auto", "regular"] = Query("auto"),
     session: AsyncSession = Depends(get_session),
     _current_user: User = Depends(get_current_user),
 ) -> ChartSignalsResponse:
     """Replay the intraday detectors over the stored bars and return the
-    B/S markers with their scores (Phase 85, D102).
+    B/S markers with their scores and a MEASURED confidence (Phases 85, 98).
 
-    The context handed to each detector is built exactly as
-    `intraday_engine.run_intraday_backtest` builds it — same session
-    levels, same swings, same VWAP, same indicator windows — so a marker
-    drawn here is a signal the backtest and the bot would have seen, not a
-    second opinion computed differently.
+    `market_type=auto` (the default since Phase 98) scans the whole
+    extended day, exactly as the bot's `auto` scanner does; `regular` is
+    the backtest's regular-session view. Each marker carries the win rate
+    of its own (setup, direction, score) bucket over the last
+    `CALIBRATION_SESSIONS` sessions - see
+    `apps/api/app/backtesting/signal_calibration.py` for how a win is
+    defined. `min_score`, `scores` and `min_confidence` filter what is
+    returned; `found` still reports how many fired before filtering.
     """
-    from apps.api.app.autotrade.scanner import MIN_SESSION_BARS, _indicator
-    from apps.api.app.backtesting.setups import SETUPS, BarContext
-    from apps.api.app.marketdata.indicators import atr as _atr
-    from apps.api.app.marketdata.indicators import ema as _ema
-    from apps.api.app.marketdata.indicators import rsi as _rsi
-    from apps.api.app.marketdata.sessions import is_regular_hours
-    from apps.api.app.marketdata.structure import Direction, find_swings
+    from apps.api.app.backtesting.setups import SETUPS
+    from apps.api.app.backtesting.signal_calibration import (
+        bucket_key,
+        calibrate,
+        scan_signals,
+    )
 
     names = (
         [n.strip() for n in setups.split(",") if n.strip() in SETUPS]
@@ -528,13 +550,22 @@ async def get_chart_signals(
             status_code=400,
             detail=f"UNKNOWN_SETUP: known setups are {sorted(SETUPS)}.",
         )
+    allowed_scores: set[int] | None = None
+    if scores:
+        try:
+            allowed_scores = {int(x) for x in scores.split(",") if x.strip()}
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="scores must be comma-separated integers."
+            ) from None
 
     store = MarketDataStore(session)
     end = date.today()
+    sessions_needed = max(days, CALIBRATION_SESSIONS)
     bars = await store.get_bars(
         symbol,
         bar_interval=bar_interval,
-        start_date=end - timedelta(days=days * 2 + 5),
+        start_date=end - timedelta(days=sessions_needed * 2 + 5),
         end_date=end,
     )
     if not bars:
@@ -546,52 +577,80 @@ async def get_chart_signals(
             ),
         )
 
-    levels_by_day = build_session_levels(bars)
     by_day = group_by_session(bars)
-    days_to_scan = sorted(by_day)[-days:]
+    levels_by_day = build_session_levels(bars)
 
+    def vwap_for_day(day_bars: list[Any]) -> dict[Any, Any]:
+        return {p.ts: p for p in session_vwap(day_bars)}
+
+    # Two caches, because the two scans change at different speeds. The
+    # CALIBRATION (60 sessions) moves once a day, so it is keyed on the
+    # session date and costs one full replay per symbol per day. The
+    # VISIBLE window (a few sessions) must reflect the newest bar, so it is
+    # keyed on the last bar's timestamp - and it is small.
+    today = session_date(bars[-1].ts)
+    calib_key = ("calib", symbol, bar_interval, market_type, tuple(names), today)
+    buckets = _CALIBRATION_CACHE.get(calib_key)
+    if buckets is None:
+        calib_signals, _ = scan_signals(
+            bars,
+            names=names,
+            sessions=CALIBRATION_SESSIONS,
+            market_type=market_type,
+            levels_by_day=levels_by_day,
+            by_day=by_day,
+            vwap_for_day=vwap_for_day,
+        )
+        buckets = dict(calibrate(calib_signals))
+        _remember(calib_key, buckets)
+
+    view_key = ("view", symbol, bar_interval, market_type, tuple(names), bars[-1].ts, days)
+    view = _CALIBRATION_CACHE.get(view_key)
+    if view is None:
+        view = scan_signals(
+            bars,
+            names=names,
+            sessions=days,
+            market_type=market_type,
+            levels_by_day=levels_by_day,
+            by_day=by_day,
+            vwap_for_day=vwap_for_day,
+        )
+        _remember(view_key, view)
+    visible_signals, scanned = view
     out: list[ChartSignal] = []
-    scanned = 0
-    for day in days_to_scan:
-        day_bars = by_day[day]
-        regular = [b for b in day_bars if is_regular_hours(b.ts)]
-        levels = levels_by_day.get(day)
-        if levels is None or len(regular) < MIN_SESSION_BARS:
+    found = 0
+    max_score: int | None = None
+    max_conf: Decimal | None = None
+    for item in visible_signals:
+        signal = item.signal
+        bucket = buckets.get(bucket_key(signal))
+        confidence = bucket.win_rate if bucket is not None else None
+        found += 1
+        max_score = signal.score if max_score is None else max(max_score, signal.score)
+        if confidence is not None:
+            max_conf = confidence if max_conf is None else max(max_conf, confidence)
+        if signal.score < min_score:
             continue
-        vwap_points = {p.ts: p for p in session_vwap(day_bars)}
-        swings = find_swings(regular, strength=3)
-        scanned += len(regular)
-
-        for i in range(len(regular)):
-            window = regular[max(0, i - 80) : i + 1]
-            closes = [b.close for b in window]
-            ctx = BarContext(
-                bars=regular[: i + 1],
-                index=i,
-                levels=levels,
-                swings=swings,
-                vwap=vwap_points.get(regular[i].ts),
-                atr=_indicator(_atr, window, 14),
-                rsi=_indicator(_rsi, closes, 14),
-                ema_fast=_indicator(_ema, closes, 9),
-                ema_slow=_indicator(_ema, closes, 21),
+        if allowed_scores is not None and signal.score not in allowed_scores:
+            continue
+        if min_confidence > 0 and (confidence is None or confidence < min_confidence):
+            continue
+        out.append(
+            ChartSignal(
+                ts=item.ts,
+                setup=signal.setup_name,
+                side="B" if signal.direction is Direction.LONG else "S",
+                direction=signal.direction.value,
+                price=signal.entry_price,
+                stop_price=signal.stop_price,
+                score=signal.score,
+                evidence=dict(signal.evidence),
+                phase=item.phase,
+                confidence=confidence,
+                confidence_sample=bucket.resolved if bucket is not None else 0,
             )
-            for name in names:
-                signal = SETUPS[name](ctx)
-                if signal is None or signal.score < min_score:
-                    continue
-                out.append(
-                    ChartSignal(
-                        ts=regular[i].ts,
-                        setup=signal.setup_name,
-                        side="B" if signal.direction is Direction.LONG else "S",
-                        direction=signal.direction.value,
-                        price=signal.entry_price,
-                        stop_price=signal.stop_price,
-                        score=signal.score,
-                        evidence=dict(signal.evidence),
-                    )
-                )
+        )
 
     return ChartSignalsResponse(
         symbol=symbol,
@@ -599,6 +658,11 @@ async def get_chart_signals(
         setups=names,
         signals=out,
         bars_scanned=scanned,
-        sessions=len(days_to_scan),
+        sessions=days,
         note=SIGNAL_NOTE,
+        market_type=market_type,
+        calibration_sessions=CALIBRATION_SESSIONS,
+        found=found,
+        max_score_found=max_score,
+        max_confidence_found=max_conf,
     )

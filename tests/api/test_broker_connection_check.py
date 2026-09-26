@@ -498,3 +498,45 @@ async def test_an_environment_probe_names_the_variable_family_that_answered(monk
     assert body["reachable"] is True
     assert body["credential_source"] == "environment"
     assert body["credential_variables"] == "LONGPORT_*"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_login_is_not_resent_until_the_credentials_change(monkeypatch):
+    """Phase 98 (D117): IG suspended the demo key after repeated refused
+    logins. The same refused set is not sent again; a changed set is."""
+    from apps.api.app.api.routes import broker_bridge
+    from apps.api.app.execution.broker import VenueLoginRefusedError
+
+    broker_bridge._login_refusals.clear()
+    monkeypatch.setenv("KRAKEN_API_KEY", "k-cooldown")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "s")
+    attempts: list[str] = []
+
+    class Refusing:
+        @property
+        def cash(self):
+            attempts.append("login")
+            raise VenueLoginRefusedError("error.security.invalid-details")
+
+        @property
+        def positions(self):
+            return {}
+
+    monkeypatch.setattr(BUILD_ADAPTER, lambda provider, credentials: Refusing())
+
+    async with db_session() as session, admin_user(session) as (_uid, email):
+        async with api_client() as client:
+            token = await _get_token(client, email)
+            url = "/brokers/providers/kraken/connection-check"
+            first = (await client.post(url, headers=_h(token))).json()
+            second = (await client.post(url, headers=_h(token))).json()
+            forced = (await client.post(url + "?force=true", headers=_h(token))).json()
+            monkeypatch.setenv("KRAKEN_API_KEY", "k-new")
+            changed = (await client.post(url, headers=_h(token))).json()
+
+    assert "invalid-details" in first["detail"]
+    assert second["detail"].startswith("NOT_RETRIED")
+    assert "invalid-details" in forced["detail"]
+    assert "invalid-details" in changed["detail"]
+    assert len(attempts) == 3  # first, forced, changed - never the blocked retry
+    broker_bridge._login_refusals.clear()

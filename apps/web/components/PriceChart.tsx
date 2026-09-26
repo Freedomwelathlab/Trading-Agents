@@ -235,6 +235,11 @@ export type ScoredSignal = {
   stop_price: string;
   score: number;
   evidence: Record<string, string>;
+  /** Measured win rate (%) of this kind of signal, or null when too few
+   *  resolved (Phase 98). */
+  confidence?: string | null;
+  confidence_sample?: number;
+  phase?: string;
 };
 
 /**

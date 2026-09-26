@@ -44,6 +44,7 @@ from apps.api.app.execution.broker import (
     Fill,
     OrderNotConfirmedError,
     OrderRequest,
+    VenueLoginRefusedError,
 )
 from apps.api.app.risk.models import AccountState, Side
 
@@ -58,6 +59,13 @@ class IgError(Exception):
     structured `errorCode` (e.g. `error.security.api-key-missing`), which
     is surfaced verbatim — it is about the request, never the secret."""
 
+
+class IgLoginRefusedError(IgError, VenueLoginRefusedError):
+    """IG refused the LOGIN itself (bad key, bad username/password, or a
+    suspended client). Its own type so the connection probe can stop
+    re-trying: every further attempt with the same credentials counts
+    against the account and can turn a refusal into a suspension, which is
+    exactly how `client-suspended` was reached on 2026-09-25."""
 
 class IgOrderNotConfirmedError(IgError, OrderNotConfirmedError):
     """IG accepted a deal reference and has not confirmed the deal.
@@ -108,6 +116,15 @@ LOGIN_ERRORS = {
         "IG does not recognise this API key on the {host} host. Keys are issued per "
         "environment - a live key is refused by the demo host and the other way round - so "
         "check IG_ACCOUNT_TYPE matches the environment the key was created in."
+    ),
+    "error.security.client-suspended": (
+        "IG has SUSPENDED this API client on the {host} host. This is not your web login - "
+        "the browser can still sign in while the API key is suspended. It is what IG does "
+        "after repeated failed API logins (this key was refused with invalid-details "
+        "earlier). Stop testing it: in My IG (switched to {host}) open Settings > API keys and "
+        "check the key's status - if it shows disabled or suspended, generate a NEW API key "
+        "and put it in IG_API_KEY, or ask IG's helpdesk to lift the suspension. Trying again "
+        "with the suspended key only extends it."
     ),
     "error.security.invalid-details": (
         "IG ACCEPTED the API key and rejected the username/password for the {host} host. "
@@ -229,7 +246,7 @@ class IgAdapter:
             # The venue's own code stays in the message: the translation
             # is guidance, and an operator searching IG's docs needs the
             # string IG actually sent.
-            raise IgError(
+            raise IgLoginRefusedError(
                 f"IG refused a login: HTTP {status} {code!r}. "
                 + LOGIN_ERRORS[code].format(
                     host=self.account_type, host_advice=HOST_ADVICE.get(self.account_type, "")

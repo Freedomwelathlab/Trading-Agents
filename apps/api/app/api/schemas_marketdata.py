@@ -131,6 +131,16 @@ class ChartSignal(BaseModel):
     stop_price: Decimal
     score: int
     evidence: dict[str, str]
+    phase: str = "regular"
+    """Session phase the marker fired in: `pre_market`, `regular` or
+    `after_hours` (Phase 98 - the chart now scans the whole day)."""
+    confidence: Decimal | None = None
+    """Measured win rate (%) of THIS kind of signal - same setup, direction
+    and score - over the calibration window: a win is +1R before the stop,
+    within the session. None when fewer than 10 such signals resolved;
+    never a figure from a handful of trades."""
+    confidence_sample: int = 0
+    """How many resolved signals `confidence` was measured on."""
 
 
 class ChartSignalsResponse(BaseModel):
@@ -144,6 +154,15 @@ class ChartSignalsResponse(BaseModel):
     note: str
     """Stated on every response: these markers are measurement, not
     advice. See docs/RESEARCH_5M.md."""
+    market_type: str = "auto"
+    calibration_sessions: int = 0
+    """Sessions the confidence figures were measured over."""
+    found: int = 0
+    """Signals the detectors produced in the window BEFORE the score and
+    confidence filters - so an empty chart says whether nothing fired or
+    everything was filtered out."""
+    max_score_found: int | None = None
+    max_confidence_found: Decimal | None = None
 
 
 class PhaseMoveResponse(BaseModel):

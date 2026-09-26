@@ -66,6 +66,17 @@ class UnconfirmedSubmissionContext(BaseModel):
     portfolio_requested_quantity: Decimal | None = None
 
 
+class VenueLoginRefusedError(Exception):
+    """A venue refused to AUTHENTICATE the credentials (Phase 98, D117).
+
+    Distinct from every other venue error because repeating it has a cost
+    the others do not: brokers count failed API logins and suspend the
+    client after enough of them. IG did exactly that to this platform's
+    demo key on 2026-09-25 (`error.security.client-suspended`) after a run
+    of `invalid-details` refusals. The connection probe therefore stops
+    retrying a set that raised this until an operator forces it."""
+
+
 class OrderNotConfirmedError(Exception):
     """A broker ACCEPTED a real order but has not (yet) reported executing
     any of it, so no `Fill` can honestly be returned.

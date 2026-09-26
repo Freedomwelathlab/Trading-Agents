@@ -28,8 +28,9 @@ the operator's own action, performed here, through this route.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -41,6 +42,7 @@ from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import Settings, get_settings
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import Broker, BrokerAccount, BrokerPosition, User
+from apps.api.app.execution.broker import VenueLoginRefusedError
 from apps.api.app.execution.credentials import (
     CredentialsNotConfiguredError,
     CredentialStatus,
@@ -360,11 +362,33 @@ def _public_fields(provider: str, credentials: dict[str, str]) -> list[PublicFie
     ]
 
 
+LOGIN_REFUSAL_COOLDOWN = timedelta(minutes=15)
+"""How long the probe declines to re-send a credential set a venue just
+refused to authenticate (Phase 98, D117). Brokers count failed API logins
+and suspend the client after enough of them - IG suspended this
+platform's demo key on 2026-09-25 after repeated `invalid-details` tests."""
+
+_login_refusals: dict[tuple[str, str], tuple[datetime, str]] = {}
+"""(provider, credential fingerprint) -> (refused at, the venue's words).
+
+Keyed on a digest of the WHOLE credential set, so changing any value - a
+new API key, a corrected password - is a different key and is tested
+immediately. Only re-sending the exact set that was just refused waits.
+In-process memory on purpose: it protects the account from a burst of
+button presses, and a restart forgetting it costs one extra attempt."""
+
+
+def _fingerprint(credentials: dict[str, str]) -> str:
+    material = "".join(f"{k}={credentials[k]}" for k in sorted(credentials))
+    return hashlib.sha256(material.encode()).hexdigest()[:24]
+
+
 async def _probe(
     provider_name: str,
     resolved: ResolvedCredentials,
     *,
     broker_id: uuid.UUID | None,
+    force: bool = False,
 ) -> ConnectionCheckResponse:
     """Build the adapter and read the account. Shared by both probes so
     the two cannot drift into disagreeing about what a refusal looks
@@ -381,6 +405,22 @@ async def _probe(
             detail=detail,
             account=account,
             **extra,  # type: ignore[arg-type]
+        )
+
+    key = (provider_name, _fingerprint(resolved.credentials))
+    refused = _login_refusals.get(key)
+    now = datetime.now(UTC)
+    if refused is not None and not force and now - refused[0] < LOGIN_REFUSAL_COOLDOWN:
+        retry_at = refused[0] + LOGIN_REFUSAL_COOLDOWN
+        return answer(
+            reachable=False,
+            detail=(
+                f"NOT_RETRIED: {provider.display_name} refused these exact credentials at "
+                f"{refused[0]:%H:%M} UTC and this probe will not send them again before "
+                f"{retry_at:%H:%M} UTC, because repeated failed logins get an API client "
+                f"suspended. Change the credentials to test immediately. Last refusal: "
+                f"{refused[1]}"
+            ),
         )
 
     try:
@@ -409,8 +449,12 @@ async def _probe(
 
     try:
         cash, symbols = await asyncio.to_thread(_read)
+    except VenueLoginRefusedError as exc:
+        _login_refusals[key] = (datetime.now(UTC), str(exc))
+        return answer(reachable=False, detail=f"{type(exc).__name__}: {exc}")
     except Exception as exc:  # noqa: BLE001 - the venue's refusal IS the finding
         return answer(reachable=False, detail=f"{type(exc).__name__}: {exc}")
+    _login_refusals.pop(key, None)
 
     return answer(
         reachable=True,
@@ -469,6 +513,7 @@ async def _probe_paper_book(
 )
 async def check_provider_connection(
     provider: str,
+    force: bool = False,
     _current_user: User = Depends(require_permission(Permission.ADMIN)),
 ) -> ConnectionCheckResponse:
     """Probe a venue straight from the ENVIRONMENT, with no broker row.
@@ -523,6 +568,7 @@ async def check_provider_connection(
         provider,
         ResolvedCredentials(credentials=from_env, source="environment"),
         broker_id=None,
+        force=force,
     )
     answer.credential_variables = f"{env_credential_status(provider).prefix}_*"
     return answer
@@ -531,6 +577,7 @@ async def check_provider_connection(
 @router.post("/{broker_id}/connection-check", response_model=ConnectionCheckResponse)
 async def check_broker_connection(
     broker_id: uuid.UUID,
+    force: bool = False,
     _current_user: User = Depends(require_permission(Permission.ADMIN)),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
@@ -579,4 +626,4 @@ async def check_broker_connection(
             ),
         )
 
-    return await _probe(broker.provider, resolved, broker_id=broker.id)
+    return await _probe(broker.provider, resolved, broker_id=broker.id, force=force)

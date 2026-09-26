@@ -11326,3 +11326,56 @@ offers.
 **Still not reachable, and why.** IBKR and moomoo need a gateway on the
 operator's own machine (D109); nothing on Railway can reach it.
 Status: Implemented, tested. No order has been placed at any venue.
+
+## D117 — Suspended IG client, option chains without an entitlement, and signals over the whole day with a measured confidence (Phase 98)
+Date: 2026-09-26
+
+**IG: `error.security.client-suspended`.** After the operator set the Web
+API demo login, IG answered 401 `client-suspended` — IG has suspended the
+API CLIENT (the key), not the web login, which still works in the
+browser. It followed a run of `invalid-details` refusals from earlier
+Test presses. Two changes: the code is translated (generate a new demo
+API key or ask IG to lift it; retrying only extends it), and the
+connection probe now REMEMBERS a login refusal: the same credential set
+(fingerprinted, never stored) is not re-sent for 15 minutes unless
+`force=true`. Changing any value tests immediately. `VenueLoginRefusedError`
+at the broker port marks the case, so any venue adapter can opt in.
+
+**Options: Longbridge can list, not quote.** `option_quote` fails with
+`301604 no quote access`; the SDK's entitlement table says US options
+OpenAPI quotes must be bought in Longbridge's Quotes Store. Also found:
+the expiry list still began with 2026-09-23 on 09-26, and the desk
+defaulted to that dead expiry. Now: `FallbackOptionChainProvider` asks
+Longbridge first and, on an entitlement refusal, switches to Cboe's
+public delayed feed (~15 min, bid/ask/IV/Greeks/OI for every contract in
+one ~800 KB document, cached 60 s) for the rest of the process; past
+expiries are dropped by both. Every Cboe chain is labelled
+`cboe-delayed`. Rejected: synthesising quotes from Black-Scholes when the
+vendor refused — a modelled price is not a quote.
+
+**Signals: half the day was never scanned.** The chart endpoint replayed
+the detectors over regular-hours bars only while the chart drew
+pre-market and after-hours bars. It now scans the whole extended day by
+default (`market_type=auto`, as the bot's `auto` scanner has since
+Phase 88). Measured on TQQQ 5m over 5 sessions: 719 signals, 192
+pre-market and 174 after-hours that were previously invisible.
+
+**Signals: a score is not a probability.** The operator asked for markers
+only at score >= 7 and >= 70% confidence of a winning trade. Scores are
+evidence points and top out at 6 on TQQQ; confidence did not exist. It is
+now MEASURED: each signal over the last 60 sessions is followed forward,
+a win is +1R before the stop within the session (a bar spanning both is a
+loss), and a signal's confidence is its (setup, direction, score)
+bucket's win rate when >= 10 resolved. The chart applies score tick boxes
+and a confidence floor, defaulting to exactly the operator's 7+/70%, and
+reports how many fired before filtering. At those defaults TQQQ shows
+nothing: the highest score is 6 and the best bucket measures 70.6% on 34
+trades (fib_confluence long, score 3). That is the honest answer, and the
+optimisation loop (next) is what could change it.
+
+**Railway, measured over 7 days:** API ~0.006 vCPU / 0.17 GB RAM; Postgres
+0.59 GB RAM average (2.5 GB peak) and 0.28 GB disk; Redis ~0.005 GB and
+unused by any code. Stored ticker data is not a cost driver. The
+calibration scan is cached once per symbol per day so the chart does not
+add a recurring cost.
+Status: Implemented, tested. No order placed at any venue.

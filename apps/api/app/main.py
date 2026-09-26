@@ -82,6 +82,10 @@ from apps.api.app.execution.reconciliation import (
     build_reconciler_cycle_lock,
 )
 from apps.api.app.marketdata.bar_router import BarBackfillRouter
+from apps.api.app.marketdata.providers.cboe import (
+    CboeDelayedOptionChainProvider,
+    FallbackOptionChainProvider,
+)
 from apps.api.app.marketdata.providers.coinbase import build_coinbase_bar_provider
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_bar_backfill_provider,
@@ -114,7 +118,11 @@ async def lifespan(app: FastAPI):
     # Depth is a separate capability from quotes on purpose: the vendor
     # can serve a quote and still have no order book (D092).
     app.state.depth_provider = build_longbridge_depth_provider(settings)
-    app.state.option_chain_provider = build_longbridge_option_chain_provider(settings)
+    # Phase 98 (D117): Longbridge lists option contracts but this account
+    # cannot quote them (301604), so chains fall back to Cboe's delayed feed.
+    app.state.option_chain_provider = FallbackOptionChainProvider(
+        build_longbridge_option_chain_provider(settings), CboeDelayedOptionChainProvider()
+    )
     # Phase 44 (D059): two more capabilities from the SAME already-
     # credentialed Longbridge relationship - company fundamentals and
     # recent news. Same all-or-nothing credential gate, same
@@ -320,9 +328,7 @@ async def lifespan(app: FastAPI):
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
         history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
         depth_provider="longbridge" if app.state.depth_provider else "NOT_CONFIGURED",
-        option_chain_provider=(
-            "longbridge" if app.state.option_chain_provider else "NOT_CONFIGURED"
-        ),
+        option_chain_provider=app.state.option_chain_provider.name,
         fundamentals_provider=(
             "longbridge" if app.state.fundamentals_provider else "NOT_CONFIGURED"
         ),

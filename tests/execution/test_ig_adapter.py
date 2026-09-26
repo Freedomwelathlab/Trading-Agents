@@ -418,3 +418,21 @@ def test_the_factory_wires_the_host_the_account_type_names():
     )
     assert built.base_url == IG_LIVE_URL
     assert built.account_type == "LIVE"
+
+
+def test_a_suspended_client_says_so_and_says_to_stop_retrying():
+    """Measured 2026-09-25: after repeated invalid-details refusals IG
+    answered `error.security.client-suspended` while the web login kept
+    working in the browser."""
+    from apps.api.app.execution.broker import VenueLoginRefusedError
+
+    client = StubClient(
+        routes({("POST", "/session"): (401, {}, {"errorCode": "error.security.client-suspended"})})
+    )
+    with pytest.raises(IgError) as err:
+        _ = adapter(client).cash
+    assert isinstance(err.value, VenueLoginRefusedError)
+    message = str(err.value)
+    assert "SUSPENDED this API client" in message
+    assert "not your web login" in message
+    assert "NEW API key" in message
