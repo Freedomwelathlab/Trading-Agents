@@ -313,3 +313,33 @@ def test_a_shared_bias_cache_changes_no_result():
     assert key == [(t.entry_ts, t.r_multiple) for t in first.trades]
     assert key == [(t.entry_ts, t.r_multiple) for t in again.trades]
     assert len(bias) == 2  # one regime timeline, one confirm timeline
+
+
+def test_a_higher_timeframe_bias_is_only_visible_once_its_bar_has_closed():
+    """Look-ahead fix (D120 finding): stored bars are stamped at their OPEN,
+    so the regime reading of a 15m bar opening at 10:00 must not be visible
+    before 10:15 - not to a 5m decision at 10:00 or 10:05."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from apps.api.app.backtesting.intraday_engine import (
+        _bar_span,
+        _bias_timeline,
+        _BiasLookup,
+    )
+
+    start = datetime(2026, 6, 16, 8, 0, tzinfo=UTC)
+    htf = [
+        SimpleNamespace(ts=start + timedelta(minutes=15 * k), close=Decimal(100 + k))
+        for k in range(60)
+    ]
+    assert _bar_span(htf) == timedelta(minutes=15)
+    timeline = _bias_timeline(htf, fast=3, slow=5)
+    first_stamp, _ = timeline[0]
+    # Stamped at open + 15 minutes, never at the open.
+    assert (first_stamp - start) % timedelta(minutes=15) == timedelta(0)
+    assert first_stamp not in {b.ts for b in htf[:1]}
+    lookup = _BiasLookup(timeline)
+    bar_open = first_stamp - timedelta(minutes=15)
+    assert lookup.at(bar_open + timedelta(minutes=10)) is None  # still forming
+    assert lookup.at(first_stamp) is not None  # closed

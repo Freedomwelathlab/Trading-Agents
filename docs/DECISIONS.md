@@ -11579,3 +11579,25 @@ finding about TQQQ. Details: `docs/RESEARCH_OPTIONS.md`.
 
 Status: Implemented, tested. Migration 0035 applied to the local database
 only. No order placed; nothing enabled.
+
+## D121 — The higher-timeframe bias could be read before its bar closed; fixed
+Date: 2026-09-28
+
+Found by the Phase 101 study (D120) and confirmed against stored bars:
+every interval is stamped at its bar's OPEN, and `_bias_timeline` keyed each
+15-minute regime reading by that open time, so a 5-minute decision could
+read a 15-minute bar up to 10 minutes before it closed. It affected only
+`higher_tf_bias` (a score point, and a gate where a setup requires
+alignment), in the backtest, the chart signals and the bot alike, since
+they share the engine's context builder.
+
+Fix: each reading is stamped at its bar's CLOSE (open + the series' bar
+length, inferred as the smallest gap between consecutive bars), and the
+lookup is asked at the execution bar's close - which is when a decision is
+actually made. A same-interval confirm bar (QQQ 5m for TQQQ 5m) closing at
+the same moment as the decision bar stays usable, as before; a 15-minute
+bar is only visible once it has closed. Research figures computed before
+this (Phases 88-101) that used a higher timeframe carry a small optimistic
+bias in that one input; the Phase 101 walk-forward passed no higher
+timeframe and is unaffected.
+Status: Fixed, tested (`test_a_higher_timeframe_bias_is_only_visible_once_its_bar_has_closed`).

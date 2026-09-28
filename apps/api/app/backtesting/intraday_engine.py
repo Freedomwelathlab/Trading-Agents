@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, DivisionByZero, InvalidOperation
 
 from apps.api.app.backtesting.brackets import (
@@ -146,7 +146,13 @@ def _bias_timeline(
     """
     closes: list[Decimal] = []
     timeline: list[tuple[object, Direction]] = []
-    for bar in sorted(higher_bars, key=lambda b: b.ts):
+    ordered = sorted(higher_bars, key=lambda b: b.ts)
+    # Stamped at the bar's CLOSE, not its open (Phase 101/99 follow-up,
+    # D120). Stored bars are stamped at their open, so keying a 15m bar by
+    # its open let a 5m decision read it up to 10 minutes before it closed -
+    # found by the Phase 101 study and confirmed against stored bars.
+    span = _bar_span(ordered)
+    for bar in ordered:
         closes.append(bar.close)
         if len(closes) < slow + 1:
             continue
@@ -156,9 +162,22 @@ def _bias_timeline(
         if fast_v is None or slow_v is None:
             continue
         timeline.append(
-            (bar.ts, Direction.LONG if fast_v > slow_v else Direction.SHORT)
+            (bar.ts + span, Direction.LONG if fast_v > slow_v else Direction.SHORT)
         )
     return timeline
+
+
+def _bar_span(ordered: Sequence) -> timedelta:
+    """The series' bar length: the smallest positive gap between
+    consecutive bars (gaps across sessions and holidays are only ever
+    longer). Zero for a series too short to measure, which keeps the old
+    open-stamped behaviour rather than inventing a length."""
+    best: timedelta | None = None
+    for a, b in zip(ordered, ordered[1:], strict=False):
+        gap = b.ts - a.ts
+        if gap > timedelta(0) and (best is None or gap < best):
+            best = gap
+    return best or timedelta(0)
 
 
 class _BiasLookup:
@@ -245,6 +264,9 @@ def run_intraday_backtest(
         )
 
     equity = config.starting_equity
+    # A decision is made when the execution bar CLOSES, so the bias lookups
+    # are asked "what had closed by then" at the bar's close time.
+    exec_span = _bar_span(ordered)
 
     # Phase 101 (D120): a structure ride held overnight is simulated over
     # the regular-hours bars of EVERY session, with swings found once over
@@ -318,8 +340,8 @@ def run_intraday_backtest(
                     rsi=_indicator(rsi, closes, 14),
                     ema_fast=_indicator(ema, closes, 9),
                     ema_slow=_indicator(ema, closes, 21),
-                    higher_tf_bias=higher_timeline.at(bar.ts),
-                    confirm_bias=confirm_timeline.at(bar.ts),
+                    higher_tf_bias=higher_timeline.at(bar.ts + exec_span),
+                    confirm_bias=confirm_timeline.at(bar.ts + exec_span),
                 )
 
                 signal = None
