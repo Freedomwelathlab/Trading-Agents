@@ -1,0 +1,29 @@
+# Railway deploy settings for the Trading OS API, kept in the repo so they
+# are reviewed and versioned like code (Phase 98 follow-up).
+#
+# Why this file exists: on 2026-09-28 the service's start command was
+# changed in the Railway dashboard to `gunicorn app:app ...`. gunicorn is not
+# installed in this image and there is no `app:app` - the ASGI app is
+# `apps.api.app.main:app` - so every deploy failed at CREATE_CONTAINER with
+# "The executable `gunicorn` could not be found". Settings in this file take
+# precedence over the dashboard, so the working command cannot drift again.
+#
+# Deliberately NOT set here: variables (the operator's), and
+# `sleepApplication` (a cost/behaviour trade-off the operator chooses in the
+# dashboard - see docs/DEPLOYMENT.md).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "apps/api/Dockerfile"
+
+[deploy]
+# The Dockerfile's own CMD, stated explicitly. One uvicorn worker is the
+# right size here: the service averages ~0.006 vCPU, and the in-process
+# schedulers (bots, snapshots, reconciler) must run exactly once - several
+# gunicorn workers would each start their own copy of every scheduler.
+startCommand = "uvicorn apps.api.app.main:app --host 0.0.0.0 --port 8000"
+preDeployCommand = ["alembic upgrade head"]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
