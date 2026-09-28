@@ -11379,3 +11379,80 @@ unused by any code. Stored ticker data is not a cost driver. The
 calibration scan is cached once per symbol per day so the chart does not
 add a recurring cost.
 Status: Implemented, tested. No order placed at any venue.
+
+## D120 — Riding the trend to its structure break: measured, optimised, and it does not pay (Phase 101)
+Date: 2026-09-28
+Decision: The operator asked for the anatomy of TQQQ's trends - the rise,
+the pullbacks, the strength, the breaking point - and for rules that enter
+on the pullback, hold without exiting "unless the rules break", and trail
+the profit while the trend continues. Three things were built, in that
+order, and the order matters: the measurement first, the rules from the
+measurement, and a walk-forward that was fixed before it ever ran.
+
+1. `scripts/trend_anatomy_tqqq.py` segments the tape into trends from
+   CONFIRMED swings only (uptrend = HH and HL; the break = the first CLOSE
+   through the most recent confirmed higher low) and measures legs,
+   pullbacks, where they held, trend strength against outcome, and what
+   precedes the break against its base rate. The 15m bias it reads comes
+   only from 15m bars that had CLOSED by the 5m bar's close.
+2. `trend_pullback` joins `SETUPS` and fires on exactly one bar per
+   pullback - the bar the higher low's `confirmed_ts` arrives, never the
+   pivot bar. Its exit is `BracketPlan(structure_trail=True)`: no fixed
+   target; the stop ratchets to each new confirmed higher low only on the
+   bar AFTER that swing's confirmation bar and is never loosened; the ride
+   ends on that stop, on a confirmed lower low, on an optional ATR trailing
+   take-profit, or at the time stop. `hold_overnight` and
+   `structure_break_on_close` are further opt-ins; the new path fills a gap
+   through the stop at the open. Every new field defaults off, so
+   `BracketPlan()` - and every existing setup, the Autotrade bot and the
+   signal calibration - simulates exactly as before. Opt-in rather than a
+   changed default because the house time stop (flat by the bell, D091) is
+   a deliberate rule for a 3x ETF, and the brief's "hold until the
+   reversal" contradicts it; both were measured instead of one being
+   chosen.
+3. `scripts/trend_walk_forward_tqqq.py`: 576 combinations (swing strength,
+   trend legs, depth band, support, stop buffer, direction, trailing
+   take-profit), each run once through the intraday engine at real costs;
+   rolling 40-train / 20-test folds; selection on train expectancy only
+   (minimum 15 trades); in the overnight mode, train trades that exit in
+   the test window are dropped from the train score.
+
+What was measured (132 sessions of 5m, 759 daily bars): the median uptrend
+leg is 2.9% / 6.4 ATR, but only 39% of it is still ahead when confirmed
+structure proves the trend, and the confirm-to-break move is a median -12%
+of the leg - **entering on confirmation and exiting on the break loses on
+the median trend before costs.** Pullbacks retrace ~60% of the impulse,
+~2 ATR, over ~4 bars; 38% hold at no level; beyond 78.6% is reliably bad
+(t = -3.4). Trend strength (ADX, EMA spread/slope) separates trends that
+make a new high (74-81%) from those that do not (45-59%) but does not make
+the ride profitable. A failed higher high (40% vs 25%) and fading ADX (36%
+vs 23%) genuinely raise the chance the next event is the break; RSI
+divergence and climactic volume do not. After a break the next trend ran
+the other way 78% of the time.
+
+Out of sample: **-0.518R per trade, t = -2.96, 43 trades** flat by the
+bell; **-0.200R, t = -0.53, 27 trades** held overnight. Eight folds, eight
+picks that lost in the following window; train-vs-test rank correlation
+across the grid between -0.18 and +0.24. The setup's own defaults with no
+selection: -0.310R, t = -4.09 over 254 trades (overnight -0.390R,
+t = -2.99). Buy and hold lost 16.0% over the same 80 out-of-sample
+sessions; the strategy lost less in equity only because it sat flat at a
+10% notional cap.
+
+The windows and grid were NOT re-cut after seeing this. `trend_pullback`
+and the structure exit stay as instrumentation, like D102/D107's setups;
+nothing is armed on paper or live on the strength of this study. Being in
+`SETUPS`, `trend_pullback` is now also offered to Autotrade bots in
+`auto` mode (paper only), exactly as D107's four were; the learning loop
+demotes on its own evidence.
+
+Found in passing, not changed here: `intraday_engine._BiasLookup` matches
+a higher-timeframe bar by its OPEN stamp, so a 5m decision can read a 15m
+bar up to 10 minutes before it closes. It only feeds `higher_tf_bias`
+(score points, and gating where a setup asks for it); the Phase 101
+walk-forward passes no higher-timeframe bars and is unaffected.
+Status: Implemented, tested: `tests/backtesting/test_trend_ride.py` (25).
+Findings in `docs/RESEARCH_TREND_TQQQ.md`; reports in
+`docs/research/trend_anatomy_2026-09-28.json` and
+`docs/research/trend_walk_forward_2026-09-28.json`. No order placed at any
+venue.

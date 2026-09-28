@@ -1,0 +1,1239 @@
+{
+  "phase": "101",
+  "decision": "D120",
+  "symbol": "TQQQ.US",
+  "generated": "2026-09-28T06:45:15.079027+00:00",
+  "sessions": 132,
+  "first_session": "2026-03-19",
+  "last_session": "2026-09-25",
+  "costs": "1bp fee + 2bps slippage per side",
+  "train_sessions": 40,
+  "test_sessions": 20,
+  "step_sessions": 20,
+  "min_train_trades": 15,
+  "grid": {
+    "swing_strength": [
+      2,
+      3
+    ],
+    "min_trend_legs": [
+      1,
+      2
+    ],
+    "depth_band": [
+      [
+        0.0,
+        1.0
+      ],
+      [
+        0.236,
+        0.618
+      ],
+      [
+        0.5,
+        0.786
+      ]
+    ],
+    "support": [
+      "any",
+      "ema9",
+      "ema21",
+      "fib"
+    ],
+    "stop_buffer_atr": [
+      0.1,
+      0.3
+    ],
+    "direction": [
+      "long",
+      "short",
+      "both"
+    ],
+    "atr_trail": [
+      null,
+      2.0
+    ]
+  },
+  "combos": 576,
+  "buy_and_hold_full_pct": 77.44092732946946,
+  "modes": {
+    "intraday": {
+      "hold_overnight": false,
+      "walk_forward": {
+        "folds": [
+          {
+            "train": [
+              "2026-03-19",
+              "2026-05-14"
+            ],
+            "test": [
+              "2026-05-15",
+              "2026-06-12"
+            ],
+            "eligible_combos": 203,
+            "buy_and_hold_pct": 2.3636603723755423,
+            "train_test_rank_corr": -0.17655611079575023,
+            "eligible_median_test_expectancy_r": 0.0972568612304285,
+            "picked": "s2|legs1|depth0.236-0.618|fib|buf0.1|short|trail2",
+            "train_metrics": {
+              "trades": 17,
+              "win_rate_pct": 47.05882352941177,
+              "expectancy_r": 0.62919579541791,
+              "t_stat": 1.1479291146228092,
+              "total_r": 10.696328522104471,
+              "profit_factor": 2.258000688695282,
+              "max_drawdown_r": -5.064645898964889,
+              "return_pct": 0.5606895763950001,
+              "max_drawdown_pct": -0.253350696269326,
+              "avg_win_r": 2.3998712189172298,
+              "avg_loss_r": -0.9447379143592628,
+              "longs": 0,
+              "shorts": 17,
+              "exit_reasons": {
+                "trail": 6,
+                "stop": 5,
+                "structure_break": 1,
+                "time_stop": 1,
+                "structure_trail": 4
+              }
+            },
+            "test_metrics": {
+              "trades": 15,
+              "win_rate_pct": 20.0,
+              "expectancy_r": -0.14755603339641424,
+              "t_stat": -0.3214658811780168,
+              "total_r": -2.2133405009462135,
+              "profit_factor": 0.7908242152175292,
+              "max_drawdown_r": -5.951350610139091,
+              "return_pct": 0.06230247518000003,
+              "max_drawdown_pct": -0.3784909801045969,
+              "avg_win_r": 2.7893019364713205,
+              "avg_loss_r": -0.8817705258633479,
+              "longs": 0,
+              "shorts": 15,
+              "exit_reasons": {
+                "stop": 7,
+                "time_stop": 3,
+                "trail": 3,
+                "structure_trail": 2
+              }
+            },
+            "runner_up": [
+              "s2|legs1|depth0.236-0.618|fib|buf0.1|short|trailnone",
+              "s2|legs1|depth0.236-0.618|any|buf0.1|short|trailnone",
+              "s2|legs1|depth0.236-0.618|any|buf0.1|short|trail2"
+            ]
+          },
+          {
+            "train": [
+              "2026-04-17",
+              "2026-06-12"
+            ],
+            "test": [
+              "2026-06-15",
+              "2026-07-14"
+            ],
+            "eligible_combos": 234,
+            "buy_and_hold_pct": -9.48359073359073,
+            "train_test_rank_corr": -0.139965810037081,
+            "eligible_median_test_expectancy_r": -0.5620235925232543,
+            "picked": "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trail2",
+            "train_metrics": {
+              "trades": 20,
+              "win_rate_pct": 40.0,
+              "expectancy_r": 0.7990626449164832,
+              "t_stat": 1.2135588914203241,
+              "total_r": 15.981252898329663,
+              "profit_factor": 2.304996861225095,
+              "max_drawdown_r": -3.422620183616486,
+              "return_pct": 0.4080582792392857,
+              "max_drawdown_pct": -0.08016615070224212,
+              "avg_win_r": 3.5284316445130197,
+              "avg_loss_r": -1.0205166881478747,
+              "longs": 20,
+              "shorts": 0,
+              "exit_reasons": {
+                "structure_trail": 8,
+                "stop": 7,
+                "trail": 4,
+                "time_stop": 1
+              }
+            },
+            "test_metrics": {
+              "trades": 16,
+              "win_rate_pct": 6.25,
+              "expectancy_r": -0.7971102626454234,
+              "t_stat": -6.661395215482417,
+              "total_r": -12.753764202326774,
+              "profit_factor": 0.03427852909959183,
+              "max_drawdown_r": -12.753764202326773,
+              "return_pct": -0.6197312658214286,
+              "max_drawdown_pct": -0.619731265821436,
+              "avg_win_r": 0.45269810241578023,
+              "avg_loss_r": -0.8804308203161704,
+              "longs": 16,
+              "shorts": 0,
+              "exit_reasons": {
+                "stop": 10,
+                "structure_break": 1,
+                "trail": 2,
+                "structure_trail": 2,
+                "time_stop": 1
+              }
+            },
+            "runner_up": [
+              "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trailnone",
+              "s3|legs1|depth0.236-0.618|ema21|buf0.1|both|trailnone",
+              "s2|legs1|depth0.5-0.786|fib|buf0.3|long|trail2"
+            ]
+          },
+          {
+            "train": [
+              "2026-05-15",
+              "2026-07-14"
+            ],
+            "test": [
+              "2026-07-15",
+              "2026-08-11"
+            ],
+            "eligible_combos": 216,
+            "buy_and_hold_pct": -4.233844540568887,
+            "train_test_rank_corr": -0.0234656136960475,
+            "eligible_median_test_expectancy_r": -0.3561730961193048,
+            "picked": "s3|legs1|depth0-1|ema21|buf0.1|both|trailnone",
+            "train_metrics": {
+              "trades": 16,
+              "win_rate_pct": 43.75,
+              "expectancy_r": 0.7497937602117278,
+              "t_stat": 0.9925696306093159,
+              "total_r": 11.996700163387645,
+              "profit_factor": 2.41371751886483,
+              "max_drawdown_r": -4.015154905309759,
+              "return_pct": 0.5141496266421428,
+              "max_drawdown_pct": -0.21796909534964656,
+              "avg_win_r": 2.926089241059839,
+              "avg_loss_r": -0.9428805026701367,
+              "longs": 8,
+              "shorts": 8,
+              "exit_reasons": {
+                "stop": 5,
+                "time_stop": 6,
+                "structure_trail": 5
+              }
+            },
+            "test_metrics": {
+              "trades": 6,
+              "win_rate_pct": 0.0,
+              "expectancy_r": -0.6457272196442277,
+              "t_stat": -4.288592235612605,
+              "total_r": -3.8743633178653667,
+              "profit_factor": 0.0,
+              "max_drawdown_r": -3.8743633178653667,
+              "return_pct": -0.23502686769214287,
+              "max_drawdown_pct": -0.2350268676921405,
+              "avg_win_r": null,
+              "avg_loss_r": -0.6457272196442277,
+              "longs": 4,
+              "shorts": 2,
+              "exit_reasons": {
+                "structure_trail": 5,
+                "stop": 1
+              }
+            },
+            "runner_up": [
+              "s3|legs1|depth0-1|ema21|buf0.1|both|trail2",
+              "s3|legs1|depth0-1|ema21|buf0.3|both|trailnone",
+              "s2|legs2|depth0.5-0.786|any|buf0.1|long|trail2"
+            ]
+          },
+          {
+            "train": [
+              "2026-06-15",
+              "2026-08-11"
+            ],
+            "test": [
+              "2026-08-12",
+              "2026-09-09"
+            ],
+            "eligible_combos": 162,
+            "buy_and_hold_pct": -5.382174028034925,
+            "train_test_rank_corr": -0.02209125255270894,
+            "eligible_median_test_expectancy_r": -0.39056118086726577,
+            "picked": "s3|legs1|depth0.5-0.786|any|buf0.3|short|trailnone",
+            "train_metrics": {
+              "trades": 18,
+              "win_rate_pct": 55.55555555555556,
+              "expectancy_r": 0.1050512582727052,
+              "t_stat": 0.4029003999742397,
+              "total_r": 1.8909226489086937,
+              "profit_factor": 1.2457227104862016,
+              "max_drawdown_r": -2.377663520299227,
+              "return_pct": 0.21605265218000003,
+              "max_drawdown_pct": -0.1738809890067879,
+              "avg_win_r": 0.9586274231052654,
+              "avg_loss_r": -0.961918947767995,
+              "longs": 0,
+              "shorts": 18,
+              "exit_reasons": {
+                "stop": 6,
+                "time_stop": 8,
+                "structure_trail": 3,
+                "structure_break": 1
+              }
+            },
+            "test_metrics": {
+              "trades": 6,
+              "win_rate_pct": 16.666666666666668,
+              "expectancy_r": -0.5691346132576817,
+              "t_stat": -1.7016931499128305,
+              "total_r": -3.41480767954609,
+              "profit_factor": 0.22578956414469262,
+              "max_drawdown_r": -3.41480767954609,
+              "return_pct": -0.168963477775,
+              "max_drawdown_pct": -0.16896347777501797,
+              "avg_win_r": 0.9958893627555786,
+              "avg_loss_r": -0.8821394084603338,
+              "longs": 0,
+              "shorts": 6,
+              "exit_reasons": {
+                "stop": 2,
+                "time_stop": 1,
+                "structure_trail": 3
+              }
+            },
+            "runner_up": [
+              "s3|legs1|depth0.5-0.786|any|buf0.1|short|trailnone",
+              "s2|legs1|depth0.236-0.618|any|buf0.1|short|trailnone",
+              "s2|legs1|depth0.236-0.618|any|buf0.1|short|trail2"
+            ]
+          }
+        ],
+        "pooled_oos": {
+          "trades": 43,
+          "win_rate_pct": 11.627906976744185,
+          "expectancy_r": -0.5175878069926615,
+          "t_stat": -2.962281248881097,
+          "total_r": -22.256275700684444,
+          "profit_factor": 0.30606940367869356,
+          "max_drawdown_r": -25.99428580987732,
+          "return_pct": -0.9614191361085714,
+          "max_drawdown_pct": -1.3977029031776784,
+          "avg_win_r": 1.9632986549170641,
+          "avg_loss_r": -0.8440202361913096,
+          "longs": 20,
+          "shorts": 23,
+          "exit_reasons": {
+            "stop": 20,
+            "time_stop": 5,
+            "trail": 5,
+            "structure_trail": 12,
+            "structure_break": 1
+          }
+        },
+        "distinct_picks": [
+          "s2|legs1|depth0.236-0.618|fib|buf0.1|short|trail2",
+          "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trail2",
+          "s3|legs1|depth0-1|ema21|buf0.1|both|trailnone",
+          "s3|legs1|depth0.5-0.786|any|buf0.3|short|trailnone"
+        ],
+        "buy_and_hold_oos_pct": -16.042762033732274,
+        "oos_sessions": 80
+      },
+      "in_sample_best": {
+        "combo": "s3|legs1|depth0.236-0.618|any|buf0.1|short|trail2",
+        "metrics": {
+          "trades": 56,
+          "win_rate_pct": 33.92857142857143,
+          "expectancy_r": 0.06248184693930915,
+          "t_stat": 0.2759197168244351,
+          "total_r": 3.4989834286013126,
+          "profit_factor": 1.1105826933870713,
+          "max_drawdown_r": -9.176499379002955,
+          "return_pct": 0.3124184129882499,
+          "max_drawdown_pct": -0.526375060211274,
+          "avg_win_r": 1.8494901494457407,
+          "avg_loss_r": -0.8551710651585882,
+          "longs": 0,
+          "shorts": 56,
+          "exit_reasons": {
+            "trail": 18,
+            "stop": 18,
+            "time_stop": 11,
+            "structure_trail": 8,
+            "structure_break": 1
+          }
+        }
+      },
+      "baseline": {
+        "combo": "s2|legs1|depth0.236-0.786|any|buf0.3|both|trailnone",
+        "all_sessions": {
+          "trades": 254,
+          "win_rate_pct": 25.19685039370079,
+          "expectancy_r": -0.3099372788635335,
+          "t_stat": -4.092408534361094,
+          "total_r": -78.7240688313375,
+          "profit_factor": 0.5182155630470863,
+          "max_drawdown_r": -84.40921372543464,
+          "return_pct": -3.5188573516435713,
+          "max_drawdown_pct": -3.7113973905595623,
+          "avg_win_r": 1.323077375407996,
+          "avg_loss_r": -0.8600053729339434,
+          "longs": 138,
+          "shorts": 116,
+          "exit_reasons": {
+            "stop": 107,
+            "time_stop": 28,
+            "structure_trail": 87,
+            "structure_break": 32
+          }
+        },
+        "oos_sessions": {
+          "trades": 154,
+          "win_rate_pct": 26.623376623376622,
+          "expectancy_r": -0.3216049727682619,
+          "t_stat": -3.545758546393243,
+          "total_r": -49.52716580631233,
+          "profit_factor": 0.48773277965239986,
+          "max_drawdown_r": -60.5293944499727,
+          "return_pct": -2.329669275222143,
+          "max_drawdown_pct": -2.894742176294278,
+          "avg_win_r": 1.1501248780230926,
+          "avg_loss_r": -0.8555954496040631,
+          "longs": 77,
+          "shorts": 77,
+          "exit_reasons": {
+            "stop": 65,
+            "structure_trail": 54,
+            "time_stop": 17,
+            "structure_break": 18
+          }
+        }
+      },
+      "combos_positive_full_period": 45,
+      "top10_full_period_in_sample": [
+        {
+          "combo": "s3|legs1|depth0.236-0.618|any|buf0.1|short|trail2",
+          "metrics": {
+            "trades": 56,
+            "win_rate_pct": 33.92857142857143,
+            "expectancy_r": 0.06248184693930915,
+            "t_stat": 0.2759197168244351,
+            "total_r": 3.4989834286013126,
+            "profit_factor": 1.1105826933870713,
+            "max_drawdown_r": -9.176499379002955,
+            "return_pct": 0.3124184129882499,
+            "max_drawdown_pct": -0.526375060211274,
+            "avg_win_r": 1.8494901494457407,
+            "avg_loss_r": -0.8551710651585882,
+            "longs": 0,
+            "shorts": 56,
+            "exit_reasons": {
+              "trail": 18,
+              "stop": 18,
+              "time_stop": 11,
+              "structure_trail": 8,
+              "structure_break": 1
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0.236-0.618|any|buf0.3|short|trail2",
+          "metrics": {
+            "trades": 56,
+            "win_rate_pct": 37.5,
+            "expectancy_r": 0.05477897898938043,
+            "t_stat": 0.28307211139505234,
+            "total_r": 3.067622823405304,
+            "profit_factor": 1.1089823969308903,
+            "max_drawdown_r": -7.957441920189515,
+            "return_pct": 0.36542504906824996,
+            "max_drawdown_pct": -0.4914146520461464,
+            "avg_win_r": 1.4864522499498865,
+            "avg_loss_r": -0.8042249835869232,
+            "longs": 0,
+            "shorts": 56,
+            "exit_reasons": {
+              "trail": 19,
+              "stop": 16,
+              "time_stop": 12,
+              "structure_trail": 5,
+              "structure_break": 4
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0.236-0.618|ema21|buf0.1|both|trailnone",
+          "metrics": {
+            "trades": 45,
+            "win_rate_pct": 33.333333333333336,
+            "expectancy_r": 0.043562114946681316,
+            "t_stat": 0.14410170861148455,
+            "total_r": 1.9602951726006592,
+            "profit_factor": 1.0752915537358303,
+            "max_drawdown_r": -11.068296714431952,
+            "return_pct": 0.06177856406214289,
+            "max_drawdown_pct": -0.48455272447175035,
+            "avg_win_r": 1.8664234674736553,
+            "avg_loss_r": -0.8678685613168057,
+            "longs": 29,
+            "shorts": 16,
+            "exit_reasons": {
+              "time_stop": 16,
+              "structure_trail": 13,
+              "stop": 16
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trail2",
+          "metrics": {
+            "trades": 59,
+            "win_rate_pct": 27.11864406779661,
+            "expectancy_r": 0.04170491156773523,
+            "t_stat": 0.1583810109774259,
+            "total_r": 2.4605897824963785,
+            "profit_factor": 1.0640935604149404,
+            "max_drawdown_r": -18.405083915166298,
+            "return_pct": -0.3261720999681143,
+            "max_drawdown_pct": -0.792655103254111,
+            "avg_win_r": 2.5531989148231093,
+            "avg_loss_r": -0.8928044849924038,
+            "longs": 59,
+            "shorts": 0,
+            "exit_reasons": {
+              "time_stop": 6,
+              "trail": 13,
+              "stop": 25,
+              "structure_break": 3,
+              "structure_trail": 12
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trailnone",
+          "metrics": {
+            "trades": 56,
+            "win_rate_pct": 28.571428571428573,
+            "expectancy_r": 0.04061200053219321,
+            "t_stat": 0.1510010016816953,
+            "total_r": 2.2742720298028196,
+            "profit_factor": 1.061338738367285,
+            "max_drawdown_r": -16.659196463668163,
+            "return_pct": -0.2014567125171429,
+            "max_drawdown_pct": -0.6636093887040022,
+            "avg_win_r": 2.459470425077969,
+            "avg_loss_r": -0.9269313692861172,
+            "longs": 56,
+            "shorts": 0,
+            "exit_reasons": {
+              "time_stop": 6,
+              "structure_trail": 20,
+              "stop": 27,
+              "structure_break": 3
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0.236-0.618|ema21|buf0.1|both|trail2",
+          "metrics": {
+            "trades": 46,
+            "win_rate_pct": 34.78260869565217,
+            "expectancy_r": 0.03371429301151438,
+            "t_stat": 0.13190260582488594,
+            "total_r": 1.5508574785296614,
+            "profit_factor": 1.0595413960790152,
+            "max_drawdown_r": -9.751992362219223,
+            "return_pct": 0.1565557953380428,
+            "max_drawdown_pct": -0.4155266999507832,
+            "avg_win_r": 1.7248479693651635,
+            "avg_loss_r": -0.8682236677104318,
+            "longs": 30,
+            "shorts": 16,
+            "exit_reasons": {
+              "time_stop": 10,
+              "trail": 14,
+              "stop": 14,
+              "structure_trail": 8
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.236-0.618|ema9|buf0.1|short|trailnone",
+          "metrics": {
+            "trades": 32,
+            "win_rate_pct": 31.25,
+            "expectancy_r": 0.012870249483553843,
+            "t_stat": 0.0427537925487874,
+            "total_r": 0.411847983473723,
+            "profit_factor": 1.0208875158061614,
+            "max_drawdown_r": -10.27934376319025,
+            "return_pct": 0.078769715335,
+            "max_drawdown_pct": -0.43101538083487617,
+            "avg_win_r": 2.01292709310239,
+            "avg_loss_r": -0.8962464976159171,
+            "longs": 0,
+            "shorts": 32,
+            "exit_reasons": {
+              "structure_trail": 11,
+              "structure_break": 2,
+              "time_stop": 5,
+              "stop": 14
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.5-0.786|fib|buf0.1|both|trail2",
+          "metrics": {
+            "trades": 116,
+            "win_rate_pct": 29.310344827586206,
+            "expectancy_r": 0.005251277295047571,
+            "t_stat": 0.03132982330868961,
+            "total_r": 0.6091481662255183,
+            "profit_factor": 1.0084662822162545,
+            "max_drawdown_r": -27.703992266179913,
+            "return_pct": -0.2580424826395429,
+            "max_drawdown_pct": -1.253714395326775,
+            "avg_win_r": 2.134089677635242,
+            "avg_loss_r": -0.8774378155289357,
+            "longs": 59,
+            "shorts": 57,
+            "exit_reasons": {
+              "time_stop": 9,
+              "trail": 32,
+              "structure_trail": 26,
+              "stop": 43,
+              "structure_break": 6
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0-1|ema21|buf0.1|short|trail2",
+          "metrics": {
+            "trades": 40,
+            "win_rate_pct": 25.0,
+            "expectancy_r": -0.0001620130532343042,
+            "t_stat": -0.000551796409412896,
+            "total_r": -0.006480522129372168,
+            "profit_factor": 0.9997404810168744,
+            "max_drawdown_r": -11.876719477020977,
+            "return_pct": -0.2190699748115,
+            "max_drawdown_pct": -0.7185662605488395,
+            "avg_win_r": 2.496480308619156,
+            "avg_loss_r": -0.8323761202773645,
+            "longs": 0,
+            "shorts": 40,
+            "exit_reasons": {
+              "trail": 8,
+              "structure_trail": 8,
+              "stop": 16,
+              "time_stop": 7,
+              "structure_break": 1
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.236-0.618|any|buf0.1|short|trail2",
+          "metrics": {
+            "trades": 84,
+            "win_rate_pct": 28.571428571428573,
+            "expectancy_r": -0.014141045149286753,
+            "t_stat": -0.07040778013479003,
+            "total_r": -1.1878477925400872,
+            "profit_factor": 0.9768754746104251,
+            "max_drawdown_r": -17.89474166389948,
+            "return_pct": -0.06215364732199997,
+            "max_drawdown_pct": -0.9245993367115856,
+            "avg_win_r": 2.0908165619146613,
+            "avg_loss_r": -0.8561240879748658,
+            "longs": 0,
+            "shorts": 84,
+            "exit_reasons": {
+              "trail": 27,
+              "stop": 32,
+              "structure_break": 2,
+              "structure_trail": 16,
+              "time_stop": 7
+            }
+          }
+        }
+      ],
+      "full_period_distribution": {
+        "median_expectancy_r": -0.26518676802311897,
+        "median_trades": 28.0
+      }
+    },
+    "overnight": {
+      "hold_overnight": true,
+      "walk_forward": {
+        "folds": [
+          {
+            "train": [
+              "2026-03-19",
+              "2026-05-14"
+            ],
+            "test": [
+              "2026-05-15",
+              "2026-06-12"
+            ],
+            "eligible_combos": 211,
+            "buy_and_hold_pct": 2.3636603723755423,
+            "train_test_rank_corr": 0.0114625808627777,
+            "eligible_median_test_expectancy_r": -0.5933224501133878,
+            "picked": "s2|legs1|depth0-1|fib|buf0.1|long|trailnone",
+            "train_metrics": {
+              "trades": 36,
+              "win_rate_pct": 33.333333333333336,
+              "expectancy_r": 1.1973105067579797,
+              "t_stat": 1.2999973304978831,
+              "total_r": 43.10317824328727,
+              "profit_factor": 2.801639380481155,
+              "max_drawdown_r": -7.985068400447736,
+              "return_pct": 0.51421985881,
+              "max_drawdown_pct": -0.4251138024892862,
+              "avg_win_r": 5.5856332339402215,
+              "avg_loss_r": -0.9968508568331415,
+              "longs": 36,
+              "shorts": 0,
+              "exit_reasons": {
+                "stop": 15,
+                "structure_trail": 17,
+                "structure_break": 4
+              }
+            },
+            "test_metrics": {
+              "trades": 15,
+              "win_rate_pct": 26.666666666666668,
+              "expectancy_r": -0.07008132839675137,
+              "t_stat": -0.12305703055008795,
+              "total_r": -1.0512199259512705,
+              "profit_factor": 0.9121983642415602,
+              "max_drawdown_r": -7.666416172412191,
+              "return_pct": -0.014683602397142859,
+              "max_drawdown_pct": -0.2864007991509895,
+              "avg_win_r": 2.730362278070397,
+              "avg_loss_r": -1.088424458021169,
+              "longs": 15,
+              "shorts": 0,
+              "exit_reasons": {
+                "structure_trail": 9,
+                "stop": 6
+              }
+            },
+            "runner_up": [
+              "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trailnone",
+              "s2|legs2|depth0.236-0.618|any|buf0.1|long|trailnone",
+              "s2|legs1|depth0-1|ema9|buf0.1|long|trailnone"
+            ]
+          },
+          {
+            "train": [
+              "2026-04-17",
+              "2026-06-12"
+            ],
+            "test": [
+              "2026-06-15",
+              "2026-07-14"
+            ],
+            "eligible_combos": 236,
+            "buy_and_hold_pct": -9.48359073359073,
+            "train_test_rank_corr": 0.22277340262920547,
+            "eligible_median_test_expectancy_r": -0.6045732029971872,
+            "picked": "s2|legs2|depth0-1|fib|buf0.1|long|trailnone",
+            "train_metrics": {
+              "trades": 20,
+              "win_rate_pct": 35.0,
+              "expectancy_r": 1.1258919132705112,
+              "t_stat": 0.8905982544837716,
+              "total_r": 22.517838265410223,
+              "profit_factor": 2.4742841297382467,
+              "max_drawdown_r": -6.052207489762367,
+              "return_pct": 0.1731362161742857,
+              "max_drawdown_pct": -0.22047168520847132,
+              "avg_win_r": 5.398797455297768,
+              "avg_loss_r": -1.1749033785903198,
+              "longs": 20,
+              "shorts": 0,
+              "exit_reasons": {
+                "structure_trail": 10,
+                "structure_break": 1,
+                "stop": 9
+              }
+            },
+            "test_metrics": {
+              "trades": 8,
+              "win_rate_pct": 12.5,
+              "expectancy_r": -0.21380752988773438,
+              "t_stat": -0.29656052887882955,
+              "total_r": -1.710460239101875,
+              "profit_factor": 0.7357890738925164,
+              "max_drawdown_r": -4.3131792059808385,
+              "return_pct": 0.21488452313142853,
+              "max_drawdown_pct": -0.1664610599628504,
+              "avg_win_r": 4.763383459572582,
+              "avg_loss_r": -0.924834814096351,
+              "longs": 8,
+              "shorts": 0,
+              "exit_reasons": {
+                "structure_trail": 3,
+                "stop": 5
+              }
+            },
+            "runner_up": [
+              "s2|legs2|depth0-1|ema9|buf0.1|long|trailnone",
+              "s2|legs2|depth0-1|any|buf0.1|long|trailnone",
+              "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trail2"
+            ]
+          },
+          {
+            "train": [
+              "2026-05-15",
+              "2026-07-14"
+            ],
+            "test": [
+              "2026-07-15",
+              "2026-08-11"
+            ],
+            "eligible_combos": 216,
+            "buy_and_hold_pct": -4.233844540568887,
+            "train_test_rank_corr": 0.027575608909277377,
+            "eligible_median_test_expectancy_r": -0.5027269115736064,
+            "picked": "s2|legs2|depth0.5-0.786|any|buf0.1|long|trail2",
+            "train_metrics": {
+              "trades": 16,
+              "win_rate_pct": 37.5,
+              "expectancy_r": 0.7181438255199363,
+              "t_stat": 1.0326612392795207,
+              "total_r": 11.49030120831898,
+              "profit_factor": 2.0735743680396777,
+              "max_drawdown_r": -4.110582594538512,
+              "return_pct": 0.5540941288121428,
+              "max_drawdown_pct": -0.17490860525711244,
+              "avg_win_r": 3.698857880106822,
+              "avg_loss_r": -1.070284607232195,
+              "longs": 16,
+              "shorts": 0,
+              "exit_reasons": {
+                "structure_trail": 4,
+                "stop": 8,
+                "trail": 4
+              }
+            },
+            "test_metrics": {
+              "trades": 3,
+              "win_rate_pct": 0.0,
+              "expectancy_r": -0.5126945644374075,
+              "t_stat": -1.730752370805371,
+              "total_r": -1.5380836933122224,
+              "profit_factor": 0.0,
+              "max_drawdown_r": -1.5380836933122224,
+              "return_pct": -0.10260741383714285,
+              "max_drawdown_pct": -0.1026074138371332,
+              "avg_win_r": null,
+              "avg_loss_r": -0.5126945644374075,
+              "longs": 3,
+              "shorts": 0,
+              "exit_reasons": {
+                "stop": 1,
+                "trail": 1,
+                "structure_trail": 1
+              }
+            },
+            "runner_up": [
+              "s2|legs2|depth0.5-0.786|any|buf0.1|long|trailnone",
+              "s3|legs1|depth0-1|fib|buf0.1|long|trailnone",
+              "s3|legs1|depth0.5-0.786|any|buf0.1|long|trailnone"
+            ]
+          },
+          {
+            "train": [
+              "2026-06-15",
+              "2026-08-11"
+            ],
+            "test": [
+              "2026-08-12",
+              "2026-09-09"
+            ],
+            "eligible_combos": 172,
+            "buy_and_hold_pct": -5.382174028034925,
+            "train_test_rank_corr": 0.2436070684844926,
+            "eligible_median_test_expectancy_r": -0.4344558483224552,
+            "picked": "s2|legs1|depth0.5-0.786|ema21|buf0.1|both|trailnone",
+            "train_metrics": {
+              "trades": 15,
+              "win_rate_pct": 13.333333333333334,
+              "expectancy_r": 0.8307729058800972,
+              "t_stat": 0.4919832995692478,
+              "total_r": 12.461593588201458,
+              "profit_factor": 1.9747614834771523,
+              "max_drawdown_r": -6.403249290158302,
+              "return_pct": -0.3434180037171429,
+              "max_drawdown_pct": -0.5076870427908908,
+              "avg_win_r": 12.622921328888806,
+              "avg_loss_r": -0.9834037745827812,
+              "longs": 9,
+              "shorts": 6,
+              "exit_reasons": {
+                "stop": 10,
+                "structure_trail": 5
+              }
+            },
+            "test_metrics": {
+              "trades": 1,
+              "win_rate_pct": 0.0,
+              "expectancy_r": -1.1053438786060021,
+              "t_stat": null,
+              "total_r": -1.1053438786060021,
+              "profit_factor": 0.0,
+              "max_drawdown_r": -1.1053438786060021,
+              "return_pct": -0.03092872307428571,
+              "max_drawdown_pct": -0.030928723074292064,
+              "avg_win_r": null,
+              "avg_loss_r": -1.1053438786060021,
+              "longs": 1,
+              "shorts": 0,
+              "exit_reasons": {
+                "stop": 1
+              }
+            },
+            "runner_up": [
+              "s2|legs1|depth0.5-0.786|ema21|buf0.1|both|trail2",
+              "s2|legs1|depth0.5-0.786|ema21|buf0.3|both|trailnone",
+              "s2|legs1|depth0.5-0.786|ema21|buf0.3|both|trail2"
+            ]
+          }
+        ],
+        "pooled_oos": {
+          "trades": 27,
+          "win_rate_pct": 18.51851851851852,
+          "expectancy_r": -0.20018917544338408,
+          "t_stat": -0.5327780006027274,
+          "total_r": -5.40510773697137,
+          "profit_factor": 0.7437115677985354,
+          "max_drawdown_r": -12.020303983432292,
+          "return_pct": 0.06666478382285712,
+          "max_drawdown_pct": -0.4357504169194052,
+          "avg_win_r": 3.136966514370834,
+          "avg_loss_r": -0.9586336504011609,
+          "longs": 27,
+          "shorts": 0,
+          "exit_reasons": {
+            "structure_trail": 13,
+            "stop": 13,
+            "trail": 1
+          }
+        },
+        "distinct_picks": [
+          "s2|legs1|depth0-1|fib|buf0.1|long|trailnone",
+          "s2|legs1|depth0.5-0.786|ema21|buf0.1|both|trailnone",
+          "s2|legs2|depth0-1|fib|buf0.1|long|trailnone",
+          "s2|legs2|depth0.5-0.786|any|buf0.1|long|trail2"
+        ],
+        "buy_and_hold_oos_pct": -16.042762033732274,
+        "oos_sessions": 80
+      },
+      "in_sample_best": {
+        "combo": "s3|legs1|depth0.5-0.786|fib|buf0.1|long|trailnone",
+        "metrics": {
+          "trades": 34,
+          "win_rate_pct": 23.529411764705884,
+          "expectancy_r": 1.138907553382633,
+          "t_stat": 1.0692732370371238,
+          "total_r": 38.72285681500952,
+          "profit_factor": 2.582141917896419,
+          "max_drawdown_r": -6.1485116259651065,
+          "return_pct": 1.2707962779585713,
+          "max_drawdown_pct": -0.23143734236499586,
+          "avg_win_r": 7.8997268380069565,
+          "avg_loss_r": -0.9413445341940818,
+          "longs": 34,
+          "shorts": 0,
+          "exit_reasons": {
+            "stop": 16,
+            "structure_trail": 17,
+            "structure_break": 1
+          }
+        }
+      },
+      "baseline": {
+        "combo": "s2|legs1|depth0.236-0.786|any|buf0.3|both|trailnone",
+        "all_sessions": {
+          "trades": 253,
+          "win_rate_pct": 21.343873517786562,
+          "expectancy_r": -0.3901178092899355,
+          "t_stat": -2.9854133392788897,
+          "total_r": -98.69980575035368,
+          "profit_factor": 0.535391100863877,
+          "max_drawdown_r": -98.69980575035368,
+          "return_pct": -4.955865331680713,
+          "max_drawdown_pct": -4.955865331680805,
+          "avg_win_r": 2.1062317843701255,
+          "avg_loss_r": -1.067519206564525,
+          "longs": 137,
+          "shorts": 116,
+          "exit_reasons": {
+            "stop": 115,
+            "structure_trail": 102,
+            "structure_break": 36
+          }
+        },
+        "oos_sessions": {
+          "trades": 154,
+          "win_rate_pct": 22.07792207792208,
+          "expectancy_r": -0.49641141529885774,
+          "t_stat": -3.713358099371284,
+          "total_r": -76.44735795602409,
+          "profit_factor": 0.40242495119803945,
+          "max_drawdown_r": -81.58434981142625,
+          "return_pct": -3.695402690469286,
+          "max_drawdown_pct": -3.9528982208363463,
+          "avg_win_r": 1.5141747790581208,
+          "avg_loss_r": -1.0660775037000016,
+          "longs": 77,
+          "shorts": 77,
+          "exit_reasons": {
+            "stop": 71,
+            "structure_trail": 61,
+            "structure_break": 22
+          }
+        }
+      },
+      "combos_positive_full_period": 109,
+      "top10_full_period_in_sample": [
+        {
+          "combo": "s3|legs1|depth0.5-0.786|fib|buf0.1|long|trailnone",
+          "metrics": {
+            "trades": 34,
+            "win_rate_pct": 23.529411764705884,
+            "expectancy_r": 1.138907553382633,
+            "t_stat": 1.0692732370371238,
+            "total_r": 38.72285681500952,
+            "profit_factor": 2.582141917896419,
+            "max_drawdown_r": -6.1485116259651065,
+            "return_pct": 1.2707962779585713,
+            "max_drawdown_pct": -0.23143734236499586,
+            "avg_win_r": 7.8997268380069565,
+            "avg_loss_r": -0.9413445341940818,
+            "longs": 34,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 16,
+              "structure_trail": 17,
+              "structure_break": 1
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0.5-0.786|fib|buf0.3|long|trailnone",
+          "metrics": {
+            "trades": 34,
+            "win_rate_pct": 20.58823529411765,
+            "expectancy_r": 1.0414861087427951,
+            "t_stat": 1.0380877859649715,
+            "total_r": 35.410527697255034,
+            "profit_factor": 2.673731023838515,
+            "max_drawdown_r": -6.504952925942761,
+            "return_pct": 1.2809098429785715,
+            "max_drawdown_pct": -0.26105181964143415,
+            "avg_win_r": 8.081024210168477,
+            "avg_loss_r": -0.7835793249601598,
+            "longs": 34,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 14,
+              "structure_trail": 15,
+              "structure_break": 5
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trailnone",
+          "metrics": {
+            "trades": 57,
+            "win_rate_pct": 29.82456140350877,
+            "expectancy_r": 0.8104107463780483,
+            "t_stat": 1.2537157638699041,
+            "total_r": 46.19341254354875,
+            "profit_factor": 2.1813198711548893,
+            "max_drawdown_r": -12.383850112386643,
+            "return_pct": 1.2794912051207141,
+            "max_drawdown_pct": -0.4915766801737075,
+            "avg_win_r": 5.017449059364931,
+            "avg_loss_r": -0.9775805366413769,
+            "longs": 57,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 28,
+              "structure_trail": 26,
+              "structure_break": 3
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0-1|ema21|buf0.1|long|trailnone",
+          "metrics": {
+            "trades": 35,
+            "win_rate_pct": 22.857142857142858,
+            "expectancy_r": 0.7513134730176232,
+            "t_stat": 0.705368292488512,
+            "total_r": 26.295971555616813,
+            "profit_factor": 1.7293756980404635,
+            "max_drawdown_r": -16.240178349301424,
+            "return_pct": 1.2521244572364285,
+            "max_drawdown_pct": -0.6286464994231578,
+            "avg_win_r": 7.7935853715070165,
+            "avg_loss_r": -1.335285608016271,
+            "longs": 35,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 16,
+              "structure_trail": 19
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0.5-0.786|fib|buf0.1|long|trail2",
+          "metrics": {
+            "trades": 36,
+            "win_rate_pct": 30.555555555555557,
+            "expectancy_r": 0.7026204432959341,
+            "t_stat": 0.9959559831880905,
+            "total_r": 25.294335958653626,
+            "profit_factor": 2.0166102836523367,
+            "max_drawdown_r": -6.077603800746279,
+            "return_pct": 0.9581761917908072,
+            "max_drawdown_pct": -0.27116591668668844,
+            "avg_win_r": 4.561399140280954,
+            "avg_loss_r": -0.9952421833774743,
+            "longs": 36,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 16,
+              "trail": 14,
+              "structure_trail": 6
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0-1|ema21|buf0.3|long|trailnone",
+          "metrics": {
+            "trades": 35,
+            "win_rate_pct": 22.857142857142858,
+            "expectancy_r": 0.6531485159302829,
+            "t_stat": 0.6467126723699903,
+            "total_r": 22.860198057559902,
+            "profit_factor": 1.6659268881756963,
+            "max_drawdown_r": -15.849559877365124,
+            "return_pct": 1.0883409095749998,
+            "max_drawdown_pct": -0.7189511587121145,
+            "avg_win_r": 7.148573531367725,
+            "avg_loss_r": -1.2714218590141444,
+            "longs": 35,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 16,
+              "structure_trail": 19
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0.5-0.786|fib|buf0.3|long|trail2",
+          "metrics": {
+            "trades": 36,
+            "win_rate_pct": 30.555555555555557,
+            "expectancy_r": 0.6299669832707091,
+            "t_stat": 0.9839167523447027,
+            "total_r": 22.678811397745527,
+            "profit_factor": 2.054837948778855,
+            "max_drawdown_r": -5.341737121486396,
+            "return_pct": 0.9540850766358071,
+            "max_drawdown_pct": -0.28639434678669207,
+            "avg_win_r": 4.016237957105115,
+            "avg_loss_r": -0.8599922452164299,
+            "longs": 36,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 14,
+              "trail": 16,
+              "structure_break": 3,
+              "structure_trail": 3
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.5-0.786|fib|buf0.3|long|trailnone",
+          "metrics": {
+            "trades": 58,
+            "win_rate_pct": 31.03448275862069,
+            "expectancy_r": 0.6220612789986383,
+            "t_stat": 1.095633612338201,
+            "total_r": 36.07955418192102,
+            "profit_factor": 1.9868965469995434,
+            "max_drawdown_r": -13.062190112223256,
+            "return_pct": 1.056136526494286,
+            "max_drawdown_pct": -0.5654742348306269,
+            "avg_win_r": 4.035452901955317,
+            "avg_loss_r": -0.9139649513318672,
+            "longs": 58,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 27,
+              "structure_trail": 22,
+              "structure_break": 9
+            }
+          }
+        },
+        {
+          "combo": "s2|legs1|depth0.5-0.786|fib|buf0.1|long|trail2",
+          "metrics": {
+            "trades": 60,
+            "win_rate_pct": 28.333333333333332,
+            "expectancy_r": 0.5899495927361509,
+            "t_stat": 1.1789256858663195,
+            "total_r": 35.396975564169054,
+            "profit_factor": 1.8758037784328594,
+            "max_drawdown_r": -14.525516060503,
+            "return_pct": 0.8850014742256499,
+            "max_drawdown_pct": -0.5111411814058695,
+            "avg_win_r": 4.459619712532518,
+            "avg_loss_r": -0.9399199895089245,
+            "longs": 60,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 26,
+              "trail": 19,
+              "structure_break": 3,
+              "structure_trail": 12
+            }
+          }
+        },
+        {
+          "combo": "s3|legs1|depth0.5-0.786|any|buf0.1|long|trailnone",
+          "metrics": {
+            "trades": 48,
+            "win_rate_pct": 20.833333333333332,
+            "expectancy_r": 0.5197714971149593,
+            "t_stat": 0.6928372323995596,
+            "total_r": 24.949031861518044,
+            "profit_factor": 1.7053413513021323,
+            "max_drawdown_r": -12.887589428311944,
+            "return_pct": 0.5204065220214285,
+            "max_drawdown_pct": -0.7445461679156871,
+            "avg_win_r": 6.032060310919776,
+            "avg_loss_r": -0.9308308223073606,
+            "longs": 48,
+            "shorts": 0,
+            "exit_reasons": {
+              "stop": 24,
+              "structure_trail": 23,
+              "structure_break": 1
+            }
+          }
+        }
+      ],
+      "full_period_distribution": {
+        "median_expectancy_r": -0.394671183481624,
+        "median_trades": 28.0
+      }
+    }
+  }
+}

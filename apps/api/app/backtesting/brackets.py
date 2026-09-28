@@ -47,7 +47,7 @@ from decimal import Decimal
 from apps.api.app.backtesting.costs import CostModel
 from apps.api.app.marketdata.ohlcv import OHLCVBar
 from apps.api.app.marketdata.sessions import is_regular_hours, session_date
-from apps.api.app.marketdata.structure import Direction
+from apps.api.app.marketdata.structure import Direction, SwingKind, SwingPoint, find_swings
 
 
 class ExitReason(str, enum.Enum):  # noqa: UP042 (str mixin matches this codebase)
@@ -64,6 +64,13 @@ class ExitReason(str, enum.Enum):  # noqa: UP042 (str mixin matches this codebas
     TARGET_2R = "target_2r"
     TRAIL = "trail"
     TIME_STOP = "time_stop"
+    # Phase 101 (D120) - only produced when `BracketPlan.structure_trail`.
+    STRUCTURE_TRAIL = "structure_trail"
+    """The stop had been ratcheted to a confirmed swing and price took it
+    out: the higher low that was holding the trend up gave way."""
+    STRUCTURE_BREAK = "structure_break"
+    """A new swing was CONFIRMED beyond the previous one against the trade
+    (a lower low under a long) before the trailed stop was touched."""
 
 
 @dataclass(frozen=True)
@@ -136,6 +143,42 @@ class BracketPlan:
     dropped: a skipped trade would quietly remove exactly the highest-
     conviction setups from the statistics.
     """
+
+    # --- Phase 101 (D120): ride the trend to its structure break. ---------
+    #
+    # Every field below is inert unless `structure_trail` is True, so a
+    # default `BracketPlan()` simulates exactly what it did before.
+
+    structure_trail: bool = False
+    """Replace the scaled targets with a structure exit: no TP1/TP2, no
+    breakeven move. The stop starts at the setup's structural stop and is
+    ratcheted to each new CONFIRMED higher low (lower high for a short) -
+    never loosened, and never moved by a swing before that swing's
+    confirmation bar has closed. The position leaves only when that stop
+    trades, when a lower low is confirmed, on the optional ATR trail, or at
+    the time stop."""
+
+    structure_swing_strength: int = 2
+    """Fractal strength of the swings the stop is trailed to."""
+
+    structure_trail_buffer_atr: Decimal = Decimal("0")
+    """How far beyond each confirmed swing the trailed stop sits, in ATR."""
+
+    structure_break_on_close: bool = False
+    """When True a TRAILED structure level exits only on a bar that CLOSES
+    through it (filled at that close), so a wick through the higher low
+    does not end the ride. The initial stop is always an intrabar stop."""
+
+    structure_atr_trail_multiple: Decimal | None = None
+    """Optional trailing take-profit layered on the structure stop: the
+    stop becomes the tighter of the structure level and `best close -
+    k * ATR`. `None` leaves the exit purely structural."""
+
+    hold_overnight: bool = False
+    """Let a structure ride carry across sessions instead of closing at the
+    bell. Only honoured with `structure_trail`; the engine must then pass
+    the regular-hours bars of every session. An overnight gap through the
+    stop fills at the next open, not at the stop."""
 
 
 @dataclass
@@ -283,6 +326,7 @@ def simulate_bracket(
     costs: CostModel,
     setup_name: str,
     size_was_capped: bool = False,
+    swings: Sequence[SwingPoint] | None = None,
 ) -> BracketTrade | None:
     """Replay `bars` from `entry_index + 1` until the bracket is resolved.
 
@@ -291,6 +335,10 @@ def simulate_bracket(
     the trade would let a setup detected from a bar's close be filled and
     stopped inside that same close - information the strategy did not have
     when it decided.
+
+    `swings` is read only by the structure exit (`plan.structure_trail`);
+    when omitted it is computed from `bars`. Each swing is gated on its own
+    `confirmed_ts`, so passing swings found over the whole series is safe.
     """
     if quantity <= 0:
         return None
@@ -326,6 +374,22 @@ def simulate_bracket(
         setup_name=setup_name,
         size_was_capped=size_was_capped,
     )
+
+    if plan.structure_trail:
+        _ride_structure(
+            bars,
+            trade=trade,
+            entry_index=entry_index,
+            atr=atr,
+            plan=plan,
+            costs=costs,
+            swings=(
+                swings
+                if swings is not None
+                else find_swings(bars, strength=plan.structure_swing_strength)
+            ),
+        )
+        return trade if trade.fills else None
 
     sign = Decimal(1) if direction is Direction.LONG else Decimal(-1)
     tp1 = fill_entry + sign * plan.tp1_r_multiple * risk_per_share
@@ -437,3 +501,130 @@ def simulate_bracket(
         close_slice(bars[-1], remaining, bars[-1].close, ExitReason.TIME_STOP)
 
     return trade if trade.fills else None
+
+
+def _ride_structure(
+    bars: Sequence[OHLCVBar],
+    *,
+    trade: BracketTrade,
+    entry_index: int,
+    atr: Decimal | None,
+    plan: BracketPlan,
+    costs: CostModel,
+    swings: Sequence[SwingPoint],
+) -> None:
+    """The structure exit (Phase 101, D120): hold the whole position until
+    the trend's own structure says it has ended.
+
+    The order of operations on each bar is what keeps this causal, and it
+    is the pessimistic order:
+
+    1. The bar is first tested against the stop AS IT STOOD AT THE PREVIOUS
+       CLOSE. A swing confirmed by this bar cannot protect this bar.
+    2. Only then are swings whose `confirmed_ts` is this bar absorbed; they
+       may ratchet the stop for the NEXT bar, never loosen it.
+    3. A newly confirmed swing beyond the previous one against the trade (a
+       lower low under a long) is a market-structure break and exits at
+       this bar's close, even if the trailed stop was not touched.
+
+    A gap through the stop fills at the bar's open, not at the stop - the
+    difference matters most for `hold_overnight`, where the overnight gap
+    is the largest move a 3x ETF makes.
+    """
+    long = trade.direction is Direction.LONG
+    fill_entry = trade.entry_price
+    risk = trade.risk_per_share
+    quantity = trade.quantity
+    trail_kind = SwingKind.LOW if long else SwingKind.HIGH
+    pending = sorted(
+        (s for s in swings if s.kind is trail_kind), key=lambda s: (s.confirmed_ts, s.ts)
+    )
+
+    entry_bar = bars[entry_index]
+    known = [s for s in pending if s.confirmed_ts <= entry_bar.ts]
+    reference = max(known, key=lambda s: s.ts) if known else None
+    cursor = len(known)
+
+    stop = trade.initial_stop
+    stop_source = "initial"  # initial | structure | atr
+    best_close = fill_entry
+    buffer = (atr or Decimal(0)) * plan.structure_trail_buffer_atr
+    entry_session = session_date(entry_bar.ts)
+    last_bar = entry_bar
+
+    def tighter(level: Decimal, than: Decimal) -> bool:
+        return level > than if long else level < than
+
+    def exit_at(bar: OHLCVBar, raw_price: Decimal, reason: ExitReason) -> None:
+        price = costs.sell_price(raw_price) if long else costs.buy_price(raw_price)
+        move = price - fill_entry if long else fill_entry - price
+        trade.fills.append(
+            BracketFill(
+                ts=bar.ts,
+                quantity=quantity,
+                price=price,
+                reason=reason,
+                r_multiple=move / risk,
+            )
+        )
+
+    for bar in bars[entry_index + 1 :]:
+        if not is_regular_hours(bar.ts):
+            if plan.hold_overnight:
+                continue
+            exit_at(last_bar, last_bar.close, ExitReason.TIME_STOP)
+            return
+        if not plan.hold_overnight and session_date(bar.ts) != entry_session:
+            exit_at(last_bar, last_bar.close, ExitReason.TIME_STOP)
+            return
+        last_bar = bar
+
+        # --- 1. The stop as known at the previous close. ---
+        close_mode = plan.structure_break_on_close and stop_source == "structure"
+        hard = trade.initial_stop if close_mode else stop
+        breached = _low(bar) <= hard if long else _high(bar) >= hard
+        if breached:
+            raw = hard
+            if bar.open is not None:
+                raw = min(hard, bar.open) if long else max(hard, bar.open)
+            if close_mode or stop_source == "initial":
+                reason = ExitReason.STOP
+            elif stop_source == "atr":
+                reason = ExitReason.TRAIL
+            else:
+                reason = ExitReason.STRUCTURE_TRAIL
+            exit_at(bar, raw, reason)
+            return
+        if close_mode and tighter(stop, bar.close):
+            exit_at(bar, bar.close, ExitReason.STRUCTURE_TRAIL)
+            return
+
+        # --- 2./3. Swings confirmed by THIS close. ---
+        broke = False
+        while cursor < len(pending) and pending[cursor].confirmed_ts <= bar.ts:
+            swing = pending[cursor]
+            cursor += 1
+            if reference is not None and swing.ts <= reference.ts:
+                continue
+            if reference is not None and tighter(reference.price, swing.price):
+                broke = True  # a lower low under a long / higher high over a short
+            reference = swing
+            level = swing.price - buffer if long else swing.price + buffer
+            if tighter(level, stop) and tighter(bar.close, level):
+                stop = level
+                stop_source = "structure"
+        if broke:
+            exit_at(bar, bar.close, ExitReason.STRUCTURE_BREAK)
+            return
+
+        # --- Optional trailing take-profit on top of the structure. ---
+        if plan.structure_atr_trail_multiple is not None and atr:
+            best_close = max(best_close, bar.close) if long else min(best_close, bar.close)
+            offset = plan.structure_atr_trail_multiple * atr
+            trailed = best_close - offset if long else best_close + offset
+            if tighter(trailed, stop) and tighter(bar.close, trailed):
+                stop = trailed
+                stop_source = "atr"
+
+    if bars[entry_index + 1 :] and last_bar is not entry_bar:
+        exit_at(last_bar, last_bar.close, ExitReason.TIME_STOP)

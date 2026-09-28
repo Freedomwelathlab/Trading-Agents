@@ -34,8 +34,9 @@ from apps.api.app.marketdata.candles import (
     detect_at,
 )
 from apps.api.app.marketdata.indicators import InsufficientDataError
+from apps.api.app.marketdata.indicators import ema as _indicator_ema
 from apps.api.app.marketdata.indicators import rsi as _indicator_rsi
-from apps.api.app.marketdata.sessions import SessionLevels, VwapPoint
+from apps.api.app.marketdata.sessions import SessionLevels, VwapPoint, session_vwap
 from apps.api.app.marketdata.structure import (
     Direction,
     SwingKind,
@@ -1353,6 +1354,195 @@ def bollinger_confluence_setup(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 101 (D120) - ride the trend: buy the confirmed higher low
+# ---------------------------------------------------------------------------
+
+TREND_PULLBACK_SUPPORTS = ("any", "ema9", "ema21", "vwap", "fib", "prior_swing")
+"""Where a pullback may be required to hold. `any` asks only that it be a
+higher low; the others additionally require the pullback's extreme to have
+come within `support_tolerance_atr` of that level. Measured in
+`docs/RESEARCH_TREND_TQQQ.md` before being offered as a parameter."""
+
+
+def _ema_at(ctx: BarContext, index: int, period: int) -> Decimal | None:
+    closes = [b.close for b in ctx.bars[max(0, index - 80) : index + 1]]
+    if len(closes) < period:
+        return None
+    return _indicator_ema(closes, period)
+
+
+def _vwap_at(ctx: BarContext, index: int) -> Decimal | None:
+    points = session_vwap(ctx.bars[: index + 1])
+    return points[-1].vwap if points else None
+
+
+def trend_pullback_setup(
+    ctx: BarContext,
+    *,
+    min_trend_legs: int = 1,
+    min_depth: Decimal = Decimal("0.236"),
+    max_depth: Decimal = Decimal("0.786"),
+    support: str = "any",
+    support_tolerance_atr: Decimal = Decimal("0.25"),
+    atr_stop_buffer: Decimal = Decimal("0.30"),
+    require_higher_tf_alignment: bool = False,
+    directions: tuple[Direction, ...] = (Direction.LONG, Direction.SHORT),
+) -> SetupSignal | None:
+    """Enter WITH a confirmed trend on the bar its newest pullback is
+    confirmed as a higher low (lower high for a short).
+
+    The operator's brief was "catch the bottom for buy and top to sell" and
+    ride the trend until it reverses. Three studies on this timeframe found
+    no edge in calling the extreme of a move (docs/RESEARCH_5M.md), so this
+    does not try to. It waits for the market to PROVE a low held - the
+    swing low is confirmed `strength` bars after it printed - and only
+    inside a trend that already has the Dow shape: at least
+    `min_trend_legs` consecutive higher highs AND higher lows, from
+    CONFIRMED swings only.
+
+    It fires on exactly one bar per pullback: the bar on which the new
+    swing's `confirmed_ts` arrives. Before that bar the pivot is not
+    knowable; after it the entry is stale and a second signal would double
+    count the same idea.
+
+    Conditions for a long (a short mirrors every one):
+      1. the newest confirmed swing low was confirmed ON this bar;
+      2. the last `min_trend_legs + 1` confirmed highs and lows are each
+         strictly rising, and the newest high sits between the two newest
+         lows in time (a high, then the pullback from it);
+      3. the pullback retraced between `min_depth` and `max_depth` of the
+         impulse that preceded it (previous higher low -> newest high);
+      4. if `support` is not `any`, the pullback's low came within
+         `support_tolerance_atr` ATR of that level at the pivot bar;
+      5. optionally, the higher timeframe agrees.
+
+    The stop is the confirmed low less `atr_stop_buffer` ATR. There is
+    deliberately no target here: the exit that pairs with this setup is
+    `BracketPlan(structure_trail=True)`, which moves the stop to each new
+    confirmed higher low and leaves only on a structure break.
+    """
+    if ctx.atr is None or ctx.atr <= 0 or min_trend_legs < 1:
+        return None
+    if support not in TREND_PULLBACK_SUPPORTS:
+        raise ValueError(f"support must be one of {TREND_PULLBACK_SUPPORTS}; got {support!r}.")
+
+    now = ctx.bar.ts
+    highs = [s for s in ctx.swings if s.kind is SwingKind.HIGH and s.confirmed_ts <= now]
+    lows = [s for s in ctx.swings if s.kind is SwingKind.LOW and s.confirmed_ts <= now]
+    highs.sort(key=lambda s: s.ts)
+    lows.sort(key=lambda s: s.ts)
+    need = min_trend_legs + 1
+
+    for direction in directions:
+        if direction is Direction.LONG:
+            pivots, opposite = lows, highs
+        else:
+            pivots, opposite = highs, lows
+        if len(pivots) < need or len(opposite) < need:
+            continue
+        newest = pivots[-1]
+        if newest.confirmed_ts != now:
+            continue
+
+        seq_p = [s.price for s in pivots[-need:]]
+        seq_o = [s.price for s in opposite[-need:]]
+        if direction is Direction.LONG:
+            rising = all(b > a for a, b in zip(seq_p, seq_p[1:], strict=False)) and all(
+                b > a for a, b in zip(seq_o, seq_o[1:], strict=False)
+            )
+        else:
+            rising = all(b < a for a, b in zip(seq_p, seq_p[1:], strict=False)) and all(
+                b < a for a, b in zip(seq_o, seq_o[1:], strict=False)
+            )
+        if not rising:
+            continue
+
+        impulse_origin = pivots[-2]
+        impulse_end = opposite[-1]
+        if not (impulse_origin.ts < impulse_end.ts < newest.ts):
+            continue
+
+        span = abs(impulse_end.price - impulse_origin.price)
+        if span <= 0:
+            continue
+        depth = abs(impulse_end.price - newest.price) / span
+        if depth < min_depth or depth > max_depth:
+            continue
+
+        pivot_index = _bar_index_at(ctx, newest.ts)
+        if pivot_index is None:
+            continue
+
+        # Where did the pullback stop? Every candidate level is computed AT
+        # the pivot bar from bars up to it, never read off the present bar.
+        tol = support_tolerance_atr * ctx.atr
+        levels: dict[str, Decimal | None] = {}
+        if support in ("ema9", "any"):
+            levels["ema9"] = _ema_at(ctx, pivot_index, 9)
+        if support in ("ema21", "any"):
+            levels["ema21"] = _ema_at(ctx, pivot_index, 21)
+        if support in ("vwap", "any"):
+            levels["vwap"] = _vwap_at(ctx, pivot_index)
+        if support in ("prior_swing", "any"):
+            # The level the impulse broke: the confirmed swing on the
+            # opposite side before `impulse_end`. Old resistance, new support.
+            levels["prior_swing"] = opposite[-2].price
+        if support in ("fib", "any"):
+            sign = Decimal(-1) if direction is Direction.LONG else Decimal(1)
+            for ratio in (Decimal("0.382"), Decimal("0.5"), Decimal("0.618")):
+                levels[f"fib{ratio}"] = impulse_end.price + sign * ratio * span
+
+        touched = sorted(
+            name
+            for name, level in levels.items()
+            if level is not None and abs(newest.price - level) <= tol
+        )
+        if support != "any":
+            wanted = [
+                n for n in touched if n == support or (support == "fib" and n.startswith("fib"))
+            ]
+            if not wanted:
+                continue
+
+        if require_higher_tf_alignment and ctx.higher_tf_bias is not direction:
+            continue
+
+        score = 2
+        evidence = {
+            "trend_legs": str(min_trend_legs),
+            "pullback_depth": f"{depth:.3f}",
+            "pullback_depth_atr": f"{abs(impulse_end.price - newest.price) / ctx.atr:.2f}",
+            "impulse_atr": f"{span / ctx.atr:.2f}",
+            "held_at": ",".join(touched) if touched else "open space",
+        }
+        if touched:
+            score += 1
+        if ctx.higher_tf_bias is direction:
+            score += 1
+            evidence["higher_tf_bias"] = direction.value
+        if ctx.ema_fast is not None and ctx.ema_slow is not None:
+            aligned = (
+                ctx.ema_fast > ctx.ema_slow
+                if direction is Direction.LONG
+                else ctx.ema_fast < ctx.ema_slow
+            )
+            if aligned:
+                score += 1
+                evidence["ema_stack"] = "with trend"
+
+        return SetupSignal(
+            setup_name="trend_pullback",
+            direction=direction,
+            entry_index=ctx.index,
+            entry_price=ctx.bar.close,
+            stop_price=_stop_from_extreme(newest.price, direction, ctx.atr, atr_stop_buffer),
+            score=score,
+            evidence=evidence,
+        )
+    return None
+
+
 SETUPS: dict[str, SetupDetector] = {
     "sweep_mss": sweep_mss_setup,
     "vwap_reversion": vwap_reversion_setup,
@@ -1367,6 +1557,9 @@ SETUPS: dict[str, SetupDetector] = {
     "order_block_fvg": order_block_fvg_setup,
     "fib_confluence": fib_confluence_setup,
     "bollinger_confluence": bollinger_confluence_setup,
+    # Phase 101 (D120) - continuation after a confirmed higher low / lower
+    # high. Pairs with `BracketPlan(structure_trail=True)`.
+    "trend_pullback": trend_pullback_setup,
 }
 """Registry, so a run can name which setups to enable and a caller can
 add one without touching the engine."""

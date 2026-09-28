@@ -1,0 +1,202 @@
+{
+  "symbol": "TQQQ.US",
+  "generated": "2026-09-28T06:31:45.626747+00:00",
+  "series": [
+    {
+      "series": "TQQQ.US 5m (regular hours, joined across sessions)",
+      "strength": 3,
+      "bars": 10296,
+      "trends_up": {
+        "n": 168,
+        "median_leg_pct": 2.927169885292396,
+        "median_bars_to_break": 35.0,
+        "median_pullbacks": 1.0,
+        "mean_captured_frac": -0.12104867018703888
+      },
+      "trends_down": {
+        "n": 165,
+        "median_leg_pct": 2.5603032391454157,
+        "median_bars_to_break": 31.0,
+        "median_pullbacks": 1.0,
+        "mean_captured_frac": -0.23321250621863404
+      },
+      "break_then_opposite_pct": 78.07807807807808,
+      "trends_spanning_sessions_pct": 51.651651651651655,
+      "pullbacks": 563,
+      "median_depth_frac": 0.5912897822445564,
+      "median_depth_atr": 2.1431787483115756,
+      "held_at": {
+        "open space": 214,
+        "ema21": 75,
+        "ema9": 46,
+        "vwap": 29,
+        "fib0.382": 47,
+        "fib0.618": 77,
+        "prior_swing": 23,
+        "fib0.5": 52
+      },
+      "depth_band_counts": {
+        "0-0.236": 40,
+        "0.236-0.382": 89,
+        "0.382-0.5": 83,
+        "0.5-0.618": 93,
+        "0.618-0.786": 126,
+        "0.786-1.01": 132
+      },
+      "ride_all_net_mean_r": -0.28664171294936297,
+      "ride_all_net_t": -1.750381210269211,
+      "ride_all_n": 563,
+      "ride_session_net_mean_r": -0.11183139644494311,
+      "ride_session_net_t": -1.7024750635120534,
+      "rides_spanning_sessions_pct": 28.41918294849023,
+      "median_cost_r": 0.09327517447656829,
+      "median_mfe_r": 0.830254715146796,
+      "break_rate_failed": {
+        "with": 40.298507462686565,
+        "without": 25.38860103626943,
+        "n": 201
+      },
+      "break_rate_divergence": {
+        "with": 27.044025157232703,
+        "without": 31.77570093457944,
+        "n": 159
+      },
+      "break_rate_adx_falling": {
+        "with": 36.170212765957444,
+        "without": 23.25581395348837,
+        "n": 329
+      },
+      "extremes_resolved": 587,
+      "extreme_break_base_rate_pct": 30.494037478705284
+    },
+    {
+      "series": "TQQQ.US 5m (regular hours, joined across sessions)",
+      "strength": 2,
+      "bars": 10296,
+      "trends_up": {
+        "n": 222,
+        "median_leg_pct": 2.264147969678035,
+        "median_bars_to_break": 26.0,
+        "median_pullbacks": 1.0,
+        "mean_captured_frac": -0.22633865744687373
+      },
+      "trends_down": {
+        "n": 226,
+        "median_leg_pct": 2.019980346859062,
+        "median_bars_to_break": 21.0,
+        "median_pullbacks": 1.0,
+        "mean_captured_frac": -0.23987574565544578
+      },
+      "break_then_opposite_pct": 83.668903803132,
+      "trends_spanning_sessions_pct": 38.169642857142854,
+      "pullbacks": 810,
+      "median_depth_frac": 0.5987917578506025,
+      "median_depth_atr": 1.7563994852996703,
+      "held_at": {
+        "open space": 242,
+        "ema21": 95,
+        "fib0.382": 84,
+        "vwap": 42,
+        "prior_swing": 35,
+        "fib0.618": 125,
+        "ema9": 110,
+        "fib0.5": 77
+      },
+      "depth_band_counts": {
+        "0-0.236": 41,
+        "0.236-0.382": 129,
+        "0.382-0.5": 125,
+        "0.5-0.618": 136,
+        "0.618-0.786": 182,
+        "0.786-1.01": 197
+      },
+      "ride_all_net_mean_r": -0.16381725462037564,
+      "ride_all_net_t": -1.1392552736703725,
+      "ride_all_n": 810,
+      "ride_session_net_mean_r": -0.09938035993182552,
+      "ride_session_net_t": -1.7125700409682187,
+      "rides_spanning_sessions_pct": 18.765432098765434,
+      "median_cost_r": 0.11386582103258522,
+      "median_mfe_r": 0.9342006861027352,
+      "break_rate_failed": {
+        "with": 40.59040590405904,
+        "without": 23.440453686200378,
+        "n": 271
+      },
+      "break_rate_divergence": {
+        "with": 24.489795918367346,
+        "without": 30.794701986754966,
+        "n": 196
+      },
+      "break_rate_adx_falling": {
+        "with": 34.05275779376499,
+        "without": 24.02088772845953,
+        "n": 417
+      },
+      "extremes_resolved": 800,
+      "extreme_break_base_rate_pct": 29.25
+    },
+    {
+      "series": "TQQQ.US 1d",
+      "strength": 2,
+      "bars": 759,
+      "trends_up": {
+        "n": 20,
+        "median_leg_pct": 29.545928037399147,
+        "median_bars_to_break": 18.5,
+        "median_pullbacks": 1.0,
+        "mean_captured_frac": -0.16525844312247845
+      },
+      "trends_down": {
+        "n": 15,
+        "median_leg_pct": 23.826602214252294,
+        "median_bars_to_break": 23.0,
+        "median_pullbacks": 2.0,
+        "mean_captured_frac": -0.14486326855167506
+      },
+      "break_then_opposite_pct": 79.41176470588235,
+      "pullbacks": 66,
+      "median_depth_frac": 0.626191844476744,
+      "median_depth_atr": 1.921556966615125,
+      "held_at": {
+        "ema21": 7,
+        "ema9": 10,
+        "open space": 24,
+        "fib0.382": 5,
+        "fib0.618": 11,
+        "fib0.5": 6,
+        "prior_swing": 3
+      },
+      "depth_band_counts": {
+        "0-0.236": 3,
+        "0.236-0.382": 12,
+        "0.382-0.5": 2,
+        "0.5-0.618": 15,
+        "0.618-0.786": 15,
+        "0.786-1.01": 19
+      },
+      "ride_all_net_mean_r": -0.2812409375955783,
+      "ride_all_net_t": -1.4366394795593556,
+      "ride_all_n": 66,
+      "median_cost_r": 0.009237149719950535,
+      "median_mfe_r": 0.9792989951497505,
+      "break_rate_failed": {
+        "with": 25.0,
+        "without": 25.0,
+        "n": 16
+      },
+      "break_rate_divergence": {
+        "with": 31.57894736842105,
+        "without": 21.62162162162162,
+        "n": 19
+      },
+      "break_rate_adx_falling": {
+        "with": 23.076923076923077,
+        "without": 26.666666666666668,
+        "n": 26
+      },
+      "extremes_resolved": 56,
+      "extreme_break_base_rate_pct": 25.0
+    }
+  ]
+}
