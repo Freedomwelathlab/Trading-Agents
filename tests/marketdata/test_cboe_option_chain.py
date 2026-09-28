@@ -87,6 +87,25 @@ async def test_one_download_serves_every_expiry():
 
 
 @pytest.mark.asyncio
+async def test_the_underlying_price_comes_from_the_same_document():
+    """Phase 100 (D119): the snapshot's strike band is drawn around this."""
+    doc = _doc(ROWS)
+    doc["data"].update({"current_price": 79.85, "close": 79.6})
+    p = CboeDelayedOptionChainProvider(fetch=lambda root: doc)
+    assert await p.get_underlying_price("TQQQ.US") == Decimal("79.85")
+
+    only_close = _doc(ROWS)
+    only_close["data"]["close"] = 79.6
+    p = CboeDelayedOptionChainProvider(fetch=lambda root: only_close)
+    assert await p.get_underlying_price("TQQQ.US") == Decimal("79.6")
+
+    zero = _doc(ROWS)
+    zero["data"]["current_price"] = 0
+    p = CboeDelayedOptionChainProvider(fetch=lambda root: zero)
+    assert await p.get_underlying_price("TQQQ.US") is None  # not a price to band around
+
+
+@pytest.mark.asyncio
 async def test_non_us_symbols_are_refused():
     p = CboeDelayedOptionChainProvider(fetch=lambda root: _doc(ROWS))
     with pytest.raises(DataUnavailableError):

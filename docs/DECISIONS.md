@@ -11499,3 +11499,83 @@ Findings in `docs/RESEARCH_TREND_TQQQ.md`; reports in
 `docs/research/trend_anatomy_2026-09-28.json` and
 `docs/research/trend_walk_forward_2026-09-28.json`. No order placed at any
 venue.
+
+## D119 — Options research on TQQQ: record real chains daily, backtest with a labelled model until they exist (Phase 100)
+Date: 2026-09-28
+
+**The problem.** Every options figure this platform had produced for a past
+date was a Black-Scholes number from an assumed volatility, and there was
+nothing to check it against: no free source publishes historical chains,
+and Longbridge cannot even quote the live chain for this account
+(`301604`, D117). Options research therefore needed two things that are
+different in kind: a way to START owning real history, and an honest way
+to research in the meantime.
+
+**Record the real chain, once a trading day, small.** Migration 0035 adds
+`option_chain_snapshots`, filled by `options/snapshots.py::capture_chain_snapshot`
+from whatever chain provider the app is wired with (in practice Cboe's
+delayed feed). Only expiries within 60 DTE and strikes within ±30% of the
+vendor's own underlying price are kept. Measured on the real TQQQ document
+of 2026-09-25: 908 of 1,688 contracts, 11 of 16 expiries, **280 KB on disk
+including indexes (316 B/row)** — about 70 MB a year for TQQQ, against the
+0.28 GB the whole production database uses today (D117). The key is the
+natural (`contract_symbol`, `as_of`) — the required uniqueness — rather
+than a UUID, which would have added a second unique index to a table whose
+brief is to stay small. `trade_date` is the New York date of the VENDOR's
+`as_of`, and a second capture for the same trade date replaces the first in
+one transaction, so there is exactly one snapshot per day and an operator's
+intraday on-demand capture (`POST /admin/options/snapshots/{underlying}`,
+`admin:manage`) can never block the after-close one. Reads:
+`GET /options/snapshots/{underlying}?date=` and `.../dates`.
+
+**The loop runs on New York time, not "20:30 UTC".** `OptionSnapshotScheduler`
+(fifth lifespan loop, own advisory-lock objid `b"opts"`) captures each
+weekday after `OPTION_SNAPSHOT_CAPTURE_AFTER_ET` (16:30). 20:30 UTC is
+16:30 EDT but 15:30 EST — a UTC schedule would record the chain half an
+hour before the close all winter and call it the day's snapshot. Holidays
+are not modelled: the capture requires the vendor's `as_of` to be today in
+New York and otherwise writes nothing (`stale_source`), which cannot be
+wrong about a holiday the way a hard-coded calendar can.
+`OPTION_SNAPSHOT_SCHEDULER_ENABLED` defaults **false**: a loop that writes
+rows forever to a metered database is the operator's decision.
+
+**Backtest with a model, and say so on every price.** `options/backtest.py`
+replays daily closes, builds each structure with the Phase 78 selector
+(`select_strikes`, extended with optional deltas so the research grid and
+the planner share ONE definition of "the strike at this delta") and the
+Phase 75 defined-risk guard (`build_vertical`), and prices legs with
+Black-Scholes at realised vol x an IV/RV multiplier. The multiplier is the
+median of (vendor ATM IV / RV20) over stored snapshot days, else 1.2, and
+the result says which. Costs: half-spread max($0.02, 3% of mid) per leg,
+$0.65/contract/leg to open and to close (not on a worthless expiry). Where
+a stored snapshot exists, the structure is chosen from real listed
+contracts by the vendor's delta and filled at the real bid/ask; each trade
+is `OBSERVED`, `MODELLED` or `MIXED`, and MIXED is never reported as
+observed.
+
+**The measured answer is not an edge.** Walk-forward over 756
+configurations, 252/63-bar windows, 8 folds (2024-10 to 2026-09),
+selection by the t-statistic of R on train: pooled out of sample 47 trades,
+78.7% wins, +$39.39/trade, **+0.100 R, t = 1.44**, total +$1,851.19, max
+drawdown $790.99; 5 of 8 folds positive; every choice was short premium
+(bull put 5, iron condor 2, bear call 1). The multiplier (1.113) was
+measured on ONE snapshot day. With IV = RV (multiplier 1.0) the identical
+procedure loses: −0.173 R, −$2,816.93. The positive number is the assumed
+volatility premium paying the premium seller by construction, not a
+finding about TQQQ. Details: `docs/RESEARCH_OPTIONS.md`.
+
+**Rejected.**
+- *Selecting on raw mean R.* Measured: it picks 8-15-trade long-dated
+  long options and scores −0.858 R, −$4,901.14 out of sample (t = −5.36).
+  t-statistic selection is the default for that reason.
+- *Backfilling "historical" chains from the model into the snapshot
+  table.* That table holds vendor quotes only; a modelled row in it would
+  be fabrication by storage.
+- *Storing the whole chain.* 1,688 rows/day for rows no backtest here
+  reads (LEAPs, 50%-OTM wings with no bid).
+- *A fixed UTC capture time* — see above.
+- *A UUID primary key* — see above.
+- *Enabling the loop by default* — every row-writing loop here is opt-in.
+
+Status: Implemented, tested. Migration 0035 applied to the local database
+only. No order placed; nothing enabled.

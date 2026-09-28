@@ -2443,3 +2443,69 @@ class AutotradeBotInsight(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class OptionChainSnapshot(Base):
+    """One option contract's delayed quote, as captured at one moment
+    (Phase 100, D119, migration 0035).
+
+    Why it exists: this platform has no historical option prices at all.
+    Every options backtest before this phase priced its legs with
+    Black-Scholes from the underlying (`options/pricing.py`) - a MODEL -
+    and there was nothing to check the model against. Recording the real
+    delayed chain once a day, from now on, is the only way that history
+    comes into existence; nothing can be backfilled, because nothing free
+    publishes past chains.
+
+    Kept deliberately SMALL, because it grows forever on a metered
+    Postgres: only expiries within 60 DTE and strikes within +-30% of the
+    underlying are written, and one snapshot per underlying per TRADING
+    DAY - a later capture for the same `trade_date` replaces the earlier
+    one inside a single transaction, so the after-close capture supersedes
+    any intraday on-demand one and the table never holds two versions of
+    one day. Measured on the real TQQQ document of 2026-09-25: 908 of 1,688
+    contracts survive the filter (11 of 16 expiries), i.e. ~229k rows a
+    year per underlying.
+
+    `trade_date` is the New York calendar date of the VENDOR's `as_of`, not
+    of the capture: a Saturday read of a Friday document is Friday's
+    snapshot. `captured_at` records when this server read it.
+
+    Every quote field is nullable and None means the vendor sent nothing -
+    never zero - for the same reason `OptionQuote` keeps them nullable.
+    `iv`/`delta`/`gamma`/`theta`/`vega` are the VENDOR's figures, never
+    ones this platform computed; `source` says whose.
+
+    The primary key is the natural (`contract_symbol`, `as_of`) - which is
+    the required uniqueness: one vendor quote at one vendor timestamp is one
+    row, however many times it is read. Like `market_data_bars`, this
+    departs from `_uuid_pk()` on purpose: a surrogate UUID would add a
+    second index and ~40 bytes a row to a table whose whole design brief is
+    to stay small, and would identify nothing the natural key does not.
+    """
+
+    __tablename__ = "option_chain_snapshots"
+    __table_args__ = (
+        Index("ix_option_snapshots_underlying_trade_date", "underlying", "trade_date"),
+    )
+
+    contract_symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    underlying: Mapped[str] = mapped_column(String(32), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    underlying_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    expiry: Mapped[date] = mapped_column(Date, nullable=False)
+    right: Mapped[str] = mapped_column(String(4), nullable=False)
+    strike: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    bid: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    ask: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    last: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    iv: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    delta: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    gamma: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    theta: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    vega: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    volume: Mapped[int | None] = mapped_column(BigInteger)
+    open_interest: Mapped[int | None] = mapped_column(BigInteger)

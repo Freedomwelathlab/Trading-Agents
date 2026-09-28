@@ -33,6 +33,8 @@ from apps.api.app.api.routes.monte_carlo import (
     runs_router as monte_carlo_runs_router,
 )
 from apps.api.app.api.routes.option_plans import router as option_plans_router
+from apps.api.app.api.routes.option_snapshots import admin_router as option_snapshots_admin_router
+from apps.api.app.api.routes.option_snapshots import router as option_snapshots_router
 from apps.api.app.api.routes.orders import fills_router as order_fills_router
 from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
@@ -68,7 +70,7 @@ from apps.api.app.autotrade.runner import (
     AutotradeBotRunner,
     build_autotrade_runner_cycle_lock,
 )
-from apps.api.app.core.config import get_settings
+from apps.api.app.core.config import get_settings, parse_hh_mm
 from apps.api.app.core.logging import configure_logging, get_logger
 from apps.api.app.core.request_id import RequestIDMiddleware
 from apps.api.app.db.base import get_engine, get_session_factory
@@ -98,6 +100,10 @@ from apps.api.app.marketdata.providers.longbridge import (
 )
 from apps.api.app.marketdata.router import MarketDataRouter
 from apps.api.app.notifications.transactional_email import build_email_provider
+from apps.api.app.options.snapshot_scheduler import (
+    OptionSnapshotScheduler,
+    build_option_snapshot_cycle_lock,
+)
 from apps.api.app.portfolio.cycle_lock import SnapshotCycleLock
 from apps.api.app.portfolio.market_hours import MarketHoursGate
 from apps.api.app.portfolio.scheduler import PortfolioSnapshotScheduler
@@ -310,6 +316,28 @@ async def lifespan(app: FastAPI):
         bot_runner.start()
         app.state.autotrade_bot_runner = bot_runner
 
+    # Phase 100 (D119): the daily option-chain snapshot loop - the fifth
+    # in-process loop, on its own advisory-lock objid. OFF by default: it
+    # writes ~900 rows per underlying per trading day to the database for
+    # as long as it runs, which is the operator's decision. It reads the
+    # same delayed chain provider the options desk uses and never trades.
+    app.state.option_snapshot_scheduler = None
+    if settings.option_snapshot_scheduler_enabled:
+        option_snapshots = OptionSnapshotScheduler(
+            get_session_factory(),
+            provider=app.state.option_chain_provider,
+            underlyings=settings.option_snapshot_underlying_list,
+            capture_after=parse_hh_mm(settings.option_snapshot_capture_after_et),
+            interval_seconds=settings.option_snapshot_interval_seconds,
+            max_dte=settings.option_snapshot_max_dte,
+            strike_band=settings.option_snapshot_strike_band_pct,
+            cycle_lock=build_option_snapshot_cycle_lock(
+                enabled=settings.option_snapshot_cycle_lock_enabled
+            ),
+        )
+        option_snapshots.start()
+        app.state.option_snapshot_scheduler = option_snapshots
+
     logger.info(
         "trading_os_startup",
         trading_mode=settings.trading_mode.value,
@@ -376,6 +404,12 @@ async def lifespan(app: FastAPI):
         live_order_reconciler_cycle_lock=(
             "pg_advisory" if settings.live_order_reconciler_cycle_lock_enabled else "DISABLED"
         ),
+        option_snapshot_scheduler=(
+            f"enabled:{settings.option_snapshot_underlyings}"
+            f"@{settings.option_snapshot_capture_after_et}ET"
+            if settings.option_snapshot_scheduler_enabled
+            else "DISABLED"
+        ),
     )
     yield
 
@@ -405,6 +439,8 @@ async def lifespan(app: FastAPI):
         await app.state.strategy_deployment_runner.stop()
     if app.state.autotrade_bot_runner is not None:
         await app.state.autotrade_bot_runner.stop()
+    if app.state.option_snapshot_scheduler is not None:
+        await app.state.option_snapshot_scheduler.stop()
 
     # The engine created at import time in apps/api/app/db/base.py owns a
     # live asyncpg connection pool. Process exit reclaims those sockets
@@ -460,6 +496,11 @@ app.include_router(backtests_router)
 # at different path depths.
 app.include_router(broker_bridge_router)
 app.include_router(option_plans_router)
+# Phase 100 (D119): stored chain snapshots - reads under /options (any
+# authenticated user, like the live chain), on-demand capture under
+# /admin/options (admin:manage, because it writes).
+app.include_router(option_snapshots_router)
+app.include_router(option_snapshots_admin_router)
 app.include_router(brokers_router)
 # Phase 50: user-scoped, not broker-scoped - registered next to the
 # market-data router it shares a resolution path with rather than with the

@@ -141,6 +141,24 @@ class CboeDelayedOptionChainProvider:
                 out.add(parsed[0])
         return sorted(out)
 
+    async def get_underlying_price(self, underlying: str) -> Decimal | None:
+        """The underlying's last price as printed in the SAME document the
+        chain came from (Phase 100, D119), or None.
+
+        The chain snapshot keeps strikes within a band around spot, and the
+        band has to be drawn around the price the quotes were made against
+        - a stored daily close from another feed can be a day and several
+        percent away on a 3x ETF. `current_price` is preferred, `close`
+        only when it is absent, and a zero or negative figure is refused:
+        it would put every strike outside the band and store nothing.
+        """
+        data = await self._document(underlying)
+        for key in ("current_price", "close"):
+            value = _dec(data.get(key))
+            if value is not None and value > 0:
+                return value
+        return None
+
     async def get_chain(self, underlying: str, expiry: date) -> OptionChain:
         data = await self._document(underlying)
         quotes: list[OptionQuote] = []
@@ -234,6 +252,11 @@ class FallbackOptionChainProvider:
             except (VendorError, DataUnavailableError):
                 pass
         return await self._fallback.get_expiries(underlying)
+
+    async def get_underlying_price(self, underlying: str) -> Decimal | None:
+        """Always Cboe's: it is the document the snapshot's quotes come from
+        whenever Longbridge cannot quote, which on this account is always."""
+        return await self._fallback.get_underlying_price(underlying)
 
     async def get_chain(self, underlying: str, expiry: date) -> OptionChain:
         if expiry < today_in_new_york():

@@ -2373,3 +2373,17 @@ or generating a key that would be lost at the next restart.
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/options/plan` | Scores a signal against the playbook's §5 evidence table and either proposes a defined-risk vertical or refuses. **A refusal is a 200 with `planned: false`** — below the score floor, wrong IV regime for the structure, DTE outside the bands, or a risk budget too small for one contract are the decision layer working, not bad requests. Read-only: reaches no broker, writes nothing. Every price in the response is MODELLED (Black-Scholes from the supplied volatility) and `pricing_note` says so on every response. |
+
+### Options — Phase 100 additions (D119): stored chain snapshots
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/admin/options/snapshots/{underlying}` | Capture the wired chain vendor's current chain now (in practice `cboe-delayed`, ~15 min late), keep expiries ≤ `OPTION_SNAPSHOT_MAX_DTE` (60) and strikes within `OPTION_SNAPSHOT_STRIKE_BAND_PCT` (±30%) of the vendor's own underlying price, and store it under the VENDOR's trading day, replacing any snapshot already stored for that day. `admin:manage` (it writes). 200 `{ underlying, status: "captured", trade_date, as_of, captured_at, source, underlying_price, spot_source, rows_written, rows_replaced, expiries, expiries_unavailable }`; 503 NOT_CONFIGURED without a vendor; 404 DATA_UNAVAILABLE when there is nothing honest to store (no expiry in range, no underlying price, no strike in band); 502 VENDOR_ERROR. Never trades. |
+| GET | `/options/snapshots/{underlying}?date=YYYY-MM-DD` | One stored day (the latest when `date` is omitted): `{ underlying, trade_date, as_of, captured_at, source, underlying_price, contracts, rows: [{ contract_symbol, expiry, right, strike, bid, ask, last, iv, delta, gamma, theta, vega, volume, open_interest }], note }`. Every quote field nullable — null is a field the vendor did not send. Greeks/IV are the vendor's. 404 DATA_UNAVAILABLE for a day with no snapshot; never a neighbouring day. Authentication only. |
+| GET | `/options/snapshots/{underlying}/dates` | `{ underlying, dates: [...] }`, oldest first. Empty is a real answer (the daily loop is off by default). |
+
+The daily loop (`OPTION_SNAPSHOT_SCHEDULER_ENABLED`, default **false**)
+captures each weekday once the New York clock passes
+`OPTION_SNAPSHOT_CAPTURE_AFTER_ET` (16:30), for each symbol in
+`OPTION_SNAPSHOT_UNDERLYINGS` (TQQQ.US), and writes nothing when the
+vendor's quotes are for a different day (a holiday).

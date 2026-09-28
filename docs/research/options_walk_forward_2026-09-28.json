@@ -1,0 +1,2346 @@
+{
+ "generated_at": "2026-09-28T07:16:26.480196+00:00",
+ "pricing_basis": "MODELLED",
+ "note": "MODELLED: option prices are Black-Scholes values from the underlying's real daily closes and an assumed volatility (realised vol x IV/RV multiplier). They are not historical option quotes. Trades labelled OBSERVED used stored real chain snapshots at entry and exit; MIXED trades used them for only part of the trade.",
+ "symbol": "TQQQ.US",
+ "data": {
+  "daily_closes": 759,
+  "first": "2023-09-18",
+  "last": "2026-09-25",
+  "snapshot_days": [
+   "2026-09-25"
+  ]
+ },
+ "iv_rv_multiplier": {
+  "value": 1.1134085315618139,
+  "source": "measured: median ATM IV / RV20 over 1 stored snapshot day(s)",
+  "measured": {
+   "value": 1.1134,
+   "source": "measured: median ATM IV / RV20 over 1 stored snapshot day(s)",
+   "samples": [
+    {
+     "trade_date": "2026-09-25",
+     "used": true,
+     "atm_iv": 0.525,
+     "expiry": "2026-10-23",
+     "rv20": 0.4715,
+     "ratio": 1.1134
+    }
+   ]
+  }
+ },
+ "params": {
+  "train": 252,
+  "test": 63,
+  "step": 63,
+  "min_trades": 8,
+  "rv_window": 20,
+  "selection": "max t_stat of return-on-risk on the train window among configs with >= min_trades train trades",
+  "grid": {
+   "strategies": [
+    "long_call",
+    "long_put",
+    "bull_call",
+    "bear_put",
+    "bull_put",
+    "bear_call",
+    "iron_condor"
+   ],
+   "target_deltas": [
+    0.2,
+    0.3,
+    0.5
+   ],
+   "dte_days": [
+    7,
+    14,
+    30,
+    45
+   ],
+   "profit_target_pct": [
+    0.5,
+    1.0,
+    null
+   ],
+   "stop_loss_pct": [
+    0.5,
+    1.0,
+    null
+   ]
+  },
+  "costs": {
+   "half_spread": "max($0.02, 3% of mid) per leg",
+   "commission_per_contract": "0.65 per leg, entry and close"
+  },
+  "risk_free_rate": 0.04
+ },
+ "walk_forward": {
+  "folds": [
+   {
+    "fold": 1,
+    "train": [
+     "2023-10-16",
+     "2024-10-15"
+    ],
+    "test": [
+     "2024-10-16",
+     "2025-01-16"
+    ],
+    "buy_hold_test_return": 0.08296883542919642,
+    "chosen": {
+     "strategy": "bull_put",
+     "target_delta": 0.2,
+     "wing_delta": 0.1,
+     "dte_days": 30,
+     "profit_target_pct": 1.0,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "bull_put d0.20 30DTE pt=100% sl=none"
+    },
+    "train_trades": 11,
+    "train_expectancy_r": 0.20058901582547178,
+    "train_t_stat_r": 29.256207423953192,
+    "train_pnl": 682.59,
+    "eligible_configs": 720,
+    "test_stats": {
+     "trades": 3,
+     "wins": 3,
+     "win_rate": 1.0,
+     "total_pnl": "206.12",
+     "expectancy": "68.71",
+     "expectancy_r": 0.1606,
+     "t_stat_r": 3.373,
+     "max_drawdown": "0",
+     "max_drawdown_r": 0.0,
+     "pricing_counts": {
+      "MODELLED": 3
+     }
+    },
+    "test_rank_fraction_better": 0.08611111111111111,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.0513328014761705
+   },
+   {
+    "fold": 2,
+    "train": [
+     "2024-01-17",
+     "2025-01-16"
+    ],
+    "test": [
+     "2025-01-17",
+     "2025-04-17"
+    ],
+    "buy_hold_test_return": -0.4300138836299382,
+    "chosen": {
+     "strategy": "iron_condor",
+     "target_delta": 0.2,
+     "wing_delta": 0.1,
+     "dte_days": 45,
+     "profit_target_pct": 0.5,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "iron_condor d0.20 45DTE pt=50% sl=none"
+    },
+    "train_trades": 12,
+    "train_expectancy_r": 0.12141281633627059,
+    "train_t_stat_r": 3.4081125582264824,
+    "train_pnl": 909.54,
+    "eligible_configs": 720,
+    "test_stats": {
+     "trades": 3,
+     "wins": 1,
+     "win_rate": 0.3333,
+     "total_pnl": "-574.74",
+     "expectancy": "-191.58",
+     "expectancy_r": -0.2349,
+     "t_stat_r": -1.243,
+     "max_drawdown": "741.06",
+     "max_drawdown_r": 0.8417,
+     "pricing_counts": {
+      "MODELLED": 3
+     }
+    },
+    "test_rank_fraction_better": 0.6236111111111111,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.11576664758754601
+   },
+   {
+    "fold": 3,
+    "train": [
+     "2024-04-17",
+     "2025-04-17"
+    ],
+    "test": [
+     "2025-04-21",
+     "2025-07-21"
+    ],
+    "buy_hold_test_return": 0.9501771479185119,
+    "chosen": {
+     "strategy": "bull_put",
+     "target_delta": 0.5,
+     "wing_delta": 0.25,
+     "dte_days": 7,
+     "profit_target_pct": 0.5,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "bull_put d0.50 7DTE pt=50% sl=none"
+    },
+    "train_trades": 56,
+    "train_expectancy_r": 0.10658954541004786,
+    "train_t_stat_r": 1.3682436919135275,
+    "train_pnl": 973.55,
+    "eligible_configs": 720,
+    "test_stats": {
+     "trades": 16,
+     "wins": 13,
+     "win_rate": 0.8125,
+     "total_pnl": "1475.75",
+     "expectancy": "92.23",
+     "expectancy_r": 0.2513,
+     "t_stat_r": 1.949,
+     "max_drawdown": "309.61",
+     "max_drawdown_r": 1.0,
+     "pricing_counts": {
+      "MODELLED": 16
+     }
+    },
+    "test_rank_fraction_better": 0.20555555555555555,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.06283239615767468
+   },
+   {
+    "fold": 4,
+    "train": [
+     "2024-07-18",
+     "2025-07-21"
+    ],
+    "test": [
+     "2025-07-22",
+     "2025-10-17"
+    ],
+    "buy_hold_test_return": 0.1807653003292835,
+    "chosen": {
+     "strategy": "iron_condor",
+     "target_delta": 0.2,
+     "wing_delta": 0.1,
+     "dte_days": 30,
+     "profit_target_pct": 0.5,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "iron_condor d0.20 30DTE pt=50% sl=none"
+    },
+    "train_trades": 19,
+    "train_expectancy_r": 0.08118630858451463,
+    "train_t_stat_r": 1.7068740465808117,
+    "train_pnl": 765.03,
+    "eligible_configs": 720,
+    "test_stats": {
+     "trades": 4,
+     "wins": 2,
+     "win_rate": 0.5,
+     "total_pnl": "-356.48",
+     "expectancy": "-89.12",
+     "expectancy_r": -0.2564,
+     "t_stat_r": -0.959,
+     "max_drawdown": "499.83",
+     "max_drawdown_r": 1.3794,
+     "pricing_counts": {
+      "MODELLED": 4
+     }
+    },
+    "test_rank_fraction_better": 0.7847222222222222,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.03026384770517439
+   },
+   {
+    "fold": 5,
+    "train": [
+     "2024-10-16",
+     "2025-10-17"
+    ],
+    "test": [
+     "2025-10-20",
+     "2026-01-20"
+    ],
+    "buy_hold_test_return": -0.5121646312145398,
+    "chosen": {
+     "strategy": "bull_put",
+     "target_delta": 0.3,
+     "wing_delta": 0.15,
+     "dte_days": 14,
+     "profit_target_pct": 1.0,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "bull_put d0.30 14DTE pt=100% sl=none"
+    },
+    "train_trades": 25,
+    "train_expectancy_r": 0.14830912699543275,
+    "train_t_stat_r": 1.885416671970366,
+    "train_pnl": 1043.05,
+    "eligible_configs": 720,
+    "test_stats": {
+     "trades": 7,
+     "wins": 5,
+     "win_rate": 0.7143,
+     "total_pnl": "742.65",
+     "expectancy": "106.09",
+     "expectancy_r": 0.0865,
+     "t_stat_r": 0.351,
+     "max_drawdown": "463.90",
+     "max_drawdown_r": 1.0,
+     "pricing_counts": {
+      "MODELLED": 7
+     }
+    },
+    "test_rank_fraction_better": 0.30833333333333335,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.028032992228068935
+   },
+   {
+    "fold": 6,
+    "train": [
+     "2025-01-17",
+     "2026-01-20"
+    ],
+    "test": [
+     "2026-01-21",
+     "2026-04-21"
+    ],
+    "buy_hold_test_return": 0.13148038635915626,
+    "chosen": {
+     "strategy": "bear_call",
+     "target_delta": 0.3,
+     "wing_delta": 0.15,
+     "dte_days": 30,
+     "profit_target_pct": 1.0,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "bear_call d0.30 30DTE pt=100% sl=none"
+    },
+    "train_trades": 10,
+    "train_expectancy_r": 0.08280771254117505,
+    "train_t_stat_r": 1.7562053362100887,
+    "train_pnl": 765.83,
+    "eligible_configs": 718,
+    "test_stats": {
+     "trades": 3,
+     "wins": 2,
+     "win_rate": 0.6667,
+     "total_pnl": "-340.63",
+     "expectancy": "-113.54",
+     "expectancy_r": -0.238,
+     "t_stat_r": -0.555,
+     "max_drawdown": "468.31",
+     "max_drawdown_r": 1.0951,
+     "pricing_counts": {
+      "MODELLED": 3
+     }
+    },
+    "test_rank_fraction_better": 0.925,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.053106904844701805
+   },
+   {
+    "fold": 7,
+    "train": [
+     "2025-04-21",
+     "2026-04-21"
+    ],
+    "test": [
+     "2026-04-22",
+     "2026-07-22"
+    ],
+    "buy_hold_test_return": 0.224390243902439,
+    "chosen": {
+     "strategy": "bull_put",
+     "target_delta": 0.2,
+     "wing_delta": 0.1,
+     "dte_days": 14,
+     "profit_target_pct": 1.0,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "bull_put d0.20 14DTE pt=100% sl=none"
+    },
+    "train_trades": 25,
+    "train_expectancy_r": 0.12549933403607225,
+    "train_t_stat_r": 2.3812975562540184,
+    "train_pnl": 1005.5,
+    "eligible_configs": 718,
+    "test_stats": {
+     "trades": 6,
+     "wins": 6,
+     "win_rate": 1.0,
+     "total_pnl": "403.52",
+     "expectancy": "67.25",
+     "expectancy_r": 0.1869,
+     "t_stat_r": 12.133,
+     "max_drawdown": "0",
+     "max_drawdown_r": 0.0,
+     "pricing_counts": {
+      "MODELLED": 6
+     }
+    },
+    "test_rank_fraction_better": 0.12916666666666668,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.047808416184343415
+   },
+   {
+    "fold": 8,
+    "train": [
+     "2025-07-22",
+     "2026-07-22"
+    ],
+    "test": [
+     "2026-07-23",
+     "2026-09-25"
+    ],
+    "buy_hold_test_return": 0.1326124075128059,
+    "chosen": {
+     "strategy": "bull_put",
+     "target_delta": 0.2,
+     "wing_delta": 0.1,
+     "dte_days": 14,
+     "profit_target_pct": 1.0,
+     "stop_loss_pct": null,
+     "exit_dte": 0,
+     "rv_window": 20,
+     "risk_free_rate": 0.04,
+     "strike_increment": "1",
+     "min_half_spread": "0.02",
+     "half_spread_pct": "0.03",
+     "commission_per_contract": "0.65",
+     "label": "bull_put d0.20 14DTE pt=100% sl=none"
+    },
+    "train_trades": 25,
+    "train_expectancy_r": 0.122384148716434,
+    "train_t_stat_r": 2.3371461500785973,
+    "train_pnl": 1028.5,
+    "eligible_configs": 720,
+    "test_stats": {
+     "trades": 5,
+     "wins": 5,
+     "win_rate": 1.0,
+     "total_pnl": "295.00",
+     "expectancy": "59.00",
+     "expectancy_r": 0.1793,
+     "t_stat_r": 9.329,
+     "max_drawdown": "0",
+     "max_drawdown_r": 0.0,
+     "pricing_counts": {
+      "MODELLED": 4,
+      "MIXED": 1
+     }
+    },
+    "test_rank_fraction_better": 0.1763888888888889,
+    "test_configs_scored": 720,
+    "test_median_expectancy_r_all_configs": -0.04786753917819864
+   }
+  ],
+  "pooled_oos": {
+   "trades": 47,
+   "wins": 37,
+   "win_rate": 0.7872,
+   "total_pnl": "1851.19",
+   "expectancy": "39.39",
+   "expectancy_r": 0.0996,
+   "t_stat_r": 1.437,
+   "max_drawdown": "790.99",
+   "max_drawdown_r": 2.0526,
+   "pricing_counts": {
+    "MODELLED": 46,
+    "MIXED": 1
+   }
+  },
+  "pooled_oos_trades": [
+   {
+    "entry_date": "2024-10-16",
+    "exit_date": "2024-11-15",
+    "expiry": "2024-11-15",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "62",
+      "side": "long",
+      "entry_price": "0.54",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "66",
+      "side": "short",
+      "entry_price": "1.28",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "73.12",
+    "exit_spot": "74.27",
+    "entry_premium": "-0.68",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "67.17",
+    "max_loss": "334.13",
+    "return_on_risk": 0.201,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.4919,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2024-11-15",
+    "exit_date": "2024-12-20",
+    "expiry": "2024-12-20",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "58",
+      "side": "long",
+      "entry_price": "0.72",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "64",
+      "side": "short",
+      "entry_price": "1.88",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "74.27",
+    "exit_spot": "83.03",
+    "entry_premium": "-1.08",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "106.47",
+    "max_loss": "494.83",
+    "return_on_risk": 0.2152,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.6648,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2024-12-20",
+    "exit_date": "2025-01-16",
+    "expiry": "2025-01-24",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "66",
+      "side": "long",
+      "entry_price": "0.84",
+      "exit_price": "0.15"
+     },
+     {
+      "right": "put",
+      "strike": "72",
+      "side": "short",
+      "entry_price": "2.01",
+      "exit_price": "0.84"
+     }
+    ],
+    "entry_spot": "83.03",
+    "exit_spot": "79.23",
+    "entry_premium": "-1.09",
+    "exit_value": "-0.74",
+    "commissions": "2.60",
+    "pnl": "32.48",
+    "max_loss": "493.95",
+    "return_on_risk": 0.0658,
+    "exit_reason": "window_end",
+    "volatility_at_entry": 0.6359,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-01-17",
+    "exit_date": "2025-02-06",
+    "expiry": "2025-03-07",
+    "strategy": "iron_condor",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "61",
+      "side": "long",
+      "entry_price": "1.30",
+      "exit_price": "0.12"
+     },
+     {
+      "right": "put",
+      "strike": "69",
+      "side": "short",
+      "entry_price": "3.09",
+      "exit_price": "0.68"
+     },
+     {
+      "right": "call",
+      "strike": "125",
+      "side": "long",
+      "entry_price": "0.96",
+      "exit_price": "0.12"
+     },
+     {
+      "right": "call",
+      "strike": "110",
+      "side": "short",
+      "entry_price": "2.30",
+      "exit_price": "0.68"
+     }
+    ],
+    "entry_spot": "83.14",
+    "exit_spot": "86.01",
+    "entry_premium": "-2.91",
+    "exit_value": "-1.19",
+    "commissions": "5.20",
+    "pnl": "166.32",
+    "max_loss": "1214.31",
+    "return_on_risk": 0.137,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.7651,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-02-06",
+    "exit_date": "2025-03-28",
+    "expiry": "2025-03-28",
+    "strategy": "iron_condor",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "66",
+      "side": "long",
+      "entry_price": "1.07",
+      "exit_price": "8.66"
+     },
+     {
+      "right": "put",
+      "strike": "73",
+      "side": "short",
+      "entry_price": "2.51",
+      "exit_price": "15.66"
+     },
+     {
+      "right": "call",
+      "strike": "120",
+      "side": "long",
+      "entry_price": "0.86",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "call",
+      "strike": "108",
+      "side": "short",
+      "entry_price": "2.04",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "86.01",
+    "exit_spot": "57.34",
+    "entry_premium": "-2.43",
+    "exit_value": "-7.00",
+    "commissions": "3.90",
+    "pnl": "-460.63",
+    "max_loss": "961.93",
+    "return_on_risk": -0.4789,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.6309,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-03-28",
+    "exit_date": "2025-04-17",
+    "expiry": "2025-05-16",
+    "strategy": "iron_condor",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "39",
+      "side": "long",
+      "entry_price": "1.02",
+      "exit_price": "5.82"
+     },
+     {
+      "right": "put",
+      "strike": "46",
+      "side": "short",
+      "entry_price": "2.68",
+      "exit_price": "9.68"
+     },
+     {
+      "right": "call",
+      "strike": "92",
+      "side": "long",
+      "entry_price": "0.98",
+      "exit_price": "1.30"
+     },
+     {
+      "right": "call",
+      "strike": "82",
+      "side": "short",
+      "entry_price": "1.84",
+      "exit_price": "1.95"
+     }
+    ],
+    "entry_spot": "57.34",
+    "exit_spot": "45.16",
+    "entry_premium": "-2.32",
+    "exit_value": "-5.07",
+    "commissions": "5.20",
+    "pnl": "-280.43",
+    "max_loss": "772.96",
+    "return_on_risk": -0.3628,
+    "exit_reason": "window_end",
+    "volatility_at_entry": 0.9371,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-04-21",
+    "exit_date": "2025-04-24",
+    "expiry": "2025-05-02",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "36",
+      "side": "long",
+      "entry_price": "2.56",
+      "exit_price": "0.55"
+     },
+     {
+      "right": "put",
+      "strike": "44",
+      "side": "short",
+      "entry_price": "6.59",
+      "exit_price": "2.28"
+     }
+    ],
+    "entry_spot": "41.86",
+    "exit_spot": "52.14",
+    "entry_premium": "-3.76",
+    "exit_value": "-1.82",
+    "commissions": "2.60",
+    "pnl": "191.03",
+    "max_loss": "427.09",
+    "return_on_risk": 0.4473,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 1.8552,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-04-24",
+    "exit_date": "2025-05-01",
+    "expiry": "2025-05-02",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "45",
+      "side": "long",
+      "entry_price": "2.61",
+      "exit_price": "0.02"
+     },
+     {
+      "right": "put",
+      "strike": "54",
+      "side": "short",
+      "entry_price": "6.94",
+      "exit_price": "1.08"
+     }
+    ],
+    "entry_spot": "52.14",
+    "exit_spot": "56.77",
+    "entry_premium": "-4.04",
+    "exit_value": "-1.12",
+    "commissions": "2.60",
+    "pnl": "289.57",
+    "max_loss": "498.89",
+    "return_on_risk": 0.5804,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 1.9181,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-05-01",
+    "exit_date": "2025-05-08",
+    "expiry": "2025-05-09",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "49",
+      "side": "long",
+      "entry_price": "2.80",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "59",
+      "side": "short",
+      "entry_price": "7.62",
+      "exit_price": "1.14"
+     }
+    ],
+    "entry_spot": "56.77",
+    "exit_spot": "59.11",
+    "entry_premium": "-4.51",
+    "exit_value": "-1.17",
+    "commissions": "2.60",
+    "pnl": "330.56",
+    "max_loss": "551.96",
+    "return_on_risk": 0.5989,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 1.9015,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-05-08",
+    "exit_date": "2025-05-12",
+    "expiry": "2025-05-16",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "54",
+      "side": "long",
+      "entry_price": "1.29",
+      "exit_price": "0.03"
+     },
+     {
+      "right": "put",
+      "strike": "60",
+      "side": "short",
+      "entry_price": "3.85",
+      "exit_price": "0.42"
+     }
+    ],
+    "entry_spot": "59.11",
+    "exit_spot": "66.11",
+    "entry_premium": "-2.40",
+    "exit_value": "-0.44",
+    "commissions": "2.60",
+    "pnl": "193.63",
+    "max_loss": "362.48",
+    "return_on_risk": 0.5342,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.9716,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-05-12",
+    "exit_date": "2025-05-16",
+    "expiry": "2025-05-23",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "60",
+      "side": "long",
+      "entry_price": "1.49",
+      "exit_price": "0.12"
+     },
+     {
+      "right": "put",
+      "strike": "67",
+      "side": "short",
+      "entry_price": "4.44",
+      "exit_price": "1.15"
+     }
+    ],
+    "entry_spot": "66.11",
+    "exit_spot": "71.45",
+    "entry_premium": "-2.77",
+    "exit_value": "-1.08",
+    "commissions": "2.60",
+    "pnl": "167.19",
+    "max_loss": "425.21",
+    "return_on_risk": 0.3932,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.8747,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-05-16",
+    "exit_date": "2025-05-23",
+    "expiry": "2025-05-23",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "67",
+      "side": "long",
+      "entry_price": "1.15",
+      "exit_price": "0.68"
+     },
+     {
+      "right": "put",
+      "strike": "72",
+      "side": "short",
+      "entry_price": "3.21",
+      "exit_price": "5.68"
+     }
+    ],
+    "entry_spot": "71.45",
+    "exit_spot": "66.32",
+    "entry_premium": "-1.93",
+    "exit_value": "-5.00",
+    "commissions": "2.60",
+    "pnl": "-309.61",
+    "max_loss": "309.61",
+    "return_on_risk": -1.0,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.7456,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-05-23",
+    "exit_date": "2025-05-27",
+    "expiry": "2025-05-30",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "63",
+      "side": "long",
+      "entry_price": "0.87",
+      "exit_price": "0.03"
+     },
+     {
+      "right": "put",
+      "strike": "67",
+      "side": "short",
+      "entry_price": "2.54",
+      "exit_price": "0.34"
+     }
+    ],
+    "entry_spot": "66.32",
+    "exit_spot": "70.94",
+    "entry_premium": "-1.57",
+    "exit_value": "-0.35",
+    "commissions": "2.60",
+    "pnl": "119.42",
+    "max_loss": "245.67",
+    "return_on_risk": 0.4861,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.6005,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-05-27",
+    "exit_date": "2025-06-03",
+    "expiry": "2025-06-06",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "66",
+      "side": "long",
+      "entry_price": "1.04",
+      "exit_price": "0.05"
+     },
+     {
+      "right": "put",
+      "strike": "71",
+      "side": "short",
+      "entry_price": "2.98",
+      "exit_price": "0.72"
+     }
+    ],
+    "entry_spot": "70.94",
+    "exit_spot": "73.28",
+    "entry_premium": "-1.82",
+    "exit_value": "-0.71",
+    "commissions": "2.60",
+    "pnl": "107.55",
+    "max_loss": "320.96",
+    "return_on_risk": 0.3351,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.6388,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-06-03",
+    "exit_date": "2025-06-10",
+    "expiry": "2025-06-13",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "69",
+      "side": "long",
+      "entry_price": "1.24",
+      "exit_price": "0.01"
+     },
+     {
+      "right": "put",
+      "strike": "74",
+      "side": "short",
+      "entry_price": "3.34",
+      "exit_price": "0.45"
+     }
+    ],
+    "entry_spot": "73.28",
+    "exit_spot": "75.98",
+    "entry_premium": "-1.97",
+    "exit_value": "-0.47",
+    "commissions": "2.60",
+    "pnl": "146.91",
+    "max_loss": "305.61",
+    "return_on_risk": 0.4807,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.6203,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-06-10",
+    "exit_date": "2025-06-20",
+    "expiry": "2025-06-20",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "73",
+      "side": "long",
+      "entry_price": "0.98",
+      "exit_price": "0.55"
+     },
+     {
+      "right": "put",
+      "strike": "76",
+      "side": "short",
+      "entry_price": "2.19",
+      "exit_price": "3.55"
+     }
+    ],
+    "entry_spot": "75.98",
+    "exit_spot": "72.45",
+    "entry_premium": "-1.11",
+    "exit_value": "-3.00",
+    "commissions": "2.60",
+    "pnl": "-191.23",
+    "max_loss": "191.23",
+    "return_on_risk": -1.0,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.4426,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-06-20",
+    "exit_date": "2025-06-24",
+    "expiry": "2025-06-27",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "70",
+      "side": "long",
+      "entry_price": "0.81",
+      "exit_price": "0.01"
+     },
+     {
+      "right": "put",
+      "strike": "73",
+      "side": "short",
+      "entry_price": "2.09",
+      "exit_price": "0.08"
+     }
+    ],
+    "entry_spot": "72.45",
+    "exit_spot": "78.10",
+    "entry_premium": "-1.19",
+    "exit_value": "-0.10",
+    "commissions": "2.60",
+    "pnl": "106.58",
+    "max_loss": "183.72",
+    "return_on_risk": 0.5801,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.4551,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-06-24",
+    "exit_date": "2025-06-27",
+    "expiry": "2025-07-04",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "74",
+      "side": "long",
+      "entry_price": "0.84",
+      "exit_price": "0.07"
+     },
+     {
+      "right": "put",
+      "strike": "78",
+      "side": "short",
+      "entry_price": "2.33",
+      "exit_price": "0.55"
+     }
+    ],
+    "entry_spot": "78.10",
+    "exit_spot": "81.42",
+    "entry_premium": "-1.40",
+    "exit_value": "-0.52",
+    "commissions": "2.60",
+    "pnl": "85.77",
+    "max_loss": "262.48",
+    "return_on_risk": 0.3268,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.4712,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-06-27",
+    "exit_date": "2025-07-03",
+    "expiry": "2025-07-04",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "79",
+      "side": "long",
+      "entry_price": "0.81",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "82",
+      "side": "short",
+      "entry_price": "2.09",
+      "exit_price": "0.05"
+     }
+    ],
+    "entry_spot": "81.42",
+    "exit_spot": "84.81",
+    "entry_premium": "-1.19",
+    "exit_value": "-0.07",
+    "commissions": "2.60",
+    "pnl": "109.10",
+    "max_loss": "183.63",
+    "return_on_risk": 0.5941,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.4034,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-07-03",
+    "exit_date": "2025-07-11",
+    "expiry": "2025-07-11",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "82",
+      "side": "long",
+      "entry_price": "0.96",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "85",
+      "side": "short",
+      "entry_price": "2.19",
+      "exit_price": "1.28"
+     }
+    ],
+    "entry_spot": "84.81",
+    "exit_spot": "83.72",
+    "entry_premium": "-1.14",
+    "exit_value": "-1.28",
+    "commissions": "1.95",
+    "pnl": "-16.45",
+    "max_loss": "189.10",
+    "return_on_risk": -0.087,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.4263,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-07-11",
+    "exit_date": "2025-07-16",
+    "expiry": "2025-07-18",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "81",
+      "side": "long",
+      "entry_price": "0.82",
+      "exit_price": "0.02"
+     },
+     {
+      "right": "put",
+      "strike": "84",
+      "side": "short",
+      "entry_price": "2.04",
+      "exit_price": "0.44"
+     }
+    ],
+    "entry_spot": "83.72",
+    "exit_spot": "85.07",
+    "entry_premium": "-1.13",
+    "exit_value": "-0.45",
+    "commissions": "2.60",
+    "pnl": "65.40",
+    "max_loss": "189.20",
+    "return_on_risk": 0.3457,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.4175,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-07-16",
+    "exit_date": "2025-07-21",
+    "expiry": "2025-07-25",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "82",
+      "side": "long",
+      "entry_price": "0.68",
+      "exit_price": "0.01"
+     },
+     {
+      "right": "put",
+      "strike": "85",
+      "side": "short",
+      "entry_price": "1.80",
+      "exit_price": "0.20"
+     }
+    ],
+    "entry_spot": "85.07",
+    "exit_spot": "88.07",
+    "entry_premium": "-1.04",
+    "exit_value": "-0.22",
+    "commissions": "2.60",
+    "pnl": "80.33",
+    "max_loss": "198.13",
+    "return_on_risk": 0.4054,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.3515,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-07-22",
+    "exit_date": "2025-08-19",
+    "expiry": "2025-08-22",
+    "strategy": "iron_condor",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "78",
+      "side": "long",
+      "entry_price": "0.43",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "81",
+      "side": "short",
+      "entry_price": "0.96",
+      "exit_price": "0.01"
+     },
+     {
+      "right": "call",
+      "strike": "98",
+      "side": "long",
+      "entry_price": "0.39",
+      "exit_price": "0.02"
+     },
+     {
+      "right": "call",
+      "strike": "94",
+      "side": "short",
+      "entry_price": "0.92",
+      "exit_price": "0.22"
+     }
+    ],
+    "entry_spot": "86.70",
+    "exit_spot": "89.34",
+    "entry_premium": "-0.97",
+    "exit_value": "-0.27",
+    "commissions": "5.20",
+    "pnl": "64.38",
+    "max_loss": "308.54",
+    "return_on_risk": 0.2087,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.3155,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-08-19",
+    "exit_date": "2025-09-03",
+    "expiry": "2025-09-19",
+    "strategy": "iron_condor",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "76",
+      "side": "long",
+      "entry_price": "0.61",
+      "exit_price": "0.10"
+     },
+     {
+      "right": "put",
+      "strike": "81",
+      "side": "short",
+      "entry_price": "1.52",
+      "exit_price": "0.53"
+     },
+     {
+      "right": "call",
+      "strike": "108",
+      "side": "long",
+      "entry_price": "0.52",
+      "exit_price": "0.05"
+     },
+     {
+      "right": "call",
+      "strike": "101",
+      "side": "short",
+      "entry_price": "1.34",
+      "exit_price": "0.32"
+     }
+    ],
+    "entry_spot": "89.34",
+    "exit_spot": "89.11",
+    "entry_premium": "-1.61",
+    "exit_value": "-0.77",
+    "commissions": "5.20",
+    "pnl": "78.97",
+    "max_loss": "543.89",
+    "return_on_risk": 0.1452,
+    "exit_reason": "profit_target",
+    "volatility_at_entry": 0.466,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-09-03",
+    "exit_date": "2025-10-03",
+    "expiry": "2025-10-03",
+    "strategy": "iron_condor",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "77",
+      "side": "long",
+      "entry_price": "0.54",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "81",
+      "side": "short",
+      "entry_price": "1.22",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "call",
+      "strike": "105",
+      "side": "long",
+      "entry_price": "0.51",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "call",
+      "strike": "100",
+      "side": "short",
+      "entry_price": "1.11",
+      "exit_price": "4.70"
+     }
+    ],
+    "entry_spot": "89.11",
+    "exit_spot": "104.70",
+    "entry_premium": "-1.17",
+    "exit_value": "-4.70",
+    "commissions": "3.25",
+    "pnl": "-355.97",
+    "max_loss": "387.92",
+    "return_on_risk": -0.9176,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.4251,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-10-03",
+    "exit_date": "2025-10-17",
+    "expiry": "2025-11-07",
+    "strategy": "iron_condor",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "96",
+      "side": "long",
+      "entry_price": "0.41",
+      "exit_price": "2.45"
+     },
+     {
+      "right": "put",
+      "strike": "99",
+      "side": "short",
+      "entry_price": "0.91",
+      "exit_price": "3.49"
+     },
+     {
+      "right": "call",
+      "strike": "116",
+      "side": "long",
+      "entry_price": "0.36",
+      "exit_price": "2.01"
+     },
+     {
+      "right": "call",
+      "strike": "112",
+      "side": "short",
+      "entry_price": "0.89",
+      "exit_price": "2.98"
+     }
+    ],
+    "entry_spot": "104.70",
+    "exit_spot": "103.99",
+    "entry_premium": "-0.94",
+    "exit_value": "-2.32",
+    "commissions": "5.20",
+    "pnl": "-143.86",
+    "max_loss": "311.56",
+    "return_on_risk": -0.4617,
+    "exit_reason": "window_end",
+    "volatility_at_entry": 0.2411,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-10-20",
+    "exit_date": "2025-11-07",
+    "expiry": "2025-11-07",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "95",
+      "side": "long",
+      "entry_price": "1.21",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "102",
+      "side": "short",
+      "entry_price": "3.08",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "107.89",
+    "exit_spot": "105.78",
+    "entry_premium": "-1.74",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "172.74",
+    "max_loss": "528.56",
+    "return_on_risk": 0.3268,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.6045,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-11-07",
+    "exit_date": "2025-11-21",
+    "expiry": "2025-11-21",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "94",
+      "side": "long",
+      "entry_price": "0.96",
+      "exit_price": "46.52"
+     },
+     {
+      "right": "put",
+      "strike": "100",
+      "side": "short",
+      "entry_price": "2.45",
+      "exit_price": "52.52"
+     }
+    ],
+    "entry_spot": "105.78",
+    "exit_spot": "47.48",
+    "entry_premium": "-1.39",
+    "exit_value": "-6.00",
+    "commissions": "2.60",
+    "pnl": "-463.90",
+    "max_loss": "463.90",
+    "return_on_risk": -1.0,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.6049,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-11-21",
+    "exit_date": "2025-12-05",
+    "expiry": "2025-12-05",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "31",
+      "side": "long",
+      "entry_price": "3.17",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "42",
+      "side": "short",
+      "entry_price": "8.05",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "47.48",
+    "exit_spot": "56.15",
+    "entry_premium": "-4.54",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "452.51",
+    "max_loss": "648.79",
+    "return_on_risk": 0.6975,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 3.082,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-12-05",
+    "exit_date": "2025-12-19",
+    "expiry": "2025-12-19",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "36",
+      "side": "long",
+      "entry_price": "3.59",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "49",
+      "side": "short",
+      "entry_price": "9.25",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "56.15",
+    "exit_spot": "53.52",
+    "entry_premium": "-5.27",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "526.18",
+    "max_loss": "775.12",
+    "return_on_risk": 0.6788,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 3.1059,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2025-12-19",
+    "exit_date": "2026-01-02",
+    "expiry": "2026-01-02",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "48",
+      "side": "long",
+      "entry_price": "0.41",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "51",
+      "side": "short",
+      "entry_price": "1.15",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "53.52",
+    "exit_spot": "52.35",
+    "entry_premium": "-0.68",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "66.64",
+    "max_loss": "234.66",
+    "return_on_risk": 0.284,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.5411,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-01-02",
+    "exit_date": "2026-01-16",
+    "expiry": "2026-01-16",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "48",
+      "side": "long",
+      "entry_price": "0.36",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "50",
+      "side": "short",
+      "entry_price": "0.82",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "52.35",
+    "exit_spot": "54.14",
+    "entry_premium": "-0.42",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "40.97",
+    "max_loss": "160.33",
+    "return_on_risk": 0.2555,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.4458,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-01-16",
+    "exit_date": "2026-01-20",
+    "expiry": "2026-01-30",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "51",
+      "side": "long",
+      "entry_price": "0.39",
+      "exit_price": "1.52"
+     },
+     {
+      "right": "put",
+      "strike": "52",
+      "side": "short",
+      "entry_price": "0.63",
+      "exit_price": "2.11"
+     }
+    ],
+    "entry_spot": "54.14",
+    "exit_spot": "50.73",
+    "entry_premium": "-0.20",
+    "exit_value": "-0.70",
+    "commissions": "2.60",
+    "pnl": "-52.49",
+    "max_loss": "82.39",
+    "return_on_risk": -0.6371,
+    "exit_reason": "window_end",
+    "volatility_at_entry": 0.3577,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-01-21",
+    "exit_date": "2026-02-20",
+    "expiry": "2026-02-20",
+    "strategy": "bear_call",
+    "legs": [
+     {
+      "right": "call",
+      "strike": "60",
+      "side": "long",
+      "entry_price": "0.51",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "call",
+      "strike": "57",
+      "side": "short",
+      "entry_price": "1.07",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "52.73",
+    "exit_spot": "50.06",
+    "entry_premium": "-0.51",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "49.43",
+    "max_loss": "251.87",
+    "return_on_risk": 0.1963,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.4195,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-02-20",
+    "exit_date": "2026-03-27",
+    "expiry": "2026-03-27",
+    "strategy": "bear_call",
+    "legs": [
+     {
+      "right": "call",
+      "strike": "61",
+      "side": "long",
+      "entry_price": "0.66",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "call",
+      "strike": "56",
+      "side": "short",
+      "entry_price": "1.52",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "50.06",
+    "exit_spot": "38.78",
+    "entry_premium": "-0.80",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "78.25",
+    "max_loss": "423.05",
+    "return_on_risk": 0.185,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.5665,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-03-27",
+    "exit_date": "2026-04-21",
+    "expiry": "2026-05-01",
+    "strategy": "bear_call",
+    "legs": [
+     {
+      "right": "call",
+      "strike": "49",
+      "side": "long",
+      "entry_price": "0.52",
+      "exit_price": "8.74"
+     },
+     {
+      "right": "call",
+      "strike": "44",
+      "side": "short",
+      "entry_price": "1.32",
+      "exit_price": "13.48"
+     }
+    ],
+    "entry_spot": "38.78",
+    "exit_spot": "57.40",
+    "entry_premium": "-0.75",
+    "exit_value": "-5.41",
+    "commissions": "2.60",
+    "pnl": "-468.31",
+    "max_loss": "427.64",
+    "return_on_risk": -1.0951,
+    "exit_reason": "window_end",
+    "volatility_at_entry": 0.6375,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-04-22",
+    "exit_date": "2026-05-08",
+    "expiry": "2026-05-08",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "50",
+      "side": "long",
+      "entry_price": "0.45",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "54",
+      "side": "short",
+      "entry_price": "1.20",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "60.21",
+    "exit_spot": "76.28",
+    "entry_premium": "-0.69",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "68.16",
+    "max_loss": "333.14",
+    "return_on_risk": 0.2046,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.7307,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-05-08",
+    "exit_date": "2026-05-22",
+    "expiry": "2026-05-22",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "68",
+      "side": "long",
+      "entry_price": "0.41",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "71",
+      "side": "short",
+      "entry_price": "0.96",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "76.28",
+    "exit_spot": "77.84",
+    "entry_premium": "-0.50",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "48.66",
+    "max_loss": "252.64",
+    "return_on_risk": 0.1926,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.5036,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-05-22",
+    "exit_date": "2026-06-05",
+    "expiry": "2026-06-05",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "69",
+      "side": "long",
+      "entry_price": "0.46",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "72",
+      "side": "short",
+      "entry_price": "1.00",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "77.84",
+    "exit_spot": "73.05",
+    "entry_premium": "-0.50",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "48.33",
+    "max_loss": "252.97",
+    "return_on_risk": 0.1911,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.5327,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-06-05",
+    "exit_date": "2026-06-19",
+    "expiry": "2026-06-19",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "60",
+      "side": "long",
+      "entry_price": "0.52",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "65",
+      "side": "short",
+      "entry_price": "1.43",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "73.05",
+    "exit_spot": "82.87",
+    "entry_premium": "-0.84",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "83.17",
+    "max_loss": "418.13",
+    "return_on_risk": 0.1989,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.8078,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-06-22",
+    "exit_date": "2026-07-10",
+    "expiry": "2026-07-10",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "64",
+      "side": "long",
+      "entry_price": "0.96",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "70",
+      "side": "short",
+      "entry_price": "2.15",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "82.58",
+    "exit_spot": "77.03",
+    "entry_premium": "-1.10",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "108.81",
+    "max_loss": "492.49",
+    "return_on_risk": 0.2209,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.9921,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-07-10",
+    "exit_date": "2026-07-22",
+    "expiry": "2026-07-24",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "62",
+      "side": "long",
+      "entry_price": "0.82",
+      "exit_price": "0.02"
+     },
+     {
+      "right": "put",
+      "strike": "67",
+      "side": "short",
+      "entry_price": "1.83",
+      "exit_price": "0.41"
+     }
+    ],
+    "entry_spot": "77.03",
+    "exit_spot": "70.28",
+    "entry_premium": "-0.92",
+    "exit_value": "-0.43",
+    "commissions": "2.60",
+    "pnl": "46.39",
+    "max_loss": "410.25",
+    "return_on_risk": 0.1131,
+    "exit_reason": "window_end",
+    "volatility_at_entry": 0.9745,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-07-23",
+    "exit_date": "2026-08-07",
+    "expiry": "2026-08-07",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "55",
+      "side": "long",
+      "entry_price": "0.55",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "59",
+      "side": "short",
+      "entry_price": "1.31",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "66.30",
+    "exit_spot": "74.47",
+    "entry_premium": "-0.70",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "68.89",
+    "max_loss": "332.41",
+    "return_on_risk": 0.2072,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.7844,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-08-07",
+    "exit_date": "2026-08-21",
+    "expiry": "2026-08-21",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "61",
+      "side": "long",
+      "entry_price": "0.63",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "66",
+      "side": "short",
+      "entry_price": "1.60",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "74.47",
+    "exit_spot": "71.17",
+    "entry_premium": "-0.89",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "88.00",
+    "max_loss": "413.30",
+    "return_on_risk": 0.2129,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.8565,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-08-21",
+    "exit_date": "2026-09-04",
+    "expiry": "2026-09-04",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "60",
+      "side": "long",
+      "entry_price": "0.51",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "64",
+      "side": "short",
+      "entry_price": "1.25",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "71.17",
+    "exit_spot": "72.37",
+    "entry_premium": "-0.68",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "66.35",
+    "max_loss": "334.95",
+    "return_on_risk": 0.1981,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.7275,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-09-04",
+    "exit_date": "2026-09-18",
+    "expiry": "2026-09-18",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "65",
+      "side": "long",
+      "entry_price": "0.26",
+      "exit_price": "0.00"
+     },
+     {
+      "right": "put",
+      "strike": "68",
+      "side": "short",
+      "entry_price": "0.75",
+      "exit_price": "0.00"
+     }
+    ],
+    "entry_spot": "72.37",
+    "exit_spot": "72.64",
+    "entry_premium": "-0.45",
+    "exit_value": "0.00",
+    "commissions": "1.30",
+    "pnl": "43.69",
+    "max_loss": "257.61",
+    "return_on_risk": 0.1696,
+    "exit_reason": "expiry",
+    "volatility_at_entry": 0.4273,
+    "pricing": "MODELLED"
+   },
+   {
+    "entry_date": "2026-09-18",
+    "exit_date": "2026-09-25",
+    "expiry": "2026-10-02",
+    "strategy": "bull_put",
+    "legs": [
+     {
+      "right": "put",
+      "strike": "65",
+      "side": "long",
+      "entry_price": "0.26",
+      "exit_price": "0.08"
+     },
+     {
+      "right": "put",
+      "strike": "68",
+      "side": "short",
+      "entry_price": "0.74",
+      "exit_price": "0.13"
+     }
+    ],
+    "entry_spot": "72.64",
+    "exit_spot": "79.60",
+    "entry_premium": "-0.44",
+    "exit_value": "-0.13",
+    "commissions": "2.60",
+    "pnl": "28.07",
+    "max_loss": "258.93",
+    "return_on_risk": 0.1084,
+    "exit_reason": "window_end",
+    "volatility_at_entry": 0.4376,
+    "pricing": "MIXED"
+   }
+  ],
+  "folds_with_positive_oos_expectancy": 5,
+  "folds_scored": 8,
+  "mean_test_rank_fraction_better": 0.4048611111111111,
+  "buy_hold_over_test_windows": 0.08802624384909796
+ },
+ "in_sample_top10_NOT_EVIDENCE": [
+  {
+   "label": "long_put d0.20 45DTE pt=none sl=none",
+   "trades": 22,
+   "expectancy_r": 0.6454061156026513,
+   "total_pnl": 2385.92
+  },
+  {
+   "label": "long_call d0.30 45DTE pt=none sl=50%",
+   "trades": 48,
+   "expectancy_r": 0.6044341900295815,
+   "total_pnl": 1430.28
+  },
+  {
+   "label": "bull_call d0.30 45DTE pt=none sl=none",
+   "trades": 22,
+   "expectancy_r": 0.5827537455721424,
+   "total_pnl": 763.12
+  },
+  {
+   "label": "long_call d0.20 45DTE pt=none sl=50%",
+   "trades": 56,
+   "expectancy_r": 0.5753927560684923,
+   "total_pnl": 1436.09
+  },
+  {
+   "label": "bull_call d0.50 30DTE pt=none sl=100%",
+   "trades": 35,
+   "expectancy_r": 0.5451997846596917,
+   "total_pnl": 4561.1
+  },
+  {
+   "label": "bull_call d0.50 45DTE pt=none sl=none",
+   "trades": 22,
+   "expectancy_r": 0.5153089765839663,
+   "total_pnl": 2604.16
+  },
+  {
+   "label": "long_call d0.20 45DTE pt=none sl=100%",
+   "trades": 27,
+   "expectancy_r": 0.4713250071851515,
+   "total_pnl": -1255.74
+  },
+  {
+   "label": "long_call d0.50 45DTE pt=none sl=none",
+   "trades": 22,
+   "expectancy_r": 0.4539120401706434,
+   "total_pnl": 979.57
+  },
+  {
+   "label": "long_call d0.30 30DTE pt=none sl=50%",
+   "trades": 70,
+   "expectancy_r": 0.42504736230669843,
+   "total_pnl": 990.99
+  },
+  {
+   "label": "long_call d0.20 30DTE pt=none sl=50%",
+   "trades": 83,
+   "expectancy_r": 0.41743274292937854,
+   "total_pnl": 91.27
+  }
+ ],
+ "in_sample_by_strategy_NOT_EVIDENCE": {
+  "long_call": {
+   "configs": 108,
+   "share_with_positive_expectancy": 0.6203703703703703,
+   "median_expectancy_r": 0.04445910278053059
+  },
+  "long_put": {
+   "configs": 108,
+   "share_with_positive_expectancy": 0.3611111111111111,
+   "median_expectancy_r": -0.047176997992634834
+  },
+  "bull_call": {
+   "configs": 108,
+   "share_with_positive_expectancy": 0.25,
+   "median_expectancy_r": -0.11788089048186291
+  },
+  "bear_put": {
+   "configs": 108,
+   "share_with_positive_expectancy": 0.0,
+   "median_expectancy_r": -0.28445793396344105
+  },
+  "bull_put": {
+   "configs": 108,
+   "share_with_positive_expectancy": 0.5370370370370371,
+   "median_expectancy_r": 0.0036726511584337937
+  },
+  "bear_call": {
+   "configs": 108,
+   "share_with_positive_expectancy": 0.0,
+   "median_expectancy_r": -0.06417140727199369
+  },
+  "iron_condor": {
+   "configs": 72,
+   "share_with_positive_expectancy": 0.2361111111111111,
+   "median_expectancy_r": -0.05502343070766421
+  }
+ },
+ "multiplier_sensitivity": {
+  "1.0": {
+   "pooled_oos": {
+    "trades": 48,
+    "wins": 29,
+    "win_rate": 0.6042,
+    "total_pnl": "-2816.93",
+    "expectancy": "-58.69",
+    "expectancy_r": -0.1725,
+    "t_stat_r": -1.958,
+    "max_drawdown": "4281.53",
+    "max_drawdown_r": 12.857,
+    "pricing_counts": {
+     "MODELLED": 47,
+     "MIXED": 1
+    }
+   },
+   "folds_with_positive_oos_expectancy": 3,
+   "folds_scored": 8,
+   "mean_test_rank_fraction_better": 0.5732638888888889,
+   "chosen_by_fold": [
+    "bull_put d0.30 30DTE pt=100% sl=none",
+    "bull_put d0.50 7DTE pt=50% sl=none",
+    "long_put d0.20 14DTE pt=50% sl=none",
+    "iron_condor d0.30 30DTE pt=50% sl=none",
+    "bull_put d0.50 45DTE pt=50% sl=none",
+    "bear_call d0.20 30DTE pt=100% sl=none",
+    "bull_put d0.30 14DTE pt=50% sl=none",
+    "bull_put d0.30 14DTE pt=50% sl=none"
+   ]
+  },
+  "1.5": {
+   "pooled_oos": {
+    "trades": 59,
+    "wins": 48,
+    "win_rate": 0.8136,
+    "total_pnl": "1556.51",
+    "expectancy": "26.38",
+    "expectancy_r": 0.0839,
+    "t_stat_r": 2.208,
+    "max_drawdown": "1157.83",
+    "max_drawdown_r": 1.5456,
+    "pricing_counts": {
+     "MODELLED": 58,
+     "MIXED": 1
+    }
+   },
+   "folds_with_positive_oos_expectancy": 5,
+   "folds_scored": 8,
+   "mean_test_rank_fraction_better": 0.30538194444444444,
+   "chosen_by_fold": [
+    "bull_put d0.20 30DTE pt=100% sl=none",
+    "iron_condor d0.20 45DTE pt=50% sl=none",
+    "bear_call d0.20 45DTE pt=50% sl=none",
+    "bear_call d0.20 30DTE pt=50% sl=none",
+    "iron_condor d0.20 7DTE pt=50% sl=none",
+    "iron_condor d0.20 7DTE pt=50% sl=none",
+    "bull_put d0.30 7DTE pt=50% sl=none",
+    "bull_put d0.30 14DTE pt=100% sl=none"
+   ]
+  }
+ },
+ "selection_sensitivity": {
+  "expectancy_r": {
+   "pooled_oos": {
+    "trades": 37,
+    "wins": 5,
+    "win_rate": 0.1351,
+    "total_pnl": "-4901.14",
+    "expectancy": "-132.46",
+    "expectancy_r": -0.8582,
+    "t_stat_r": -5.358,
+    "max_drawdown": "5177.41",
+    "max_drawdown_r": 33.9873,
+    "pricing_counts": {
+     "MODELLED": 36,
+     "MIXED": 1
+    }
+   },
+   "folds_with_positive_oos_expectancy": 3,
+   "folds_scored": 8,
+   "mean_test_rank_fraction_better": 0.6119791666666666,
+   "chosen_by_fold": [
+    "bull_call d0.20 30DTE pt=none sl=100%",
+    "long_call d0.20 30DTE pt=none sl=100%",
+    "long_put d0.20 30DTE pt=none sl=100%",
+    "bull_call d0.50 45DTE pt=none sl=100%",
+    "bull_call d0.50 45DTE pt=none sl=100%",
+    "long_put d0.20 45DTE pt=100% sl=none",
+    "long_put d0.20 45DTE pt=100% sl=none",
+    "long_call d0.20 45DTE pt=none sl=none"
+   ]
+  }
+ },
+ "runtime_seconds_main_walk_forward": 564.0
+}

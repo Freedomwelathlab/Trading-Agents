@@ -185,6 +185,9 @@ def select_strikes(
     dte_years: float,
     volatility: float,
     strike_increment: Decimal = Decimal("1"),
+    long_delta: float | None = None,
+    short_delta: float | None = None,
+    risk_free_rate: float = 0.0,
 ) -> tuple[Decimal, Decimal]:
     """(long_strike, short_strike) for a vertical, chosen by DELTA and then
     snapped to the chain's strike grid.
@@ -194,6 +197,13 @@ def select_strikes(
     legs onto one strike the short leg is pushed one increment further out,
     because a zero-width "spread" is not a structure and would divide by
     zero in the risk math.
+
+    `long_delta` / `short_delta` override the playbook's pair for this call
+    only (Phase 100, D119): the options research loop searches over target
+    deltas, and a second strike-selection routine written for it would be a
+    second definition of "the strike at this delta" free to drift from this
+    one. Omitted, they are exactly the playbook's constants, so every
+    Phase 78 caller is unchanged.
     """
     if kind is StructureKind.BULL_CALL:
         right, long_d, short_d = OptionRight.CALL, DEBIT_LONG_DELTA, DEBIT_SHORT_DELTA
@@ -205,6 +215,10 @@ def select_strikes(
         right, long_d, short_d = OptionRight.CALL, CREDIT_LONG_DELTA, CREDIT_SHORT_DELTA
     else:
         raise ValueError(f"{kind} is not a vertical.")
+    if long_delta is not None:
+        long_d = long_delta
+    if short_delta is not None:
+        short_d = short_delta
 
     def strike_for(delta: float) -> Decimal:
         return _round_strike(
@@ -214,6 +228,7 @@ def select_strikes(
                 time_to_expiry_years=dte_years,
                 volatility=volatility,
                 right=right,
+                risk_free_rate=risk_free_rate,
             ),
             strike_increment,
         )

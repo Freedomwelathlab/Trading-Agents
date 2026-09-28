@@ -1,3 +1,4 @@
+from datetime import time
 from decimal import Decimal
 from enum import Enum
 from functools import lru_cache
@@ -11,6 +12,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # PORTFOLIO_SNAPSHOT_COST_BASIS_METHOD fail at app startup instead of
 # silently persisting a method name nothing can read back (D044).
 from apps.api.app.portfolio.models import CostBasisMethod
+
+
+def parse_hh_mm(value: str) -> time:
+    """`"16:30"` -> `time(16, 30)`; anything else raises ValueError."""
+    try:
+        hours, minutes = value.strip().split(":")
+        return time(int(hours), int(minutes))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"Expected a HH:MM wall-clock time, got {value!r}.") from exc
 
 
 class TradingMode(str, Enum):  # noqa: UP042 (str mixin kept for pydantic/env-var interop)
@@ -482,6 +492,39 @@ class Settings(BaseSettings):
     """Same cross-worker advisory-lock discipline as the deployment runner,
     on the bot runner's own key."""
 
+    option_snapshot_scheduler_enabled: bool = False
+    """Phase 100 (D119): record the delayed option chain once per trading
+    day after the close. Defaults FALSE, the same fail-closed posture as
+    every other background loop that WRITES rows: it adds ~900 rows a day
+    per underlying to a metered database forever, and that is the
+    operator's call to make, not a default's. It never trades."""
+
+    option_snapshot_underlyings: str = "TQQQ.US"
+    """Comma-separated symbols the scheduler snapshots. A string rather
+    than a list so it can be set as one plain environment variable."""
+
+    option_snapshot_capture_after_et: str = "16:30"
+    """New York wall-clock time (HH:MM) after which a trading day's
+    snapshot is taken. Deliberately New York time, not UTC: the "20:30 UTC"
+    that equals 16:30 EDT is 15:30 EST - BEFORE the close for the whole
+    winter. 16:30 ET is after the 16:15 close of the latest-trading ETF
+    options plus Cboe's ~15-minute delay."""
+
+    option_snapshot_interval_seconds: int = 900
+    """How often the loop wakes to ask "is today's snapshot due and not yet
+    taken?". Almost every wake does nothing; the capture itself happens
+    once a day."""
+
+    option_snapshot_max_dte: int = 60
+    """Expiries further out than this are not stored (row-count control)."""
+
+    option_snapshot_strike_band_pct: Decimal = Decimal("0.30")
+    """Strikes outside spot x (1 +- this) are not stored (row-count control)."""
+
+    option_snapshot_cycle_lock_enabled: bool = True
+    """Same cross-worker advisory-lock discipline as the other loops, on
+    the snapshot job's own key, so N workers take one snapshot, not N."""
+
     strategy_drift_min_round_trips: int = 10
     """Phase 66 (D084): a deployment's own closed round trips must reach
     this count before `evaluate_deployment_drift` will render a verdict at
@@ -777,6 +820,25 @@ class Settings(BaseSettings):
         if not (0 < self.strategy_live_max_total_loss_pct <= 100):
             raise ValueError("STRATEGY_LIVE_MAX_TOTAL_LOSS_PCT must be in (0, 100].")
         return self
+
+    @model_validator(mode="after")
+    def _enforce_sane_option_snapshot_settings(self) -> "Settings":
+        """Phase 100 (D119): checked at config load so a typo fails startup
+        with a message rather than a scheduler that silently never fires."""
+        if self.option_snapshot_interval_seconds <= 0:
+            raise ValueError("OPTION_SNAPSHOT_INTERVAL_SECONDS must be positive.")
+        if self.option_snapshot_max_dte < 0:
+            raise ValueError("OPTION_SNAPSHOT_MAX_DTE must be non-negative.")
+        if not Decimal(0) < self.option_snapshot_strike_band_pct < Decimal(1):
+            raise ValueError("OPTION_SNAPSHOT_STRIKE_BAND_PCT must be between 0 and 1.")
+        parse_hh_mm(self.option_snapshot_capture_after_et)
+        return self
+
+    @property
+    def option_snapshot_underlying_list(self) -> list[str]:
+        return [
+            s.strip().upper() for s in self.option_snapshot_underlyings.split(",") if s.strip()
+        ]
 
     @model_validator(mode="after")
     def _enforce_positive_snapshot_interval(self) -> "Settings":

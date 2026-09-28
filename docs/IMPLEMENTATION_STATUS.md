@@ -3893,3 +3893,54 @@ order placed anywhere.
 **Tests**: trend ride 25 (setup causality, mirrored short, structure-trail
 ratchet timing, break, gap fill, overnight, default plan unchanged,
 engine wiring).
+
+## Phase 100 — Options research on TQQQ: daily chain snapshots and a labelled model
+
+Shipped 2026-09-28 (branch, not deployed). Decision: `docs/DECISIONS.md` D119.
+
+Why: the platform had no historical option prices and no way to acquire
+any; every past options figure was Black-Scholes from an assumed
+volatility. This phase starts recording the real chain and gives research
+an honest, labelled model to use until enough of it exists.
+
+* **Storage.** Migration 0035 `option_chain_snapshots` (natural key
+  `contract_symbol, as_of`; index `underlying, trade_date`).
+  `options/snapshots.py`: `capture_chain_snapshot` keeps expiries ≤ 60 DTE
+  and strikes within ±30% of the vendor's own underlying price (new
+  `get_underlying_price` on the Cboe/fallback providers; a stored daily
+  close ≤ 4 days old as a fallback; neither → DATA_UNAVAILABLE), one
+  snapshot per vendor trading day (a later capture replaces), NULL never
+  zero. Measured on the real 2026-09-25 TQQQ document: **908 rows,
+  280 KB with indexes, ≈70 MB/year**.
+* **Loop.** `options/snapshot_scheduler.py::OptionSnapshotScheduler`, own
+  advisory-lock objid, weekdays after 16:30 **New York** time (a UTC time
+  would fire before the close all winter), writes nothing when the
+  vendor's `as_of` is not today (holidays). `OPTION_SNAPSHOT_*` settings;
+  **`OPTION_SNAPSHOT_SCHEDULER_ENABLED=false` by default and left off.**
+* **Routes.** `POST /admin/options/snapshots/{underlying}` (`admin:manage`),
+  `GET /options/snapshots/{underlying}?date=`, `GET .../dates`.
+* **Backtest.** `options/backtest.py`: daily replay, one structure at a
+  time, long call/put, the four verticals and an iron condor; strikes via
+  `select_strikes` (now accepts research deltas; defaults unchanged) and
+  `build_vertical`'s defined-risk guard; BS at RV20 × IV/RV multiplier
+  (median ATM IV/RV over stored snapshots, else 1.2 — reported);
+  half-spread max($0.02, 3%) and $0.65/contract/leg; profit target / stop
+  / DTE exit / expiry at intrinsic / window end. Every trade labelled
+  MODELLED, OBSERVED (real quotes at entry and exit) or MIXED.
+* **Loop over it.** `scripts/optimise_options.py`: 756-config grid,
+  rolling 252/63-bar walk-forward, t-statistic selection on train, test
+  scored only, every config ranked OOS, multiplier and selection
+  sensitivity. Report `docs/research/options_walk_forward_2026-09-28.json`;
+  write-up `docs/RESEARCH_OPTIONS.md`.
+
+**Measured (MODELLED, not observed):** pooled OOS 47 trades, +0.100 R/trade,
+t = 1.44, +$1,851.19, max DD $790.99, 5/8 folds positive, all short
+premium. At IV = RV the same procedure is −0.173 R, −$2,816.93; selecting
+by raw mean R is −0.858 R. **Not an edge**: the sign comes from an IV/RV
+multiplier (1.113) measured on one snapshot day.
+
+**Tests**: backtest 23, snapshots + scheduler 15, routes 5, cboe +1.
+
+**Operator**: run `alembic upgrade head` (0035) on deploy; set
+`OPTION_SNAPSHOT_SCHEDULER_ENABLED=true` on Railway to start collecting.
+Nothing traded; nothing enabled.
