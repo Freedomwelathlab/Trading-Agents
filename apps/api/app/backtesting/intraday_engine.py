@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, DivisionByZero, InvalidOperation
 
 from apps.api.app.backtesting.brackets import (
@@ -246,6 +246,24 @@ def run_intraday_backtest(
 
     equity = config.starting_equity
 
+    # Phase 101 (D120): a structure ride held overnight is simulated over
+    # the regular-hours bars of EVERY session, with swings found once over
+    # that continuous series. Swings are still gated on `confirmed_ts`
+    # inside the simulation, so computing them up front reveals nothing.
+    plan = config.plan
+    overnight = plan.structure_trail and plan.hold_overnight
+    all_regular: list = []
+    global_index: dict = {}
+    overnight_swings: list = []
+    if overnight:
+        all_regular = [b for b in ordered if is_regular_hours(b.ts)]
+        global_index = {b.ts: k for k, b in enumerate(all_regular)}
+        overnight_swings = find_swings(all_regular, strength=plan.structure_swing_strength)
+    # Exit time of a position still open from an EARLIER session. Always
+    # `None` unless a ride is held overnight, so the default path is
+    # unchanged.
+    busy_until: datetime | None = None
+
     for day in sorted(sessions):
         session_bars = sessions[day]
         regular = [b for b in session_bars if is_regular_hours(b.ts)]
@@ -258,6 +276,13 @@ def run_intraday_backtest(
         # its own confirmation time, so `last_confirmed_swing` can hide
         # the ones not yet knowable at any given bar.
         swings = find_swings(regular, strength=config.swing_strength)
+        trail_swings = None
+        if plan.structure_trail and not overnight:
+            trail_swings = (
+                swings
+                if plan.structure_swing_strength == config.swing_strength
+                else find_swings(regular, strength=plan.structure_swing_strength)
+            )
 
         traded_this_session = False
         session_r = Decimal(0)
@@ -267,6 +292,8 @@ def run_intraday_backtest(
 
         for i, bar in enumerate(regular):
             if blocked or i < next_free_index:
+                continue
+            if busy_until is not None and bar.ts <= busy_until:
                 continue
 
             # Phase 99 (D118): what the detectors see at bar i depends only on
@@ -334,10 +361,10 @@ def run_intraday_backtest(
                 continue
 
             trade = simulate_bracket(
-                regular,
+                all_regular if overnight else regular,
                 symbol=config.symbol,
                 direction=signal.direction,
-                entry_index=i,
+                entry_index=global_index[bar.ts] if overnight else i,
                 entry_price=signal.entry_price,
                 stop_price=signal.stop_price,
                 quantity=quantity,
@@ -346,6 +373,7 @@ def run_intraday_backtest(
                 costs=config.costs,
                 setup_name=signal.setup_name,
                 size_was_capped=capped,
+                swings=overnight_swings if overnight else trail_swings,
             )
             if trade is None:
                 result.signals_rejected_by_sizing += 1
@@ -376,6 +404,8 @@ def run_intraday_backtest(
             # trade has closed. Overlapping entries would compound the
             # per-trade risk into an exposure nobody sized for.
             exit_ts = trade.exit_ts
+            if overnight:
+                busy_until = exit_ts
             next_free_index = i + 1
             if exit_ts is not None:
                 for j in range(i + 1, len(regular)):

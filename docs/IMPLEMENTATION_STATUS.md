@@ -3859,3 +3859,37 @@ Shipped 2026-09-28. Decision: `docs/DECISIONS.md` D118.
   gap_fade), 0 recommended, 7 negative, 1 untradeable.
 
 **Tests**: optimiser 7, engine cache equivalence 2.
+
+## Phase 101 — Trend anatomy, the structure-trail exit, and a walk-forward that says no
+
+Shipped 2026-09-28. Decision: `docs/DECISIONS.md` D120. Research only; no
+order placed anywhere.
+
+* `scripts/trend_anatomy_tqqq.py`: trends segmented from confirmed swings
+  (break = first close through the last confirmed higher low); legs,
+  pullback depth/duration/levels, trend strength vs outcome, reversal
+  precursors vs base rate, on 5m (strength 3 and 2) and 1d.
+* `backtesting/setups.py`: `trend_pullback` (registry now 13) - fires once,
+  on the bar a higher low / lower high is confirmed, inside a Dow trend,
+  with depth band, support and direction parameters.
+* `backtesting/brackets.py`: opt-in `BracketPlan.structure_trail` (ratchet
+  to confirmed swings, exit on the stop or a confirmed lower low),
+  `structure_trail_buffer_atr`, `structure_break_on_close`,
+  `structure_atr_trail_multiple` (trailing take-profit), `hold_overnight`;
+  new exit reasons `structure_trail`, `structure_break`. Defaults off.
+* `backtesting/intraday_engine.py`: passes swings to the structure exit;
+  with `hold_overnight` it simulates over every session's regular bars and
+  blocks new entries until the ride ends. Default path unchanged.
+* `scripts/trend_walk_forward_tqqq.py`: 576-combination grid, rolling
+  40/20 walk-forward, flat-by-the-bell and overnight modes; JSON report in
+  `docs/research/`.
+* Result (`docs/RESEARCH_TREND_TQQQ.md`): pooled out of sample -0.518R
+  (t -2.96, 43 trades) flat by the bell, -0.200R (t -0.53, 27 trades)
+  overnight; every fold's pick lost in its test window. Not deployable.
+
+**Open**: `_BiasLookup` reads a higher-timeframe bar by its open stamp
+(up to 10 minutes early on 15m); recorded in D120, not changed.
+
+**Tests**: trend ride 25 (setup causality, mirrored short, structure-trail
+ratchet timing, break, gap fill, overnight, default plan unchanged,
+engine wiring).
