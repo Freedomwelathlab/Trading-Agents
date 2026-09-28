@@ -193,6 +193,9 @@ def run_intraday_backtest(
     *,
     higher_timeframe_bars: Sequence | None = None,
     confirm_bars: Sequence | None = None,
+    signal_cache: dict[tuple[date, int], tuple[SetupSignal | None, Decimal | None]]
+    | None = None,
+    bias_cache: dict[tuple[int, int, int], list[tuple[object, Direction]]] | None = None,
 ) -> IntradayRunResult:
     """Replay `bars` (the execution timeframe) under `config`.
 
@@ -216,14 +219,23 @@ def run_intraday_backtest(
     sessions = group_by_session(ordered)
     result.sessions_available = len(sessions)
 
-    higher_timeline = _BiasLookup(
-        _bias_timeline(higher_timeframe_bars, fast=21, slow=50)
-        if higher_timeframe_bars
-        else []
-    )
-    confirm_timeline = _BiasLookup(
-        _bias_timeline(confirm_bars, fast=9, slow=21) if confirm_bars else []
-    )
+    def timeline(series: Sequence | None, fast: int, slow: int) -> list:
+        # Phase 99 (D118): measured at ~95% of a cached run's time - two
+        # 80-bar Decimal EMAs at each of ~41,000 higher-timeframe and
+        # confirm bars, rebuilt identically on every run. An optimiser
+        # passes `bias_cache` (and keeps the series alive, since the key
+        # is its identity) to build each timeline once.
+        if not series:
+            return []
+        if bias_cache is None:
+            return _bias_timeline(series, fast=fast, slow=slow)
+        key = (id(series), fast, slow)
+        if key not in bias_cache:
+            bias_cache[key] = _bias_timeline(series, fast=fast, slow=slow)
+        return bias_cache[key]
+
+    higher_timeline = _BiasLookup(timeline(higher_timeframe_bars, 21, 50))
+    confirm_timeline = _BiasLookup(timeline(confirm_bars, 9, 21))
 
     detectors = [(name, SETUPS[name]) for name in config.setups if name in SETUPS]
     if not detectors:
@@ -257,28 +269,40 @@ def run_intraday_backtest(
             if blocked or i < next_free_index:
                 continue
 
-            window = regular[max(0, i - _INDICATOR_LOOKBACK) : i + 1]
-            closes = [b.close for b in window]
+            # Phase 99 (D118): what the detectors see at bar i depends only on
+            # the bars - never on the exit plan or the entry filters - so an
+            # optimiser trying many plans over the SAME window passes one
+            # `signal_cache` and pays for detection once. Omitted (the
+            # default), every bar is detected exactly as before.
+            cache_key = (day, i)
+            if signal_cache is not None and cache_key in signal_cache:
+                signal, bar_atr = signal_cache[cache_key]
+            else:
+                window = regular[max(0, i - _INDICATOR_LOOKBACK) : i + 1]
+                closes = [b.close for b in window]
 
-            ctx = BarContext(
-                bars=regular[: i + 1],
-                index=i,
-                levels=levels,
-                swings=swings,
-                vwap=vwap_points.get(bar.ts),
-                atr=_indicator(atr, window, 14),
-                rsi=_indicator(rsi, closes, 14),
-                ema_fast=_indicator(ema, closes, 9),
-                ema_slow=_indicator(ema, closes, 21),
-                higher_tf_bias=higher_timeline.at(bar.ts),
-                confirm_bias=confirm_timeline.at(bar.ts),
-            )
+                ctx = BarContext(
+                    bars=regular[: i + 1],
+                    index=i,
+                    levels=levels,
+                    swings=swings,
+                    vwap=vwap_points.get(bar.ts),
+                    atr=_indicator(atr, window, 14),
+                    rsi=_indicator(rsi, closes, 14),
+                    ema_fast=_indicator(ema, closes, 9),
+                    ema_slow=_indicator(ema, closes, 21),
+                    higher_tf_bias=higher_timeline.at(bar.ts),
+                    confirm_bias=confirm_timeline.at(bar.ts),
+                )
 
-            signal: SetupSignal | None = None
-            for _name, detect in detectors:
-                signal = detect(ctx)
-                if signal is not None:
-                    break
+                signal = None
+                for _name, detect in detectors:
+                    signal = detect(ctx)
+                    if signal is not None:
+                        break
+                bar_atr = ctx.atr
+                if signal_cache is not None:
+                    signal_cache[cache_key] = (signal, bar_atr)
             if signal is None:
                 continue
 
@@ -293,7 +317,7 @@ def run_intraday_backtest(
             if not stop_quality_ok(
                 entry_price=signal.entry_price,
                 stop_price=signal.stop_price,
-                atr=ctx.atr,
+                atr=bar_atr,
                 plan=config.plan,
             ):
                 result.signals_rejected_by_stop_quality += 1
@@ -317,7 +341,7 @@ def run_intraday_backtest(
                 entry_price=signal.entry_price,
                 stop_price=signal.stop_price,
                 quantity=quantity,
-                atr=ctx.atr,
+                atr=bar_atr,
                 plan=config.plan,
                 costs=config.costs,
                 setup_name=signal.setup_name,

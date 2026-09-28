@@ -274,3 +274,42 @@ def test_expectancy_equals_mean_r():
     manual = sum((t.r_multiple for t in result.trades), Decimal(0)) / len(result.trades)
 
     assert metrics.expectancy_r == manual
+
+
+def test_a_shared_signal_cache_changes_no_result_across_different_plans():
+    """Phase 99 (D118): the optimiser runs many exit plans over one window
+    with one cache. Detection must be reused, never altered - every plan
+    gives exactly the trades it gives without the cache."""
+    bars = _two_day_series()
+    cache: dict = {}
+    for plan in (
+        BracketPlan(),
+        BracketPlan(tp1_r_multiple=Decimal("1.5"), trail_atr_multiple=None),
+        BracketPlan(breakeven_after_tp1=False, trail_atr_multiple=Decimal("2.5")),
+    ):
+        plain = run_intraday_backtest(bars, config(plan=plan))
+        cached = run_intraday_backtest(bars, config(plan=plan), signal_cache=cache)
+        assert [(t.entry_ts, t.entry_price, t.r_multiple) for t in plain.trades] == [
+            (t.entry_ts, t.entry_price, t.r_multiple) for t in cached.trades
+        ]
+        assert plain.signals_seen == cached.signals_seen
+    assert cache, "the cache was filled on the first run"
+
+
+def test_a_shared_bias_cache_changes_no_result():
+    """Phase 99 (D118): the regime timeline is built once per series and
+    reused; the trades must be exactly those of an uncached run."""
+    bars = _two_day_series()
+    htf = bars[::3]
+    bias: dict = {}
+    plain = run_intraday_backtest(bars, config(), higher_timeframe_bars=htf, confirm_bars=bars)
+    first = run_intraday_backtest(
+        bars, config(), higher_timeframe_bars=htf, confirm_bars=bars, bias_cache=bias
+    )
+    again = run_intraday_backtest(
+        bars, config(), higher_timeframe_bars=htf, confirm_bars=bars, bias_cache=bias
+    )
+    key = [(t.entry_ts, t.r_multiple) for t in plain.trades]
+    assert key == [(t.entry_ts, t.r_multiple) for t in first.trades]
+    assert key == [(t.entry_ts, t.r_multiple) for t in again.trades]
+    assert len(bias) == 2  # one regime timeline, one confirm timeline

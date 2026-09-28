@@ -11379,3 +11379,46 @@ unused by any code. Stored ticker data is not a cost driver. The
 calibration scan is cached once per symbol per day so the chart does not
 add a recurring cost.
 Status: Implemented, tested. No order placed at any venue.
+
+## D118 — A walk-forward optimisation loop per setup, and what it measured (Phase 99)
+Date: 2026-09-28
+
+The operator asked for an optimisation loop per strategy: restructure the
+parameters, backtest, keep the best, with trailing take-profit when a trend
+continues. Built as `backtesting/optimiser.py` + `scripts/optimise_setups.py`.
+
+**Searched:** the exit plan (TP1/TP2 levels, breakeven after TP1, ATR trail
+1.0/1.5/2.5 or none - the trail is the "keep riding" knob) and the entry
+filter (min score, long/short/both). Coordinate descent, ~40 backtests per
+window instead of ~1,080 for the full grid. **Validated by walk-forward:**
+choose on 40 sessions, score on the next 20 unseen, roll; the same folds are
+also run with the defaults, so improvement is measured, not assumed.
+
+**Result, TQQQ 5m, 132 sessions, 4 folds, 1bp+2bps costs** (out of sample):
+sweep_mss +0.118R (41 trades, t +0.78), fib_confluence +0.078R (32, t +0.35),
+orb_failure +0.041R (51), gap_fade +0.033R (33) beat their defaults and are
+positive; the other eight are negative (candle_reversal -0.224R t -2.29,
+rsi_divergence -0.236R, ema_reversal -0.215R, order_block_fvg -0.203R, ...),
+and volume_climax_reversal never reached 10 train trades. Every fold shows
+the same pattern: in-sample winners of +0.3R to +0.9R fall to roughly zero
+or negative on the next window. **No setup reaches t >= 2**, so the report
+marks four as `promising` and none as `recommended`; the first draft called
+the four "recommended", which is the overstatement this loop exists to stop.
+
+**Two engine findings, measured while building it:**
+1. `BracketPlan.atr_stop_buffer` is never passed to the detectors - the
+   engine calls `detect(ctx)` and each setup uses its own 0.30 default - so
+   the documented stop-buffer knob does nothing. It is excluded from the
+   search rather than reported as a tie; wiring it through is a separate,
+   visible decision.
+2. ~95% of a run was `_bias_timeline` rebuilding two 80-bar Decimal EMAs at
+   each of ~41,000 higher-timeframe/confirm bars, identically every run.
+   `run_intraday_backtest` gains two opt-in caches: `signal_cache`
+   (detection depends only on bars, never on the plan) and `bias_cache`.
+   Repeat runs went from 24 s to 0.56 s; tests assert both caches change no
+   trade. Defaults (no cache) behave exactly as before.
+
+Rejected: an exhaustive grid (hours per setup, and more ways to overfit), and
+re-parameterising the detectors themselves (a detector with many knobs fitted
+to 40 sessions describes those 40 sessions).
+Status: Implemented, tested. Research only; nothing trades on these params.

@@ -3839,3 +3839,23 @@ Shipped 2026-09-26. Decision: `docs/DECISIONS.md` D117.
 
 **Tests**: cboe 10, calibration 6, IG +1, probe cooldown +1; web
 SignalFilter 5.
+
+
+## Phase 99 — Walk-forward optimisation loop per setup
+
+Shipped 2026-09-28. Decision: `docs/DECISIONS.md` D118.
+
+* `backtesting/optimiser.py`: coordinate-descent search over exit plan and
+  entry filter; `walk_forward()` selects on train, scores on the next unseen
+  window, and runs the defaults on the same folds as the baseline.
+* `scripts/optimise_setups.py`: runs every setup, saves
+  `docs/research/setup_optimisation_<symbol>_<date>.json` with per-fold
+  picks, out-of-sample and default scores, and each setup's current best
+  parameters (fitted on the latest window) flagged `promising` /
+  `recommended` (t >= 2 on >= 30 unseen trades).
+* `run_intraday_backtest(..., signal_cache=, bias_cache=)`: opt-in caches,
+  ~40x faster repeat runs, proven result-neutral by tests.
+* First TQQQ run: 4 promising (sweep_mss, fib_confluence, orb_failure,
+  gap_fade), 0 recommended, 7 negative, 1 untradeable.
+
+**Tests**: optimiser 7, engine cache equivalence 2.

@@ -1,0 +1,2095 @@
+{
+  "generated_at": "2026-09-28T07:28:46.456156+00:00",
+  "symbol": "TQQQ.US",
+  "interval": "5m",
+  "sessions": [
+    "2026-03-19",
+    "2026-09-25",
+    132
+  ],
+  "train": 40,
+  "test": 20,
+  "costs": "1bp fee + 2bps slippage per side",
+  "setups": {
+    "bollinger_confluence": {
+      "out_of_sample": {
+        "trades": 23,
+        "expectancy_r": -0.07499178241498795,
+        "t_stat": -0.22787716728968255,
+        "win_rate": 0.34782608695652173,
+        "total_r": -1.7248109955447228
+      },
+      "default_out_of_sample": {
+        "trades": 34,
+        "expectancy_r": -0.07822100960336613,
+        "t_stat": -0.3377058078434701,
+        "win_rate": 0.47058823529411764,
+        "total_r": -2.6595143265144485
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "0.75",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": null,
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "long"
+      },
+      "current_params_in_sample": {
+        "trades": 10,
+        "expectancy_r": -0.24007078770677576,
+        "t_stat": -0.5740376852268061,
+        "win_rate": 0.4,
+        "total_r": -2.4007078770677577
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 4,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 13,
+            "expectancy_r": 0.48504701138677925,
+            "t_stat": 1.3494315317470942,
+            "win_rate": 0.6153846153846154,
+            "total_r": 6.30561114802813
+          },
+          "test_score": {
+            "trades": 5,
+            "expectancy_r": 1.1564623402818102,
+            "t_stat": 5.654708874489979,
+            "win_rate": 1.0,
+            "total_r": 5.782311701409051
+          },
+          "default_test_score": {
+            "trades": 8,
+            "expectancy_r": 0.49252188437323047,
+            "t_stat": 1.3915238354927981,
+            "win_rate": 0.875,
+            "total_r": 3.9401750749858437
+          },
+          "backtests": 23
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": false,
+            "min_score": 4,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 13,
+            "expectancy_r": 0.6653950656080141,
+            "t_stat": 2.135560853219729,
+            "win_rate": 0.7692307692307693,
+            "total_r": 8.650135852904183
+          },
+          "test_score": {
+            "trades": 2,
+            "expectancy_r": -1.0424734018204167,
+            "t_stat": -149.48761097581664,
+            "win_rate": 0.0,
+            "total_r": -2.0849468036408334
+          },
+          "default_test_score": {
+            "trades": 7,
+            "expectancy_r": -0.5830444005129015,
+            "t_stat": -1.85765450063733,
+            "win_rate": 0.2857142857142857,
+            "total_r": -4.081310803590311
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": false,
+            "min_score": 3,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 14,
+            "expectancy_r": 0.3304461936294351,
+            "t_stat": 0.9311042352722138,
+            "win_rate": 0.5714285714285714,
+            "total_r": 4.626246710812092
+          },
+          "test_score": {
+            "trades": 11,
+            "expectancy_r": -0.1360267458741122,
+            "t_stat": -0.2277936616947167,
+            "win_rate": 0.18181818181818182,
+            "total_r": -1.496294204615234
+          },
+          "default_test_score": {
+            "trades": 12,
+            "expectancy_r": 0.07270290167451966,
+            "t_stat": 0.13970271319423466,
+            "win_rate": 0.4166666666666667,
+            "total_r": 0.8724348200942359
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": true,
+            "min_score": 3,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 17,
+            "expectancy_r": -0.056183291395412865,
+            "t_stat": -0.1268654183065064,
+            "win_rate": 0.35294117647058826,
+            "total_r": -0.9551159537220187
+          },
+          "test_score": {
+            "trades": 5,
+            "expectancy_r": -0.7851763377395413,
+            "t_stat": -2.128691892110791,
+            "win_rate": 0.2,
+            "total_r": -3.9258816886977064
+          },
+          "default_test_score": {
+            "trades": 7,
+            "expectancy_r": -0.48440191685774525,
+            "t_stat": -1.1482173575327315,
+            "win_rate": 0.2857142857142857,
+            "total_r": -3.3908134180042167
+          },
+          "backtests": 23
+        }
+      ],
+      "promising": false
+    },
+    "candle_reversal": {
+      "out_of_sample": {
+        "trades": 142,
+        "expectancy_r": -0.22370437710268548,
+        "t_stat": -2.2897779815317034,
+        "win_rate": 0.4225352112676056,
+        "total_r": -31.76602154858134
+      },
+      "default_out_of_sample": {
+        "trades": 182,
+        "expectancy_r": -0.19381218727492616,
+        "t_stat": -2.2039307650786326,
+        "win_rate": 0.44505494505494503,
+        "total_r": -35.27381808403656
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": false,
+        "min_score": 0,
+        "directions": "long"
+      },
+      "current_params_in_sample": {
+        "trades": 55,
+        "expectancy_r": 0.13680123954786672,
+        "t_stat": 0.6104386706189461,
+        "win_rate": 0.38181818181818183,
+        "total_r": 7.52406817513267
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 80,
+            "expectancy_r": -0.11558052254029882,
+            "t_stat": -0.7951625648358135,
+            "win_rate": 0.3875,
+            "total_r": -9.246441803223906
+          },
+          "test_score": {
+            "trades": 42,
+            "expectancy_r": -0.2743863347320187,
+            "t_stat": -1.487639078738279,
+            "win_rate": 0.3333333333333333,
+            "total_r": -11.524226058744786
+          },
+          "default_test_score": {
+            "trades": 52,
+            "expectancy_r": -0.2165065502612896,
+            "t_stat": -1.3364192257932257,
+            "win_rate": 0.4423076923076923,
+            "total_r": -11.258340613587059
+          },
+          "backtests": 19
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": true,
+            "min_score": 4,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 41,
+            "expectancy_r": -0.01903502234780156,
+            "t_stat": -0.09931021749231736,
+            "win_rate": 0.4634146341463415,
+            "total_r": -0.780435916259864
+          },
+          "test_score": {
+            "trades": 17,
+            "expectancy_r": -0.5545512158902104,
+            "t_stat": -2.275994531951323,
+            "win_rate": 0.23529411764705882,
+            "total_r": -9.427370670133577
+          },
+          "default_test_score": {
+            "trades": 41,
+            "expectancy_r": -0.4424089067790985,
+            "t_stat": -2.672159724410789,
+            "win_rate": 0.3170731707317073,
+            "total_r": -18.13876517794304
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "0.75",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 112,
+            "expectancy_r": -0.18770779467566343,
+            "t_stat": -2.0383418875683805,
+            "win_rate": 0.49107142857142855,
+            "total_r": -21.023273003674305
+          },
+          "test_score": {
+            "trades": 56,
+            "expectancy_r": -0.08864750547397736,
+            "t_stat": -0.6281842402567611,
+            "win_rate": 0.5892857142857143,
+            "total_r": -4.964260306542732
+          },
+          "default_test_score": {
+            "trades": 42,
+            "expectancy_r": -0.02349389163412962,
+            "t_stat": -0.12179184577487974,
+            "win_rate": 0.5476190476190477,
+            "total_r": -0.986743448633444
+          },
+          "backtests": 19
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": false,
+            "min_score": 4,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 34,
+            "expectancy_r": 0.4270073624942929,
+            "t_stat": 1.3719075716745273,
+            "win_rate": 0.5294117647058824,
+            "total_r": 14.518250324805958
+          },
+          "test_score": {
+            "trades": 27,
+            "expectancy_r": -0.21667275974667574,
+            "t_stat": -0.7957410862828918,
+            "win_rate": 0.3333333333333333,
+            "total_r": -5.850164513160245
+          },
+          "default_test_score": {
+            "trades": 47,
+            "expectancy_r": -0.10404189029517054,
+            "t_stat": -0.5702884729037538,
+            "win_rate": 0.46808510638297873,
+            "total_r": -4.889968843873016
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": false
+    },
+    "ema_reversal": {
+      "out_of_sample": {
+        "trades": 56,
+        "expectancy_r": -0.2149740797799442,
+        "t_stat": -1.5774235688203764,
+        "win_rate": 0.4107142857142857,
+        "total_r": -12.038548467676875
+      },
+      "default_out_of_sample": {
+        "trades": 124,
+        "expectancy_r": -0.20960201552807678,
+        "t_stat": -2.283285209125602,
+        "win_rate": 0.41935483870967744,
+        "total_r": -25.99064992548152
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 2,
+        "directions": "short"
+      },
+      "current_params_in_sample": {
+        "trades": 23,
+        "expectancy_r": 0.0479513177820242,
+        "t_stat": 0.2063057308437079,
+        "win_rate": 0.4782608695652174,
+        "total_r": 1.1028803089865566
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "0.75",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": false,
+            "min_score": 2,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 25,
+            "expectancy_r": 0.1363742963388321,
+            "t_stat": 0.4827525437642589,
+            "win_rate": 0.44,
+            "total_r": 3.4093574084708025
+          },
+          "test_score": {
+            "trades": 16,
+            "expectancy_r": -0.4276322206093973,
+            "t_stat": -1.8449519420540146,
+            "win_rate": 0.3125,
+            "total_r": -6.842115529750357
+          },
+          "default_test_score": {
+            "trades": 34,
+            "expectancy_r": -0.21552715253788007,
+            "t_stat": -1.256573286700368,
+            "win_rate": 0.47058823529411764,
+            "total_r": -7.327923186287922
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 39,
+            "expectancy_r": -0.0007741038468305156,
+            "t_stat": -0.003980306393370495,
+            "win_rate": 0.5641025641025641,
+            "total_r": -0.03019005002639011
+          },
+          "test_score": {
+            "trades": 18,
+            "expectancy_r": -0.26724266364187027,
+            "t_stat": -1.2278856476345965,
+            "win_rate": 0.5,
+            "total_r": -4.810367945553665
+          },
+          "default_test_score": {
+            "trades": 33,
+            "expectancy_r": 0.0217496927022228,
+            "t_stat": 0.12100876762821743,
+            "win_rate": 0.5757575757575758,
+            "total_r": 0.7177398591733524
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": true,
+            "min_score": 2,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 24,
+            "expectancy_r": 0.242658378483079,
+            "t_stat": 1.0839281322359209,
+            "win_rate": 0.625,
+            "total_r": 5.823801083593896
+          },
+          "test_score": {
+            "trades": 13,
+            "expectancy_r": 0.25450718682510615,
+            "t_stat": 0.6848269150908026,
+            "win_rate": 0.46153846153846156,
+            "total_r": 3.30859342872638
+          },
+          "default_test_score": {
+            "trades": 30,
+            "expectancy_r": -0.26990740768102645,
+            "t_stat": -1.2881888870923481,
+            "win_rate": 0.3,
+            "total_r": -8.097222230430793
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": null,
+            "breakeven_after_tp1": false,
+            "min_score": 2,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 24,
+            "expectancy_r": 0.4235627623851867,
+            "t_stat": 1.3897769661334327,
+            "win_rate": 0.5,
+            "total_r": 10.16550629724448
+          },
+          "test_score": {
+            "trades": 9,
+            "expectancy_r": -0.41051760234435924,
+            "t_stat": -1.6823469043521009,
+            "win_rate": 0.3333333333333333,
+            "total_r": -3.6946584210992333
+          },
+          "default_test_score": {
+            "trades": 27,
+            "expectancy_r": -0.417897939553191,
+            "t_stat": -2.4657652120331726,
+            "win_rate": 0.2962962962962963,
+            "total_r": -11.283244367936156
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": false
+    },
+    "fib_confluence": {
+      "out_of_sample": {
+        "trades": 32,
+        "expectancy_r": 0.07820531500075206,
+        "t_stat": 0.3536035703974077,
+        "win_rate": 0.46875,
+        "total_r": 2.502570080024066
+      },
+      "default_out_of_sample": {
+        "trades": 74,
+        "expectancy_r": -0.02792770700333105,
+        "t_stat": -0.21420960936033828,
+        "win_rate": 0.527027027027027,
+        "total_r": -2.0666503182464977
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "0.75",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "1.0",
+        "breakeven_after_tp1": true,
+        "min_score": 4,
+        "directions": "both"
+      },
+      "current_params_in_sample": {
+        "trades": 15,
+        "expectancy_r": 0.06027641698703039,
+        "t_stat": 0.35292854096130655,
+        "win_rate": 0.8,
+        "total_r": 0.9041462548054559
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": null,
+            "breakeven_after_tp1": true,
+            "min_score": 3,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 15,
+            "expectancy_r": 0.18092670089334453,
+            "t_stat": 0.4818819993550059,
+            "win_rate": 0.4666666666666667,
+            "total_r": 2.713900513400168
+          },
+          "test_score": {
+            "trades": 8,
+            "expectancy_r": 0.2635041415730457,
+            "t_stat": 0.4934284836516442,
+            "win_rate": 0.5,
+            "total_r": 2.1080331325843655
+          },
+          "default_test_score": {
+            "trades": 21,
+            "expectancy_r": 0.25113375391224557,
+            "t_stat": 0.9384805808700217,
+            "win_rate": 0.6190476190476191,
+            "total_r": 5.273808832157157
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": true,
+            "min_score": 3,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 14,
+            "expectancy_r": 0.41677232611819903,
+            "t_stat": 1.0900062832507076,
+            "win_rate": 0.5714285714285714,
+            "total_r": 5.8348125656547865
+          },
+          "test_score": {
+            "trades": 10,
+            "expectancy_r": -0.12139651097542951,
+            "t_stat": -0.3067698742306025,
+            "win_rate": 0.4,
+            "total_r": -1.2139651097542952
+          },
+          "default_test_score": {
+            "trades": 18,
+            "expectancy_r": -0.09287370755279745,
+            "t_stat": -0.30850395914325546,
+            "win_rate": 0.4444444444444444,
+            "total_r": -1.671726735950354
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 4,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 14,
+            "expectancy_r": 0.637719190057578,
+            "t_stat": 1.8136675660205708,
+            "win_rate": 0.6428571428571429,
+            "total_r": 8.928068660806092
+          },
+          "test_score": {
+            "trades": 8,
+            "expectancy_r": 0.6715661961868261,
+            "t_stat": 1.693477572872295,
+            "win_rate": 0.75,
+            "total_r": 5.372529569494609
+          },
+          "default_test_score": {
+            "trades": 16,
+            "expectancy_r": 0.10935767509506164,
+            "t_stat": 0.4153594145914828,
+            "win_rate": 0.625,
+            "total_r": 1.7497228015209862
+          },
+          "backtests": 23
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 4,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 13,
+            "expectancy_r": 0.9405609963637952,
+            "t_stat": 2.5876820694251474,
+            "win_rate": 0.7692307692307693,
+            "total_r": 12.227292952729337
+          },
+          "test_score": {
+            "trades": 6,
+            "expectancy_r": -0.6273379187167689,
+            "t_stat": -1.928023270501435,
+            "win_rate": 0.16666666666666666,
+            "total_r": -3.7640275123006135
+          },
+          "default_test_score": {
+            "trades": 19,
+            "expectancy_r": -0.3904450113670677,
+            "t_stat": -2.012854593054668,
+            "win_rate": 0.42105263157894735,
+            "total_r": -7.418455215974287
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": true
+    },
+    "gap_fade": {
+      "out_of_sample": {
+        "trades": 33,
+        "expectancy_r": 0.03326443346773766,
+        "t_stat": 0.17116107198905853,
+        "win_rate": 0.5454545454545454,
+        "total_r": 1.0977263044353427
+      },
+      "default_out_of_sample": {
+        "trades": 95,
+        "expectancy_r": -0.017554995043487905,
+        "t_stat": -0.15502762513711335,
+        "win_rate": 0.5263157894736842,
+        "total_r": -1.667724529131351
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 3,
+        "directions": "short"
+      },
+      "current_params_in_sample": {
+        "trades": 18,
+        "expectancy_r": 0.09865545109823842,
+        "t_stat": 0.3168469766086742,
+        "win_rate": 0.5,
+        "total_r": 1.7757981197682915
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "0.75",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 16,
+            "expectancy_r": 0.1360758430344743,
+            "t_stat": 0.2845619509777658,
+            "win_rate": 0.5,
+            "total_r": 2.1772134885515886
+          },
+          "test_score": {
+            "trades": 10,
+            "expectancy_r": 0.028354512091430972,
+            "t_stat": 0.10787966789504211,
+            "win_rate": 0.7,
+            "total_r": 0.2835451209143097
+          },
+          "default_test_score": {
+            "trades": 21,
+            "expectancy_r": 0.2990541339199715,
+            "t_stat": 1.1521235374628642,
+            "win_rate": 0.6666666666666666,
+            "total_r": 6.280136812319401
+          },
+          "backtests": 28
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 15,
+            "expectancy_r": -0.074993033007853,
+            "t_stat": -0.24578643010932272,
+            "win_rate": 0.4,
+            "total_r": -1.124895495117795
+          },
+          "test_score": {
+            "trades": 9,
+            "expectancy_r": -0.5869001387143413,
+            "t_stat": -2.02444204708188,
+            "win_rate": 0.2222222222222222,
+            "total_r": -5.282101248429072
+          },
+          "default_test_score": {
+            "trades": 23,
+            "expectancy_r": -0.3764807882951466,
+            "t_stat": -2.0768316343370063,
+            "win_rate": 0.391304347826087,
+            "total_r": -8.659058130788372
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": false,
+            "min_score": 3,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 17,
+            "expectancy_r": 0.16244287430021795,
+            "t_stat": 0.36996027323423913,
+            "win_rate": 0.47058823529411764,
+            "total_r": 2.761528863103705
+          },
+          "test_score": {
+            "trades": 7,
+            "expectancy_r": 1.0079812358485383,
+            "t_stat": 2.1829881655847427,
+            "win_rate": 0.8571428571428571,
+            "total_r": 7.055868650939767
+          },
+          "default_test_score": {
+            "trades": 25,
+            "expectancy_r": 0.13003028110158965,
+            "t_stat": 0.5366588905322891,
+            "win_rate": 0.56,
+            "total_r": 3.2507570275397413
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": false,
+            "min_score": 3,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 17,
+            "expectancy_r": 0.737774137378719,
+            "t_stat": 1.638485215956258,
+            "win_rate": 0.5294117647058824,
+            "total_r": 12.542160335438224
+          },
+          "test_score": {
+            "trades": 7,
+            "expectancy_r": -0.13708374556995176,
+            "t_stat": -0.30750588849016175,
+            "win_rate": 0.42857142857142855,
+            "total_r": -0.9595862189896622
+          },
+          "default_test_score": {
+            "trades": 26,
+            "expectancy_r": -0.09767539377700464,
+            "t_stat": -0.46582570782554117,
+            "win_rate": 0.5,
+            "total_r": -2.5395602382021205
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": true
+    },
+    "orb_failure": {
+      "out_of_sample": {
+        "trades": 51,
+        "expectancy_r": 0.040682862976378936,
+        "t_stat": 0.2055814995743181,
+        "win_rate": 0.45098039215686275,
+        "total_r": 2.074826011795326
+      },
+      "default_out_of_sample": {
+        "trades": 87,
+        "expectancy_r": -0.05058015788070869,
+        "t_stat": -0.3695121062278466,
+        "win_rate": 0.4482758620689655,
+        "total_r": -4.400473735621656
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "2",
+        "trail_atr_multiple": null,
+        "breakeven_after_tp1": false,
+        "min_score": 0,
+        "directions": "short"
+      },
+      "current_params_in_sample": {
+        "trades": 18,
+        "expectancy_r": 0.24183379909014668,
+        "t_stat": 0.6652932956140482,
+        "win_rate": 0.4444444444444444,
+        "total_r": 4.35300838362264
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": false,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 30,
+            "expectancy_r": 0.057691181141802224,
+            "t_stat": 0.1986330394427749,
+            "win_rate": 0.3333333333333333,
+            "total_r": 1.7307354342540666
+          },
+          "test_score": {
+            "trades": 14,
+            "expectancy_r": 0.5657421712126547,
+            "t_stat": 1.0391773624835112,
+            "win_rate": 0.42857142857142855,
+            "total_r": 7.920390396977165
+          },
+          "default_test_score": {
+            "trades": 21,
+            "expectancy_r": 0.2648437023178255,
+            "t_stat": 0.7808846016499378,
+            "win_rate": 0.47619047619047616,
+            "total_r": 5.561717748674336
+          },
+          "backtests": 28
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 29,
+            "expectancy_r": 0.2738344476131391,
+            "t_stat": 0.9415847939627855,
+            "win_rate": 0.4482758620689655,
+            "total_r": 7.941198980781033
+          },
+          "test_score": {
+            "trades": 12,
+            "expectancy_r": -0.21660494292494922,
+            "t_stat": -0.6712817776541012,
+            "win_rate": 0.4166666666666667,
+            "total_r": -2.5992593150993906
+          },
+          "default_test_score": {
+            "trades": 26,
+            "expectancy_r": -0.037021231487826385,
+            "t_stat": -0.14924214957066204,
+            "win_rate": 0.5,
+            "total_r": -0.962552018683486
+          },
+          "backtests": 27
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "0.75",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 47,
+            "expectancy_r": 0.1870853449223089,
+            "t_stat": 0.8210085383620531,
+            "win_rate": 0.5319148936170213,
+            "total_r": 8.793011211348519
+          },
+          "test_score": {
+            "trades": 18,
+            "expectancy_r": -0.16314614215420087,
+            "t_stat": -0.7220311226579453,
+            "win_rate": 0.5555555555555556,
+            "total_r": -2.9366305587756156
+          },
+          "default_test_score": {
+            "trades": 17,
+            "expectancy_r": -0.17043225335449366,
+            "t_stat": -0.7011030088806068,
+            "win_rate": 0.47058823529411764,
+            "total_r": -2.8973483070263923
+          },
+          "backtests": 19
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": false,
+            "min_score": 0,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 25,
+            "expectancy_r": 0.5671695587557738,
+            "t_stat": 1.4457183491165875,
+            "win_rate": 0.48,
+            "total_r": 14.179238968894346
+          },
+          "test_score": {
+            "trades": 7,
+            "expectancy_r": -0.044239215900976125,
+            "t_stat": -0.08605510075721871,
+            "win_rate": 0.2857142857142857,
+            "total_r": -0.3096745113068329
+          },
+          "default_test_score": {
+            "trades": 23,
+            "expectancy_r": -0.2653170068950484,
+            "t_stat": -1.048345711766557,
+            "win_rate": 0.34782608695652173,
+            "total_r": -6.102291158586113
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": true
+    },
+    "order_block_fvg": {
+      "out_of_sample": {
+        "trades": 92,
+        "expectancy_r": -0.20307511430429895,
+        "t_stat": -1.5498341376049585,
+        "win_rate": 0.32608695652173914,
+        "total_r": -18.682910515995502
+      },
+      "default_out_of_sample": {
+        "trades": 210,
+        "expectancy_r": -0.10575795036549743,
+        "t_stat": -1.3956645541810424,
+        "win_rate": 0.5,
+        "total_r": -22.20916957675446
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": true,
+        "min_score": 3,
+        "directions": "long"
+      },
+      "current_params_in_sample": {
+        "trades": 46,
+        "expectancy_r": 0.34705551054094014,
+        "t_stat": 1.5312056277233037,
+        "win_rate": 0.5434782608695652,
+        "total_r": 15.964553484883247
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": null,
+            "breakeven_after_tp1": false,
+            "min_score": 0,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 78,
+            "expectancy_r": 0.11887971401862625,
+            "t_stat": 0.7323526005965821,
+            "win_rate": 0.44871794871794873,
+            "total_r": 9.272617693452847
+          },
+          "test_score": {
+            "trades": 35,
+            "expectancy_r": -0.2074304157642445,
+            "t_stat": -0.8391178089195357,
+            "win_rate": 0.2571428571428571,
+            "total_r": -7.260064551748558
+          },
+          "default_test_score": {
+            "trades": 54,
+            "expectancy_r": -0.15616935455607223,
+            "t_stat": -1.041262393160854,
+            "win_rate": 0.48148148148148145,
+            "total_r": -8.4331451460279
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": false,
+            "min_score": 4,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 27,
+            "expectancy_r": 0.12377769598361346,
+            "t_stat": 0.44805533171369544,
+            "win_rate": 0.4444444444444444,
+            "total_r": 3.3419977915575636
+          },
+          "test_score": {
+            "trades": 15,
+            "expectancy_r": 0.014602775099442963,
+            "t_stat": 0.040524269848982594,
+            "win_rate": 0.4,
+            "total_r": 0.21904162649164444
+          },
+          "default_test_score": {
+            "trades": 44,
+            "expectancy_r": -0.23671345129979968,
+            "t_stat": -1.3986052167169003,
+            "win_rate": 0.38636363636363635,
+            "total_r": -10.415391857191185
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": null,
+            "breakeven_after_tp1": false,
+            "min_score": 4,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 21,
+            "expectancy_r": 0.45427899211709355,
+            "t_stat": 1.316662054564134,
+            "win_rate": 0.5714285714285714,
+            "total_r": 9.539858834458965
+          },
+          "test_score": {
+            "trades": 16,
+            "expectancy_r": 0.15811154649452738,
+            "t_stat": 0.5912353017106035,
+            "win_rate": 0.5625,
+            "total_r": 2.529784743912438
+          },
+          "default_test_score": {
+            "trades": 54,
+            "expectancy_r": 0.34438741625463887,
+            "t_stat": 2.3263909665348925,
+            "win_rate": 0.7037037037037037,
+            "total_r": 18.596920477750498
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": false,
+            "min_score": 3,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 37,
+            "expectancy_r": 0.258964281455972,
+            "t_stat": 1.1735478194293159,
+            "win_rate": 0.4864864864864865,
+            "total_r": 9.581678413870964
+          },
+          "test_score": {
+            "trades": 26,
+            "expectancy_r": -0.5450643205635011,
+            "t_stat": -3.0508500450172873,
+            "win_rate": 0.23076923076923078,
+            "total_r": -14.171672334651028
+          },
+          "default_test_score": {
+            "trades": 58,
+            "expectancy_r": -0.37857850088423917,
+            "t_stat": -2.946626948083418,
+            "win_rate": 0.41379310344827586,
+            "total_r": -21.95755305128587
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": false
+    },
+    "quiet_pullback": {
+      "out_of_sample": {
+        "trades": 112,
+        "expectancy_r": -0.17695954966963448,
+        "t_stat": -1.353351561046731,
+        "win_rate": 0.32142857142857145,
+        "total_r": -19.81946956299906
+      },
+      "default_out_of_sample": {
+        "trades": 229,
+        "expectancy_r": -0.08042947032290265,
+        "t_stat": -0.9281366580201064,
+        "win_rate": 0.4672489082969432,
+        "total_r": -18.41834870394471
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "0.75",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "current_params_in_sample": {
+        "trades": 140,
+        "expectancy_r": -0.2196600555592855,
+        "t_stat": -2.480617834788796,
+        "win_rate": 0.4928571428571429,
+        "total_r": -30.75240777829997
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": false,
+            "min_score": 5,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 38,
+            "expectancy_r": 0.2680968849250212,
+            "t_stat": 0.8847755271105117,
+            "win_rate": 0.34210526315789475,
+            "total_r": 10.187681627150805
+          },
+          "test_score": {
+            "trades": 18,
+            "expectancy_r": -0.21431296096346883,
+            "t_stat": -0.6496013598868403,
+            "win_rate": 0.2222222222222222,
+            "total_r": -3.857633297342439
+          },
+          "default_test_score": {
+            "trades": 63,
+            "expectancy_r": 0.15032722581074281,
+            "t_stat": 0.790869702299888,
+            "win_rate": 0.5555555555555556,
+            "total_r": 9.470615226076797
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": false,
+            "min_score": 0,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 80,
+            "expectancy_r": 0.24887928957208216,
+            "t_stat": 1.1829471865241157,
+            "win_rate": 0.3625,
+            "total_r": 19.910343165766573
+          },
+          "test_score": {
+            "trades": 37,
+            "expectancy_r": -0.24638396952341798,
+            "t_stat": -1.0139168516538117,
+            "win_rate": 0.21621621621621623,
+            "total_r": -9.116206872366465
+          },
+          "default_test_score": {
+            "trades": 50,
+            "expectancy_r": -0.14810513504530542,
+            "t_stat": -0.7772762460371185,
+            "win_rate": 0.4,
+            "total_r": -7.405256752265271
+          },
+          "backtests": 22
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": true,
+            "min_score": 4,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 74,
+            "expectancy_r": 0.1411091033321656,
+            "t_stat": 0.7330861118973919,
+            "win_rate": 0.5135135135135135,
+            "total_r": 10.442073646580253
+          },
+          "test_score": {
+            "trades": 34,
+            "expectancy_r": 0.09047383893769034,
+            "t_stat": 0.3684303522589731,
+            "win_rate": 0.5,
+            "total_r": 3.076110523881472
+          },
+          "default_test_score": {
+            "trades": 56,
+            "expectancy_r": -0.08330539611669532,
+            "t_stat": -0.5104878504420349,
+            "win_rate": 0.4642857142857143,
+            "total_r": -4.665102182534938
+          },
+          "backtests": 28
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": null,
+            "breakeven_after_tp1": true,
+            "min_score": 4,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 38,
+            "expectancy_r": 0.25435689718162724,
+            "t_stat": 0.9654344375593241,
+            "win_rate": 0.47368421052631576,
+            "total_r": 9.665562092901835
+          },
+          "test_score": {
+            "trades": 23,
+            "expectancy_r": -0.43137999639876645,
+            "t_stat": -1.8078827325981242,
+            "win_rate": 0.30434782608695654,
+            "total_r": -9.921739917171628
+          },
+          "default_test_score": {
+            "trades": 60,
+            "expectancy_r": -0.2636434165870216,
+            "t_stat": -1.8187289996028233,
+            "win_rate": 0.43333333333333335,
+            "total_r": -15.818604995221296
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": false
+    },
+    "rsi_divergence": {
+      "out_of_sample": {
+        "trades": 60,
+        "expectancy_r": -0.23594796837832838,
+        "t_stat": -1.4695484714674811,
+        "win_rate": 0.4,
+        "total_r": -14.156878102699702
+      },
+      "default_out_of_sample": {
+        "trades": 159,
+        "expectancy_r": -0.24929474556528974,
+        "t_stat": -2.66573445006003,
+        "win_rate": 0.42138364779874216,
+        "total_r": -39.63786454488107
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "current_params_in_sample": {
+        "trades": 64,
+        "expectancy_r": 0.07691444942366821,
+        "t_stat": 0.3784730414035236,
+        "win_rate": 0.453125,
+        "total_r": 4.922524763114765
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": null,
+            "breakeven_after_tp1": false,
+            "min_score": 4,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 27,
+            "expectancy_r": 0.2987501621699224,
+            "t_stat": 0.5881694955812574,
+            "win_rate": 0.3333333333333333,
+            "total_r": 8.066254378587905
+          },
+          "test_score": {
+            "trades": 13,
+            "expectancy_r": -0.3289892744753557,
+            "t_stat": -0.849583353872893,
+            "win_rate": 0.23076923076923078,
+            "total_r": -4.276860568179624
+          },
+          "default_test_score": {
+            "trades": 39,
+            "expectancy_r": -0.43785697736151963,
+            "t_stat": -2.351057707836064,
+            "win_rate": 0.358974358974359,
+            "total_r": -17.076422117099266
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "0.75",
+            "tp2_r_multiple": "2",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 40,
+            "expectancy_r": -0.10337359974118712,
+            "t_stat": -0.4506003535312661,
+            "win_rate": 0.45,
+            "total_r": -4.134943989647485
+          },
+          "test_score": {
+            "trades": 28,
+            "expectancy_r": -0.4210551582631479,
+            "t_stat": -2.696187182813451,
+            "win_rate": 0.42857142857142855,
+            "total_r": -11.78954443136814
+          },
+          "default_test_score": {
+            "trades": 42,
+            "expectancy_r": -0.2841514333100246,
+            "t_stat": -1.8869153676396389,
+            "win_rate": 0.4523809523809524,
+            "total_r": -11.934360199021034
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": null,
+            "breakeven_after_tp1": true,
+            "min_score": 4,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 35,
+            "expectancy_r": 0.04483580208428433,
+            "t_stat": 0.2153401309103406,
+            "win_rate": 0.6,
+            "total_r": 1.5692530729499516
+          },
+          "test_score": {
+            "trades": 16,
+            "expectancy_r": 0.18277427993808493,
+            "t_stat": 0.4248818288040453,
+            "win_rate": 0.4375,
+            "total_r": 2.924388479009359
+          },
+          "default_test_score": {
+            "trades": 41,
+            "expectancy_r": -0.2979556569755046,
+            "t_stat": -1.4618731711232933,
+            "win_rate": 0.36585365853658536,
+            "total_r": -12.216181935995689
+          },
+          "backtests": 27
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "0.75",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 5,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 10,
+            "expectancy_r": 0.4690691180282851,
+            "t_stat": 0.9978528098601179,
+            "win_rate": 0.7,
+            "total_r": 4.690691180282851
+          },
+          "test_score": {
+            "trades": 3,
+            "expectancy_r": -0.3382871940537653,
+            "t_stat": -0.7877858291706902,
+            "win_rate": 0.6666666666666666,
+            "total_r": -1.0148615821612958
+          },
+          "default_test_score": {
+            "trades": 37,
+            "expectancy_r": 0.04294864073607891,
+            "t_stat": 0.20865996548890536,
+            "win_rate": 0.5135135135135135,
+            "total_r": 1.5890997072349196
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": false
+    },
+    "sweep_mss": {
+      "out_of_sample": {
+        "trades": 41,
+        "expectancy_r": 0.11781710204385186,
+        "t_stat": 0.7752144649125944,
+        "win_rate": 0.5609756097560976,
+        "total_r": 4.830501183797926
+      },
+      "default_out_of_sample": {
+        "trades": 76,
+        "expectancy_r": 0.06450352632400176,
+        "t_stat": 0.6027235720129034,
+        "win_rate": 0.5394736842105263,
+        "total_r": 4.902268000624134
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "current_params_in_sample": {
+        "trades": 31,
+        "expectancy_r": -0.026371464304027988,
+        "t_stat": -0.14063268979417795,
+        "win_rate": 0.45161290322580644,
+        "total_r": -0.8175153934248676
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 21,
+            "expectancy_r": 0.30156860022344145,
+            "t_stat": 1.4457183977271106,
+            "win_rate": 0.6190476190476191,
+            "total_r": 6.33294060469227
+          },
+          "test_score": {
+            "trades": 6,
+            "expectancy_r": 0.6594855613863027,
+            "t_stat": 2.2429514191209297,
+            "win_rate": 0.8333333333333334,
+            "total_r": 3.956913368317816
+          },
+          "default_test_score": {
+            "trades": 24,
+            "expectancy_r": 0.12230620996309388,
+            "t_stat": 0.591046833103536,
+            "win_rate": 0.5416666666666666,
+            "total_r": 2.935349039114253
+          },
+          "backtests": 27
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.5",
+            "breakeven_after_tp1": false,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 14,
+            "expectancy_r": 0.7161488953473701,
+            "t_stat": 3.0119366646021413,
+            "win_rate": 0.7857142857142857,
+            "total_r": 10.026084534863182
+          },
+          "test_score": {
+            "trades": 7,
+            "expectancy_r": -0.5437634597963619,
+            "t_stat": -1.7425287832515213,
+            "win_rate": 0.2857142857142857,
+            "total_r": -3.806344218574533
+          },
+          "default_test_score": {
+            "trades": 13,
+            "expectancy_r": -0.16838749430043085,
+            "t_stat": -0.6068116580570236,
+            "win_rate": 0.46153846153846156,
+            "total_r": -2.189037425905601
+          },
+          "backtests": 27
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": false,
+            "min_score": 0,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 33,
+            "expectancy_r": 0.10687605516585354,
+            "t_stat": 0.54016031735707,
+            "win_rate": 0.5151515151515151,
+            "total_r": 3.5269098204731666
+          },
+          "test_score": {
+            "trades": 21,
+            "expectancy_r": 0.31686974763799514,
+            "t_stat": 1.4931609209541314,
+            "win_rate": 0.6666666666666666,
+            "total_r": 6.654264700397897
+          },
+          "default_test_score": {
+            "trades": 22,
+            "expectancy_r": 0.31109203453509304,
+            "t_stat": 1.7147877062635708,
+            "win_rate": 0.7272727272727273,
+            "total_r": 6.844024759772047
+          },
+          "backtests": 28
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 15,
+            "expectancy_r": 0.37481522065336564,
+            "t_stat": 1.7626538596286128,
+            "win_rate": 0.8,
+            "total_r": 5.622228309800485
+          },
+          "test_score": {
+            "trades": 7,
+            "expectancy_r": -0.2820475237633221,
+            "t_stat": -0.7789125820944652,
+            "win_rate": 0.2857142857142857,
+            "total_r": -1.9743326663432548
+          },
+          "default_test_score": {
+            "trades": 17,
+            "expectancy_r": -0.15812166896215094,
+            "t_stat": -0.7702341165610272,
+            "win_rate": 0.35294117647058826,
+            "total_r": -2.688068372356566
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": true
+    },
+    "volume_climax_reversal": {
+      "out_of_sample": {
+        "trades": 0,
+        "expectancy_r": null,
+        "t_stat": null,
+        "win_rate": null,
+        "total_r": 0.0
+      },
+      "default_out_of_sample": {
+        "trades": 2,
+        "expectancy_r": -0.3624777411994815,
+        "t_stat": -0.5361867321829484,
+        "win_rate": 0.5,
+        "total_r": -0.724955482398963
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1",
+        "tp2_r_multiple": "2",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "current_params_in_sample": {
+        "trades": 1,
+        "expectancy_r": -1.0273508656363193,
+        "t_stat": null,
+        "win_rate": 0.0,
+        "total_r": -1.0273508656363193
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": null,
+          "train_score": {
+            "trades": 1,
+            "expectancy_r": -1.035007446723748,
+            "t_stat": null,
+            "win_rate": 0.0,
+            "total_r": -1.035007446723748
+          },
+          "test_score": {
+            "trades": 0,
+            "expectancy_r": null,
+            "t_stat": null,
+            "win_rate": null,
+            "total_r": 0.0
+          },
+          "default_test_score": {
+            "trades": 1,
+            "expectancy_r": -1.0385066681439161,
+            "t_stat": null,
+            "win_rate": 0.0,
+            "total_r": -1.0385066681439161
+          },
+          "backtests": 15
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": null,
+          "train_score": {
+            "trades": 2,
+            "expectancy_r": -1.036757057433832,
+            "t_stat": -592.5644210214176,
+            "win_rate": 0.0,
+            "total_r": -2.073514114867664
+          },
+          "test_score": {
+            "trades": 0,
+            "expectancy_r": null,
+            "t_stat": null,
+            "win_rate": null,
+            "total_r": 0.0
+          },
+          "default_test_score": {
+            "trades": 1,
+            "expectancy_r": 0.3135511857449531,
+            "t_stat": null,
+            "win_rate": 1.0,
+            "total_r": 0.3135511857449531
+          },
+          "backtests": 15
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": null,
+          "train_score": {
+            "trades": 2,
+            "expectancy_r": -0.3624777411994815,
+            "t_stat": -0.5361867321829484,
+            "win_rate": 0.5,
+            "total_r": -0.724955482398963
+          },
+          "test_score": {
+            "trades": 0,
+            "expectancy_r": null,
+            "t_stat": null,
+            "win_rate": null,
+            "total_r": 0.0
+          },
+          "default_test_score": {
+            "trades": 0,
+            "expectancy_r": null,
+            "t_stat": null,
+            "win_rate": null,
+            "total_r": 0.0
+          },
+          "backtests": 15
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": null,
+          "train_score": {
+            "trades": 1,
+            "expectancy_r": 0.3135511857449531,
+            "t_stat": null,
+            "win_rate": 1.0,
+            "total_r": 0.3135511857449531
+          },
+          "test_score": {
+            "trades": 0,
+            "expectancy_r": null,
+            "t_stat": null,
+            "win_rate": null,
+            "total_r": 0.0
+          },
+          "default_test_score": {
+            "trades": 0,
+            "expectancy_r": null,
+            "t_stat": null,
+            "win_rate": null,
+            "total_r": 0.0
+          },
+          "backtests": 15
+        }
+      ],
+      "promising": false
+    },
+    "vwap_reversion": {
+      "out_of_sample": {
+        "trades": 62,
+        "expectancy_r": -0.1624883257783251,
+        "t_stat": -1.1294907627610409,
+        "win_rate": 0.46774193548387094,
+        "total_r": -10.074276198256156
+      },
+      "default_out_of_sample": {
+        "trades": 101,
+        "expectancy_r": -0.20955674013145806,
+        "t_stat": -2.057465334062684,
+        "win_rate": 0.46534653465346537,
+        "total_r": -21.165230753277264
+      },
+      "recommended": false,
+      "current_params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "0.75",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "short"
+      },
+      "current_params_in_sample": {
+        "trades": 34,
+        "expectancy_r": 0.2476581555634761,
+        "t_stat": 1.086214818389651,
+        "win_rate": 0.6764705882352942,
+        "total_r": 8.420377289158187
+      },
+      "folds": [
+        {
+          "train": "2026-03-19..2026-05-14",
+          "test": "2026-05-15..2026-06-12",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "0.75",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 2,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 18,
+            "expectancy_r": 0.09046688926432216,
+            "t_stat": 0.296407423000742,
+            "win_rate": 0.5555555555555556,
+            "total_r": 1.6284040067577987
+          },
+          "test_score": {
+            "trades": 2,
+            "expectancy_r": -1.0568209080214834,
+            "t_stat": -326.72123488056235,
+            "win_rate": 0.0,
+            "total_r": -2.113641816042967
+          },
+          "default_test_score": {
+            "trades": 28,
+            "expectancy_r": -0.21105034870746436,
+            "t_stat": -1.04028498510974,
+            "win_rate": 0.42857142857142855,
+            "total_r": -5.909409763809002
+          },
+          "backtests": 27
+        },
+        {
+          "train": "2026-04-17..2026-06-12",
+          "test": "2026-06-15..2026-07-14",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "2.5",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "both"
+          },
+          "train_score": {
+            "trades": 66,
+            "expectancy_r": -0.165516748089188,
+            "t_stat": -1.165329208604189,
+            "win_rate": 0.4696969696969697,
+            "total_r": -10.924105373886409
+          },
+          "test_score": {
+            "trades": 31,
+            "expectancy_r": -0.3708653741803845,
+            "t_stat": -2.3808955744054683,
+            "win_rate": 0.45161290322580644,
+            "total_r": -11.49682659959192
+          },
+          "default_test_score": {
+            "trades": 31,
+            "expectancy_r": -0.34532289397796784,
+            "t_stat": -2.2578965513240434,
+            "win_rate": 0.45161290322580644,
+            "total_r": -10.705009713317002
+          },
+          "backtests": 19
+        },
+        {
+          "train": "2026-05-15..2026-07-14",
+          "test": "2026-07-15..2026-08-11",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1.5",
+            "tp2_r_multiple": "1.5",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": true,
+            "min_score": 0,
+            "directions": "long"
+          },
+          "train_score": {
+            "trades": 28,
+            "expectancy_r": -0.02553982115174456,
+            "t_stat": -0.1199735687442506,
+            "win_rate": 0.4642857142857143,
+            "total_r": -0.7151149922488477
+          },
+          "test_score": {
+            "trades": 13,
+            "expectancy_r": -0.258432085200344,
+            "t_stat": -0.8346649445611538,
+            "win_rate": 0.38461538461538464,
+            "total_r": -3.359617107604472
+          },
+          "default_test_score": {
+            "trades": 17,
+            "expectancy_r": -0.2902884435095539,
+            "t_stat": -1.1765436290587254,
+            "win_rate": 0.4117647058823529,
+            "total_r": -4.934903539662416
+          },
+          "backtests": 29
+        },
+        {
+          "train": "2026-06-15..2026-08-11",
+          "test": "2026-08-12..2026-09-09",
+          "chosen": {
+            "atr_stop_buffer": "0.30",
+            "tp1_r_multiple": "1",
+            "tp2_r_multiple": "3",
+            "trail_atr_multiple": "1.0",
+            "breakeven_after_tp1": false,
+            "min_score": 0,
+            "directions": "short"
+          },
+          "train_score": {
+            "trades": 23,
+            "expectancy_r": 0.060882987947462476,
+            "t_stat": 0.1626697471384786,
+            "win_rate": 0.30434782608695654,
+            "total_r": 1.4003087227916369
+          },
+          "test_score": {
+            "trades": 16,
+            "expectancy_r": 0.4309880828114502,
+            "t_stat": 1.1793903618991426,
+            "win_rate": 0.625,
+            "total_r": 6.895809324983203
+          },
+          "default_test_score": {
+            "trades": 25,
+            "expectancy_r": 0.015363690540446348,
+            "t_stat": 0.06511697108611324,
+            "win_rate": 0.56,
+            "total_r": 0.3840922635111587
+          },
+          "backtests": 29
+        }
+      ],
+      "promising": false
+    }
+  }
+}
