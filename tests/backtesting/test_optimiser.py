@@ -41,6 +41,7 @@ def _runner_prefers(target: Candidate, n: int = 20):
 
 def test_coordinate_descent_finds_the_best_point_and_memoises():
     target = Candidate(
+        atr_stop_buffer=Decimal("0.40"),
         tp1_r_multiple=Decimal("1.5"),
         trail_atr_multiple=Decimal("2.5"),
         breakeven_after_tp1=False,
@@ -50,7 +51,7 @@ def test_coordinate_descent_finds_the_best_point_and_memoises():
     best, score, runs = coordinate_descent(_runner_prefers(target), None, passes=2)
     assert best == target
     assert score.expectancy == 1.0
-    # Far fewer backtests than the full grid (3*3*4*2*5*3 = 1080).
+    # Far fewer backtests than the full grid (3*3*3*4*2*5*3 = 3240).
     assert runs < 60
 
 
@@ -95,7 +96,7 @@ def test_a_fold_with_no_selectable_set_is_reported_not_filled():
     assert wf.baseline.trades == 3
 
 
-def test_the_stop_buffer_is_not_searched_because_the_engine_ignores_it():
+def test_the_stop_buffer_is_searched_now_that_the_engine_uses_it():
     from apps.api.app.backtesting.optimiser import SEARCH_SPACE
 
-    assert "atr_stop_buffer" not in SEARCH_SPACE
+    assert "atr_stop_buffer" in SEARCH_SPACE

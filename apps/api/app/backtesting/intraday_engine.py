@@ -38,7 +38,7 @@ from apps.api.app.backtesting.brackets import (
     stop_quality_ok,
 )
 from apps.api.app.backtesting.costs import CostModel
-from apps.api.app.backtesting.setups import SETUPS, BarContext, SetupSignal
+from apps.api.app.backtesting.setups import SETUPS, BarContext, SetupSignal, run_detector
 from apps.api.app.marketdata.indicators import InsufficientDataError, atr, ema, rsi
 from apps.api.app.marketdata.sessions import (
     build_session_levels,
@@ -212,7 +212,7 @@ def run_intraday_backtest(
     *,
     higher_timeframe_bars: Sequence | None = None,
     confirm_bars: Sequence | None = None,
-    signal_cache: dict[tuple[date, int], tuple[SetupSignal | None, Decimal | None]]
+    signal_cache: dict[tuple[date, int, Decimal], tuple[SetupSignal | None, Decimal | None]]
     | None = None,
     bias_cache: dict[tuple[int, int, int], list[tuple[object, Direction]]] | None = None,
 ) -> IntradayRunResult:
@@ -323,7 +323,7 @@ def run_intraday_backtest(
             # optimiser trying many plans over the SAME window passes one
             # `signal_cache` and pays for detection once. Omitted (the
             # default), every bar is detected exactly as before.
-            cache_key = (day, i)
+            cache_key = (day, i, config.plan.atr_stop_buffer)
             if signal_cache is not None and cache_key in signal_cache:
                 signal, bar_atr = signal_cache[cache_key]
             else:
@@ -346,7 +346,12 @@ def run_intraday_backtest(
 
                 signal = None
                 for _name, detect in detectors:
-                    signal = detect(ctx)
+                    # D125: the plan's stop buffer reaches the detectors. It
+                    # never did before - every setup used its own 0.30
+                    # default whatever the plan said.
+                    signal = run_detector(
+                        detect, ctx, atr_stop_buffer=config.plan.atr_stop_buffer
+                    )
                     if signal is not None:
                         break
                 bar_atr = ctx.atr

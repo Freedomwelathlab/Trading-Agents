@@ -127,7 +127,7 @@ export default function CreateBotForm({ onCreated }: { onCreated: (bot: Bot) => 
         max_trades_per_day: Number(tradesDay),
         capital_per_trade: capital,
         strategy_mode: strategyMode,
-        setups: strategyMode === "auto" ? [] : setups,
+        setups: strategyMode === "auto" || strategyMode === "tuned" ? [] : setups,
         min_score: Number(minScore),
         extended_hours_min_score: extendedMinScore === "" ? null : Number(extendedMinScore),
         allow_short: allowShort,
@@ -210,14 +210,22 @@ export default function CreateBotForm({ onCreated }: { onCreated: (bot: Bot) => 
           <input id="bot-capital" type="number" min={1} step="any" value={capital} onChange={(e) => setCapital(e.target.value)} className={monoInputClass} />
         </Field>
 
-        <Field label="Strategy" className="md:col-span-2 xl:col-span-3" hint="Auto runs every setup and demotes the ones that measure negative on this bot's own closed trades (20+). Single / multi run exactly what you tick.">
+        <Field label="Strategy" className="md:col-span-2 xl:col-span-3" hint="Auto runs every setup and demotes the ones that measure negative on this bot's own closed trades (20+). Single / multi run exactly what you tick. Tuned runs only the setups the walk-forward optimiser found positive on unseen sessions, each with its tuned score, direction and stop distance.">
           <div className="flex flex-col gap-2">
             <select id="bot-strategy-mode" value={strategyMode} onChange={(e) => setStrategyMode(e.target.value)} className={inputClass}>
               <option value="auto">Auto</option>
               <option value="single">Single</option>
               <option value="multi">Multiple</option>
+              <option value="tuned">Tuned (optimiser profile)</option>
             </select>
-            {strategyMode !== "auto" ? (
+            {strategyMode === "tuned" ? (
+              <p className="text-xs leading-relaxed text-ink-faint">
+                Setups and their parameters come from the published optimiser profile for each
+                symbol. None is statistically proven yet - this is a paper test of the most
+                promising ones, not a recommendation.
+              </p>
+            ) : null}
+            {strategyMode !== "auto" && strategyMode !== "tuned" ? (
               <div className="flex flex-wrap gap-2">
                 {allSetups.map((s) => (
                   <label key={s} className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-line px-2 py-1 font-mono text-xs">

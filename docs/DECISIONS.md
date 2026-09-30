@@ -11601,3 +11601,52 @@ this (Phases 88-101) that used a higher timeframe carry a small optimistic
 bias in that one input; the Phase 101 walk-forward passed no higher
 timeframe and is unaffected.
 Status: Fixed, tested (`test_a_higher_timeframe_bias_is_only_visible_once_its_bar_has_closed`).
+
+## D125 — The stop-distance setting now reaches the setups
+Date: 2026-09-29
+
+`BracketPlan.atr_stop_buffer` was documented and searched by the Phase 99
+optimiser, but no detector read it: every setup placed its stop with a
+hard-coded 0.30 ATR buffer, so the optimiser's stop-distance results were
+noise. The user chose to connect it.
+
+Every setup detector now takes `atr_stop_buffer` (default 0.30, so default
+behaviour is unchanged) and is called through `setups.run_detector`, which
+passes the plan's value to any detector that accepts it (a cached
+signature check keeps third-party or test detectors working). The backtest
+engine's signal cache key now includes the buffer, and the Autotrade scanner
+passes the bot plan's buffer. The optimiser searches 0.20 / 0.30 / 0.40 again.
+
+Consequence, measured: the rerun on TQQQ 5m (report
+`docs/research/setup_optimisation_TQQQ_US_20260929.json`) leaves only
+`bollinger_confluence` promising (+0.058R, t 0.18, 23 unseen trades) and
+none recommended. The four setups that were promising in the 2026-09-28 run
+(sweep_mss, fib_confluence, orb_failure, gap_fade) fell to around zero or
+below. A larger search space fits the training window better and generalises
+worse; the earlier "promising" set was partly that. Still no edge.
+Status: Done, tested (`test_the_plans_stop_buffer_reaches_the_detectors`,
+`test_every_registered_setup_accepts_the_stop_buffer`).
+
+## D126 — The Autotrade bot's `tuned` mode trades the optimiser's published profile (Phase 105)
+Date: 2026-09-29
+
+Ledger item 6.6 (deploy strategies to paper/live). A PAPER bot can now run
+in strategy mode `tuned` (the column is String(8), hence not "optimised").
+It reads `apps/api/app/autotrade/profiles/{SYMBOL}_{interval}.json`, written
+by `scripts/optimise_setups.py --publish`, and trades only setups flagged
+promising or recommended there. Each is scanned with its own minimum score
+(never below the bot's), its own directions (never wider than the bot's) and
+its own stop buffer (D125); the best-scoring hit wins. The learning loop's
+demotion still applies: live evidence outranks the backtest.
+
+Profiles are committed files, so publishing new parameters is a reviewed
+commit plus a deploy, never a silent change to a running bot. Take-profit and
+trail levels from the optimiser are R-multiples of the backtest bracket; the
+bot manages exits with its own rules, so those are recorded but not applied.
+Creating a tuned bot for a symbol with no deployable setup is refused
+(`NO_OPTIMISED_PROFILE`). Live execution is unchanged and still off.
+
+First published profile: TQQQ 5m, one deployable setup (bollinger_confluence),
+and its out-of-sample evidence is weak. The mode is plumbing for the
+improvement loop, not a claim that an edge exists.
+Status: Done, tested (`tests/autotrade/test_tuned_profiles.py`).

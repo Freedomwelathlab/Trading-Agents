@@ -3944,3 +3944,26 @@ multiplier (1.113) measured on one snapshot day.
 **Operator**: run `alembic upgrade head` (0035) on deploy; set
 `OPTION_SNAPSHOT_SCHEDULER_ENABLED=true` on Railway to start collecting.
 Nothing traded; nothing enabled.
+
+## Phase 105 — Stop buffer connected; Autotrade `tuned` mode from optimiser profiles
+
+Shipped 2026-09-29. Decisions: `docs/DECISIONS.md` D125, D126. Paper only;
+no order placed anywhere.
+
+* `backtesting/setups.py`: every detector takes `atr_stop_buffer` (default
+  0.30); `run_detector()` passes the plan's value when accepted.
+* `backtesting/intraday_engine.py`: signal cache keyed `(day, bar, buffer)`;
+  detection via `run_detector`. `autotrade/scanner.py` likewise.
+* `backtesting/optimiser.py`: stop buffer 0.20/0.30/0.40 searched again.
+* `scripts/optimise_setups.py --publish`: writes the bot profile.
+* `autotrade/profiles.py` + `profiles/TQQQ_US_5m.json`: deployable
+  setups, best out-of-sample first.
+* `autotrade/service.py` / `engine.py` / `learning.py`: strategy mode
+  `tuned`; per-setup score, direction and stop buffer; demotion applies.
+* Web `CreateBotForm`: "Tuned (optimiser profile)" option.
+* TQQQ rerun: 1 promising (bollinger_confluence +0.058R, t 0.18, n 23),
+  0 recommended.
+
+**Tests**: engine stop-buffer 2, tuned profiles 6; backend 1766 passed, 1
+known flake (`test_an_armed_live_deployment_places_a_real_order`, passes
+alone).

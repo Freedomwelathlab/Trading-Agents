@@ -55,7 +55,7 @@ from apps.api.app.autotrade.learning import (
     stats_by_setup_symbol,
     write_pending_insights,
 )
-from apps.api.app.autotrade.scanner import ScanHit, scan_latest_bar
+from apps.api.app.autotrade.scanner import ScanHit, ScanOutcome, scan_latest_bar
 from apps.api.app.backtesting.brackets import BracketPlan
 from apps.api.app.core.config import Settings
 from apps.api.app.core.logging import get_logger
@@ -409,6 +409,53 @@ async def _recent_headline(
     return None
 
 
+def _scan_optimised(
+    symbol: str,
+    bars: list,
+    *,
+    bot: AutotradeBot,
+    allowed: list[str],
+    min_score: int,
+    plan: BracketPlan,
+    bot_directions: tuple[Direction, ...],
+) -> ScanOutcome:
+    """D126: scan each deployable setup with ITS published parameters - its
+    minimum score (never below the bot's own), its directions (never wider
+    than the bot allows) and its stop buffer - and keep the best hit. A
+    setup the learning loop has since demoted on this bot's own trades is
+    skipped: live evidence outranks the backtest."""
+    from dataclasses import replace
+
+    from apps.api.app.autotrade.profiles import deployable_profiles
+
+    best: ScanOutcome | None = None
+    reasons: list[str] = []
+    for profile in deployable_profiles(symbol, bot.bar_interval):
+        if profile.setup not in allowed:
+            reasons.append(f"{profile.setup}:demoted")
+            continue
+        directions = tuple(d for d in profile.directions if d in bot_directions)
+        if not directions:
+            reasons.append(f"{profile.setup}:direction_not_allowed")
+            continue
+        outcome = scan_latest_bar(
+            symbol, bars, setups=[profile.setup], market_type=bot.market_type,
+            min_score=max(min_score, profile.min_score),
+            plan=replace(plan, atr_stop_buffer=profile.atr_stop_buffer),
+            allow_directions=directions,
+        )
+        if outcome.hit is None:
+            reasons.append(outcome.reason)
+            continue
+        if best is None or best.hit is None or outcome.hit.signal.score > best.hit.signal.score:
+            best = outcome
+    if best is not None:
+        return best
+    if not reasons:
+        return ScanOutcome(None, "no_deployable_profile")
+    return ScanOutcome(None, "rejected:" + ",".join(reasons))
+
+
 async def run_bot_cycle(
     session: AsyncSession,
     bot: AutotradeBot,
@@ -552,13 +599,20 @@ async def run_bot_cycle(
             phase = session_phase(symbol_bars[-1].ts)
             if phase in (SessionPhase.PRE_MARKET, SessionPhase.AFTER_HOURS):
                 effective_min = max(bot.min_score, bot.extended_hours_min_score)
-        scan = scan_latest_bar(
-            symbol, symbol_bars, setups=symbol_setups,
-            market_type=bot.market_type, min_score=effective_min, plan=plan,
-            allow_directions=(
-                (Direction.LONG, Direction.SHORT) if bot.allow_short else (Direction.LONG,)
-            ),
+        bot_directions = (
+            (Direction.LONG, Direction.SHORT) if bot.allow_short else (Direction.LONG,)
         )
+        if bot.strategy_mode == "tuned":
+            scan = _scan_optimised(
+                symbol, symbol_bars, bot=bot, allowed=symbol_setups,
+                min_score=effective_min, plan=plan, bot_directions=bot_directions,
+            )
+        else:
+            scan = scan_latest_bar(
+                symbol, symbol_bars, setups=symbol_setups,
+                market_type=bot.market_type, min_score=effective_min, plan=plan,
+                allow_directions=bot_directions,
+            )
         if scan.hit is None:
             if scan.reason.startswith("rejected:"):
                 outcome.signals_skipped += 1

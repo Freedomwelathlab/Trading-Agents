@@ -89,12 +89,9 @@ class Candidate:
 
 
 SEARCH_SPACE: dict[str, Sequence[Any]] = {
-    # `atr_stop_buffer` is deliberately NOT searched. Measured while building
-    # this (D118): `BracketPlan.atr_stop_buffer` is never passed to the
-    # detectors - the engine calls `detect(ctx)` and every setup uses its own
-    # 0.30 default - so varying it changes nothing, and a search over it
-    # would only report noise from ties. Wiring it through is a separate,
-    # visible change, not something to discover by accident in a report.
+    # Connected to the detectors in D125 (it was silently ignored before),
+    # so it is searched again. The playbook's starting range is 0.20-0.40.
+    "atr_stop_buffer": (Decimal("0.20"), Decimal("0.30"), Decimal("0.40")),
     "tp1_r_multiple": (Decimal("0.75"), Decimal("1"), Decimal("1.5")),
     "tp2_r_multiple": (Decimal("1.5"), Decimal("2"), Decimal("3")),
     "trail_atr_multiple": (Decimal("1.0"), Decimal("1.5"), Decimal("2.5"), None),

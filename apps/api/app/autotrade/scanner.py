@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from decimal import Decimal, DivisionByZero, InvalidOperation
 
 from apps.api.app.backtesting.brackets import BracketPlan, stop_quality_ok
-from apps.api.app.backtesting.setups import SETUPS, BarContext, SetupSignal
+from apps.api.app.backtesting.setups import SETUPS, BarContext, SetupSignal, run_detector
 from apps.api.app.marketdata.indicators import InsufficientDataError, atr, ema, rsi
 from apps.api.app.marketdata.sessions import (
     SessionPhase,
@@ -153,7 +153,7 @@ def scan_latest_bar(
     best: SetupSignal | None = None
     rejected: list[str] = []
     for name, detect in detectors:
-        signal = detect(ctx)
+        signal = run_detector(detect, ctx, atr_stop_buffer=plan.atr_stop_buffer)
         if signal is None:
             continue
         if signal.direction not in allow_directions:

@@ -1,0 +1,268 @@
+{
+  "symbol": "TQQQ.US",
+  "bar_interval": "5m",
+  "generated_at": "2026-09-29T12:54:25.956101+00:00",
+  "source_report": "docs/research/setup_optimisation_TQQQ_US_20260929.json",
+  "setups": {
+    "bollinger_confluence": {
+      "params": {
+        "atr_stop_buffer": "0.40",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "1.0",
+        "breakeven_after_tp1": false,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "out_of_sample": {
+        "trades": 23,
+        "expectancy_r": 0.05752188258395951,
+        "t_stat": 0.18322010718190687,
+        "win_rate": 0.43478260869565216,
+        "total_r": 1.3230032994310688
+      },
+      "promising": true,
+      "recommended": false
+    },
+    "candle_reversal": {
+      "params": {
+        "atr_stop_buffer": "0.20",
+        "tp1_r_multiple": "0.75",
+        "tp2_r_multiple": "2",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "out_of_sample": {
+        "trades": 110,
+        "expectancy_r": -0.2304966893209766,
+        "t_stat": -1.8795943916663786,
+        "win_rate": 0.36363636363636365,
+        "total_r": -25.354635825307426
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "ema_reversal": {
+      "params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 2,
+        "directions": "short"
+      },
+      "out_of_sample": {
+        "trades": 62,
+        "expectancy_r": -0.19573305542829442,
+        "t_stat": -1.418991792691289,
+        "win_rate": 0.43548387096774194,
+        "total_r": -12.135449436554254
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "fib_confluence": {
+      "params": {
+        "atr_stop_buffer": "0.40",
+        "tp1_r_multiple": "1",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "1.0",
+        "breakeven_after_tp1": true,
+        "min_score": 4,
+        "directions": "both"
+      },
+      "out_of_sample": {
+        "trades": 35,
+        "expectancy_r": -0.040153200553236006,
+        "t_stat": -0.1942139632459692,
+        "win_rate": 0.42857142857142855,
+        "total_r": -1.40536201936326
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "gap_fade": {
+      "params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "short"
+      },
+      "out_of_sample": {
+        "trades": 32,
+        "expectancy_r": -0.022844965145339097,
+        "t_stat": -0.11923554257444555,
+        "win_rate": 0.53125,
+        "total_r": -0.7310388846508511
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "orb_failure": {
+      "params": {
+        "atr_stop_buffer": "0.20",
+        "tp1_r_multiple": "0.75",
+        "tp2_r_multiple": "2",
+        "trail_atr_multiple": null,
+        "breakeven_after_tp1": false,
+        "min_score": 0,
+        "directions": "short"
+      },
+      "out_of_sample": {
+        "trades": 53,
+        "expectancy_r": -0.0008748573445426587,
+        "t_stat": -0.004852881850751965,
+        "win_rate": 0.4716981132075472,
+        "total_r": -0.04636743926076091
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "order_block_fvg": {
+      "params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": true,
+        "min_score": 3,
+        "directions": "long"
+      },
+      "out_of_sample": {
+        "trades": 102,
+        "expectancy_r": -0.2072999490463701,
+        "t_stat": -1.7575544867675896,
+        "win_rate": 0.37254901960784315,
+        "total_r": -21.144594802729753
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "quiet_pullback": {
+      "params": {
+        "atr_stop_buffer": "0.40",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "2",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 4,
+        "directions": "long"
+      },
+      "out_of_sample": {
+        "trades": 134,
+        "expectancy_r": -0.09163360963093752,
+        "t_stat": -0.7066056539556143,
+        "win_rate": 0.3656716417910448,
+        "total_r": -12.278903690545627
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "rsi_divergence": {
+      "params": {
+        "atr_stop_buffer": "0.40",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "2",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": true,
+        "min_score": 3,
+        "directions": "both"
+      },
+      "out_of_sample": {
+        "trades": 65,
+        "expectancy_r": -0.07522172246992365,
+        "t_stat": -0.4324726465721985,
+        "win_rate": 0.38461538461538464,
+        "total_r": -4.889411960545037
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "sweep_mss": {
+      "params": {
+        "atr_stop_buffer": "0.20",
+        "tp1_r_multiple": "1",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "out_of_sample": {
+        "trades": 37,
+        "expectancy_r": -0.055737511751675205,
+        "t_stat": -0.33937379574526516,
+        "win_rate": 0.4594594594594595,
+        "total_r": -2.0622879348119825
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "trend_pullback": {
+      "params": {
+        "atr_stop_buffer": "0.20",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "1.5",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 3,
+        "directions": "short"
+      },
+      "out_of_sample": {
+        "trades": 64,
+        "expectancy_r": -0.3028899730103057,
+        "t_stat": -2.052074432425017,
+        "win_rate": 0.28125,
+        "total_r": -19.384958272659564
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "volume_climax_reversal": {
+      "params": {
+        "atr_stop_buffer": "0.30",
+        "tp1_r_multiple": "1",
+        "tp2_r_multiple": "2",
+        "trail_atr_multiple": "1.5",
+        "breakeven_after_tp1": true,
+        "min_score": 0,
+        "directions": "both"
+      },
+      "out_of_sample": {
+        "trades": 0,
+        "expectancy_r": null,
+        "t_stat": null,
+        "win_rate": null,
+        "total_r": 0.0
+      },
+      "promising": false,
+      "recommended": false
+    },
+    "vwap_reversion": {
+      "params": {
+        "atr_stop_buffer": "0.20",
+        "tp1_r_multiple": "1.5",
+        "tp2_r_multiple": "3",
+        "trail_atr_multiple": "2.5",
+        "breakeven_after_tp1": false,
+        "min_score": 0,
+        "directions": "short"
+      },
+      "out_of_sample": {
+        "trades": 66,
+        "expectancy_r": -0.3297056176204345,
+        "t_stat": -2.94931905028785,
+        "win_rate": 0.4393939393939394,
+        "total_r": -21.760570762948678
+      },
+      "promising": false,
+      "recommended": false
+    }
+  }
+}

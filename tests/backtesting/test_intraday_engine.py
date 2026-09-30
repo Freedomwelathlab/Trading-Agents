@@ -90,14 +90,14 @@ def _sweep_session(day):
     specs = [
         (100.0, 99.0, 99.5),
         (99.0, 98.0, 98.2),
-        (99.5, 98.0, 99.3),      # bounce...
-        (100.5, 99.0, 99.2),     # ...peaking here: the lower high
-        (99.5, 98.0, 98.3),      # confirms the pivot at index 3
+        (99.5, 98.0, 99.3),  # bounce...
+        (100.5, 99.0, 99.2),  # ...peaking here: the lower high
+        (99.5, 98.0, 98.3),  # confirms the pivot at index 3
         (99.0, 96.0, 96.5),
-        (97.0, 94.5, 96.2),      # sweeps the 95.00 previous low, reclaims
+        (97.0, 94.5, 96.2),  # sweeps the 95.00 previous low, reclaims
         (97.5, 96.0, 97.3),
         (99.0, 97.0, 98.5),
-        (101.5, 98.0, 101.2),    # closes above 100.5: market structure shift
+        (101.5, 98.0, 101.2),  # closes above 100.5: market structure shift
     ]
     specs += [(102.0, 100.0, 101.0)] * 60
     return make_session(day, specs)
@@ -167,9 +167,7 @@ def test_the_score_filter_removes_low_conviction_signals():
 def test_direction_can_be_restricted_to_one_side():
     bars = _two_day_series()
 
-    longs_only = run_intraday_backtest(
-        bars, config(allow_directions=(Direction.LONG,))
-    )
+    longs_only = run_intraday_backtest(bars, config(allow_directions=(Direction.LONG,)))
 
     assert all(t.direction is Direction.LONG for t in longs_only.trades)
 
@@ -228,9 +226,7 @@ def test_costs_never_improve_a_result():
     )
 
     if free.trades and costed.trades:
-        assert compute_metrics(costed.trades).gross_pnl <= compute_metrics(
-            free.trades
-        ).gross_pnl
+        assert compute_metrics(costed.trades).gross_pnl <= compute_metrics(free.trades).gross_pnl
 
 
 # --------------------------------------------------------------------------
@@ -343,3 +339,39 @@ def test_a_higher_timeframe_bias_is_only_visible_once_its_bar_has_closed():
     bar_open = first_stamp - timedelta(minutes=15)
     assert lookup.at(bar_open + timedelta(minutes=10)) is None  # still forming
     assert lookup.at(first_stamp) is not None  # closed
+
+
+def test_the_plans_stop_buffer_reaches_the_detectors(monkeypatch):
+    """D125: BracketPlan.atr_stop_buffer used to be ignored - every setup
+    used its own 0.30 default. The engine must now hand the plan's buffer to
+    every detector that takes one, and still call a context-only detector."""
+    from apps.api.app.backtesting import setups as setups_mod
+
+    received: list[Decimal] = []
+
+    def recording(ctx, *, atr_stop_buffer=Decimal("0.30")):
+        received.append(atr_stop_buffer)
+        return None
+
+    def context_only(ctx):
+        return None
+
+    monkeypatch.setitem(setups_mod.SETUPS, "recording", recording)
+    monkeypatch.setitem(setups_mod.SETUPS, "context_only", context_only)
+    bars = _two_day_series()
+    run_intraday_backtest(
+        bars,
+        config(
+            setups=("recording", "context_only"), plan=BracketPlan(atr_stop_buffer=Decimal("0.55"))
+        ),
+    )
+    assert received and set(received) == {Decimal("0.55")}
+
+
+def test_every_registered_setup_accepts_the_stop_buffer():
+    import inspect
+
+    from apps.api.app.backtesting.setups import SETUPS
+
+    for name, detect in SETUPS.items():
+        assert "atr_stop_buffer" in inspect.signature(detect).parameters, name

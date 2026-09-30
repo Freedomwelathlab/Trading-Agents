@@ -101,6 +101,11 @@ def main() -> int:
     ap.add_argument("--setups", nargs="+", default=sorted(SETUPS))
     ap.add_argument("--confirm-symbol", default="QQQ.US")
     ap.add_argument("--out", default="docs/research")
+    ap.add_argument(
+        "--publish",
+        action="store_true",
+        help="also write the bot profile (apps/api/app/autotrade/profiles/) - D126",
+    )
     args = ap.parse_args()
 
     bars, htf, confirm = asyncio.run(
@@ -251,6 +256,33 @@ def main() -> int:
     path = out_dir / f"setup_optimisation_{args.symbol.replace('.', '_')}_{stamp}.json"
     path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(f"\nreport: {path}")
+
+    if args.publish:
+        # D126: the file the Autotrade bot's `optimised` mode reads - only the
+        # fields the bot applies, plus the out-of-sample evidence that decides
+        # whether a setup is deployable at all.
+        from apps.api.app.autotrade.profiles import profile_path
+
+        setups_report: dict = report["setups"]  # type: ignore[assignment]
+        profile = {
+            "symbol": args.symbol,
+            "bar_interval": args.interval,
+            "generated_at": report["generated_at"],
+            "source_report": path.as_posix(),
+            "setups": {
+                name: {
+                    "params": v["current_params"],
+                    "out_of_sample": v["out_of_sample"],
+                    "promising": v["promising"],
+                    "recommended": v["recommended"],
+                }
+                for name, v in setups_report.items()
+            },
+        }
+        target = profile_path(args.symbol, args.interval)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(profile, indent=2, default=str), encoding="utf-8")
+        print(f"published bot profile: {target}")
     return 0
 
 

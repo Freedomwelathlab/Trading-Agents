@@ -1563,3 +1563,34 @@ SETUPS: dict[str, SetupDetector] = {
 }
 """Registry, so a run can name which setups to enable and a caller can
 add one without touching the engine."""
+
+
+_ACCEPTS_BUFFER: dict[object, bool] = {}
+
+
+def run_detector(
+    detect: Callable[..., SetupSignal | None],
+    ctx: BarContext,
+    *,
+    atr_stop_buffer: Decimal,
+) -> SetupSignal | None:
+    """Call a detector with the plan's stop buffer when it takes one (D125).
+
+    Every registered setup accepts `atr_stop_buffer`; a detector that does
+    not (a test stub, a future setup with no structural stop) is called with
+    the context alone rather than failing. Whether it accepts is read from
+    the signature once and cached - never discovered by catching TypeError,
+    which would also swallow a genuine bug inside the detector.
+    """
+    accepts = _ACCEPTS_BUFFER.get(detect)
+    if accepts is None:
+        import inspect
+
+        try:
+            accepts = "atr_stop_buffer" in inspect.signature(detect).parameters
+        except (TypeError, ValueError):
+            accepts = False
+        _ACCEPTS_BUFFER[detect] = accepts
+    if accepts:
+        return detect(ctx, atr_stop_buffer=atr_stop_buffer)
+    return detect(ctx)

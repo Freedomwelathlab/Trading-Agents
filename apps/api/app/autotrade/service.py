@@ -29,7 +29,7 @@ from apps.api.app.db.models import (
 from apps.api.app.execution.registry import UnknownProviderError, get_provider
 
 MARKET_TYPES = ("auto", "regular", "pre_market", "post_market")
-STRATEGY_MODES = ("auto", "single", "multi")
+STRATEGY_MODES = ("auto", "single", "multi", "tuned")
 STOP_MODES = ("auto", "max")
 TAKE_PROFIT_MODES = ("auto", "min")
 BAR_INTERVALS = ("1m", "5m", "15m", "30m", "1h")
@@ -199,6 +199,20 @@ async def create_bot(
 
     if spec.strategy_mode == "auto":
         setups = sorted(SETUPS)
+    elif spec.strategy_mode == "tuned":
+        # D126: the published optimiser profile decides which setups trade on
+        # each symbol, at run time. A bot whose symbols have no deployable
+        # setup at all is refused now rather than created to do nothing.
+        from apps.api.app.autotrade.profiles import deployable_profiles
+
+        covered = {s: deployable_profiles(s, spec.bar_interval) for s in symbols}
+        if not any(covered.values()):
+            raise AutotradeError(
+                "NO_OPTIMISED_PROFILE: no published optimiser profile marks any setup "
+                f"deployable for {symbols} at {spec.bar_interval}. Run "
+                "scripts/optimise_setups.py --publish, or use another strategy mode."
+            )
+        setups = sorted({p.setup for ps in covered.values() for p in ps})
     else:
         setups = [s for s in spec.setups if s in SETUPS]
         unknown = [s for s in spec.setups if s not in SETUPS]

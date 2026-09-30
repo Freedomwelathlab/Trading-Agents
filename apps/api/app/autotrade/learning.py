@@ -174,7 +174,7 @@ def active_setups(
     If that would leave nothing, nothing is what runs: an all-losing book
     is a reason to stop, not to trade the least-bad loser.
     """
-    if strategy_mode != "auto":
+    if strategy_mode not in ("auto", "tuned"):
         return list(configured)
     demoted = {s.setup_name for s in stats if s.demoted}
     return [name for name in configured if name not in demoted]
@@ -197,7 +197,7 @@ def active_setups_for_symbol(
     its overall figure is fine, and a setup with too little evidence on a
     new ticker inherits its overall verdict rather than a blank slate.
     """
-    if strategy_mode != "auto":
+    if strategy_mode not in ("auto", "tuned"):
         return list(configured)
     setup_level = {s.setup_name: s for s in by_setup}
     pair_level = {(s.setup_name, s.symbol): s for s in by_pair}
