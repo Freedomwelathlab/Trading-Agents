@@ -11,6 +11,8 @@ from apps.api.app.agents.trader import build_trader_agent
 from apps.api.app.api.routes.admin import router as admin_router
 from apps.api.app.api.routes.autotrade import router as autotrade_router
 from apps.api.app.api.routes.backtests import router as backtests_router
+from apps.api.app.api.routes.bridge import agent_router as bridge_agent_router
+from apps.api.app.api.routes.bridge import status_router as bridge_status_router
 from apps.api.app.api.routes.broker_admin import router as broker_admin_router
 from apps.api.app.api.routes.broker_bridge import router as broker_bridge_router
 from apps.api.app.api.routes.brokers import router as brokers_router
@@ -521,6 +523,10 @@ app.include_router(backtests_router)
 # it). The two `/{broker_id}` routes do not collide either way - they sit
 # at different path depths.
 app.include_router(broker_bridge_router)
+# Phase 104 (D124): the bridge agent's pull-only surface (bearer token, not
+# a user session) and the admin status route. Own prefix, no collisions.
+app.include_router(bridge_agent_router)
+app.include_router(bridge_status_router)
 app.include_router(option_plans_router)
 # Phase 100 (D119): stored chain snapshots - reads under /options (any
 # authenticated user, like the live chain), on-demand capture under

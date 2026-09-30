@@ -149,7 +149,17 @@ async def health() -> dict[str, Any]:
         # silently sees no credentials is indistinguishable from a bridge
         # nobody has configured.
         "broker_credentials": _broker_credentials_status(settings),
+        # Phase 104 (D124): whether the bridge agent surface is enabled.
+        # Configuration only - whether an agent is actually CONNECTED needs
+        # the database and lives in the admin-only `GET /bridge/status`.
+        "bridge_agent": _bridge_agent_status(settings),
     }
+
+
+def _bridge_agent_status(settings: Settings) -> str:
+    from apps.api.app.api.routes.bridge import bridge_not_configured_reason
+
+    return bridge_not_configured_reason(settings) or "configured"
 
 
 def _broker_credentials_status(settings: Settings) -> str:

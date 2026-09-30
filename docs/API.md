@@ -2413,3 +2413,52 @@ buy at mid + k·half-spread, sell at mid − k·half-spread
 
 The scheduled loop (`OPTIONS_BOT_RUNNER_ENABLED`, default **false**,
 `OPTIONS_BOT_RUNNER_INTERVAL_SECONDS` 300) runs every ACTIVE bot.
+
+
+### Bridge agent — Phase 104 additions (D124)
+
+Called by the bridge agent on the operator's PC, never by a person. All
+three require `Authorization: Bearer <BRIDGE_AGENT_TOKEN>` (not a user JWT;
+a user token gets 401). With the token unset or shorter than 32 characters
+every one answers **503** `NOT_CONFIGURED`.
+
+#### `POST /bridge/agent/claim`
+Body `{"agent_id": "home-pc", "providers": ["ibkr"|"moomoo", ...], "wait_seconds": 0-60}`.
+Long-poll (capped by `BRIDGE_CLAIM_MAX_WAIT_SECONDS`, default 20). Returns
+`{"job": null}` or `{"job": {"id", "provider", "kind", "payload", "created_at",
+"expires_in_seconds"}}`. `kind` is one of `account_read`, `positions_read`,
+`order_validate`, `order_submit`, `order_status`, `cancel`. Expires overdue
+jobs first; a claimed job is never handed out twice. Unknown provider -> 422.
+
+#### `POST /bridge/agent/jobs/{job_id}/result`
+Body `{"agent_id", "ok": bool, "result": {...} | null, "error": str | null}`.
+200 `{"job_id", "outcome": "recorded"}`. **409** `JOB_EXPIRED` when the
+platform had stopped waiting - the result is still stored on the job for
+the audit trail. 409 also for not-claimed / another agent's job / already
+completed; 404 unknown job; 413 result over 256 KB; 422 `ok` without `result`.
+
+#### `POST /bridge/agent/heartbeat`
+Body `{"agent_id", "agent_version", "gateways": {"ibkr": {"reachable": bool,
+"authenticated": bool, "detail": str}}}`. Upserts the agent's row.
+200 `{"ok": true, "server_time"}`.
+
+#### `GET /bridge/status` (admin:manage)
+`{"configured", "detail", "stale_after_seconds", "agent": {"agent_id",
+"agent_version", "last_seen_at", "age_seconds", "connected", "gateways"} |
+null, "providers": {"ibkr": "ready" | "NOT_CONNECTED: ..." |
+"GATEWAY_UNREACHABLE: ..." | "GATEWAY_NOT_AUTHENTICATED: ..." |
+"NOT_CONFIGURED: ...", "moomoo": ...}, "queue": {"queued", "claimed"},
+"recent_jobs": [{"id", "provider", "kind", "status", "created_at",
+"claimed_at", "completed_at", "error"}]}`. Payloads and results are not returned.
+
+#### Changes to existing routes
+* `GET /brokers/providers`: `ibkr` and `moomoo` are `adapter_status:
+  implemented`; every entry gains `via_bridge: bool`. Their credential
+  fields are now public only (`account_id`, `account_currency`,
+  `live_orders`; moomoo also `trade_env`, `market`) - env vars `IBKR_*` /
+  `MOOMOO_*`.
+* `POST /brokers/providers/{ibkr|moomoo}/connection-check` and the per-broker
+  probe run through the agent (account read + positions read). Without the
+  token: `NOT_CONFIGURED`; without a fresh heartbeat: `NOT_CONNECTED`
+  immediately, nothing queued.
+* `GET /health` gains `bridge_agent`: `configured` or `NOT_CONFIGURED: ...`.

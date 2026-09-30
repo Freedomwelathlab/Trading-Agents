@@ -107,6 +107,40 @@ def _build_binance(credentials: dict[str, str]) -> object:
     return build_binance_adapter(credentials)
 
 
+def _build_ibkr(credentials: dict[str, str]) -> object:
+    """Through the bridge agent (Phase 104, D124). Lazy import, same
+    reasoning as `_build_kraken`."""
+    from apps.api.app.execution.adapters.bridged import build_bridged_adapter
+
+    return build_bridged_adapter("ibkr", credentials)
+
+
+def _build_moomoo(credentials: dict[str, str]) -> object:
+    """Through the bridge agent (Phase 104, D124)."""
+    from apps.api.app.execution.adapters.bridged import build_bridged_adapter
+
+    return build_bridged_adapter("moomoo", credentials)
+
+
+_BRIDGE_ACCOUNT_CURRENCY = CredentialField(
+    "account_currency",
+    "Account currency",
+    CredentialKind.PUBLIC,
+    "Which cash balance counts as cash. Default USD. A missing row is refused, never "
+    "substituted with another currency.",
+    required=False,
+)
+
+_BRIDGE_LIVE_ORDERS = CredentialField(
+    "live_orders",
+    "Place real orders",
+    CredentialKind.PUBLIC,
+    "Leave empty to keep the adapter VALIDATE-ONLY: each order is previewed through the "
+    "bridge agent and NOTHING is placed. Set it to `true` only when you mean it.",
+    required=False,
+)
+
+
 def _build_longbridge(credentials: dict[str, str]) -> object:
     """The Longbridge adapter that has existed since Phase 43, reached
     through the bridge for the first time (Phase 97, D116).
@@ -168,6 +202,10 @@ class BrokerProvider:
     a second time under `LONGBRIDGE_*` is a chance to paste them wrong. A
     prefix, not a per-field alias, so the set is still read WHOLE from one
     family and never assembled half from each (D015)."""
+    via_bridge: bool = False
+    """Reached through the bridge agent on the operator's PC rather than a
+    public endpoint (Phase 104, D124). Such a venue answers NOT_CONNECTED
+    whenever the agent has not sent a fresh heartbeat."""
 
     @property
     def adapter_status(self) -> str:
@@ -269,26 +307,27 @@ PROVIDERS: dict[str, BrokerProvider] = {
         supports_cancel=True,
         credential_fields=(
             CredentialField(
-                "gateway_url",
-                "Client Portal gateway URL",
-                CredentialKind.PUBLIC,
-                "e.g. https://localhost:5000/v1/api. IBKR's Web API authenticates through a "
-                "gateway process you run and re-authenticate daily.",
-            ),
-            CredentialField(
                 "account_id",
                 "Account id",
                 CredentialKind.PUBLIC,
-                "The IBKR account the orders are placed in (Uxxxxxxx).",
+                "The IBKR account the bridge agent reads and orders in (Uxxxxxxx live, "
+                "DUxxxxxxx paper). The agent refuses any other account.",
             ),
+            _BRIDGE_ACCOUNT_CURRENCY,
+            _BRIDGE_LIVE_ORDERS,
         ),
         notes=(
-            "The widest coverage of any venue here. The cost is operational, not technical: "
-            "the Client Portal API authenticates through a gateway process whose session "
-            "expires daily, so an unattended bot needs that session kept alive. Spot crypto "
-            "is routed through Paxos and is deliberately NOT declared here until it is tested."
+            "The widest coverage of any venue here. Reached THROUGH THE BRIDGE AGENT: IBKR's "
+            "Client Portal API lives in a gateway on your own PC, which this hosted API cannot "
+            "reach, so an agent on that PC pulls jobs over an outbound connection (D124). The "
+            "gateway's login expires daily and needs a human in a browser; until then the "
+            "probe says GATEWAY_NOT_AUTHENTICATED. Orders are addressed by contract id "
+            "(conid), and are previewed with IBKR's what-if and NOT placed unless live_orders "
+            "is set. Spot crypto is routed through Paxos and is deliberately NOT declared "
+            "here until it is tested."
         ),
-        factory=None,
+        factory=_build_ibkr,
+        via_bridge=True,
     ),
     "ig": BrokerProvider(
         provider="ig",
@@ -351,26 +390,37 @@ PROVIDERS: dict[str, BrokerProvider] = {
         supports_cancel=True,
         credential_fields=(
             CredentialField(
-                "opend_host",
-                "OpenD host",
+                "account_id",
+                "Account id",
                 CredentialKind.PUBLIC,
-                "moomoo's API runs through OpenD, a gateway process on your own machine.",
+                "The moomoo trading account id (acc_id) the bridge agent uses.",
             ),
-            CredentialField("opend_port", "OpenD port", CredentialKind.PUBLIC, "Default 11111."),
             CredentialField(
-                "trade_password",
-                "Trade unlock password",
-                CredentialKind.SECRET,
-                "Required to unlock trading in each OpenD session.",
+                "trade_env",
+                "Trading environment",
+                CredentialKind.PUBLIC,
+                "SIMULATE (paper) or REAL. Different accounts, so there is no default and an "
+                "unrecognised value is refused rather than guessed.",
             ),
+            CredentialField(
+                "market",
+                "Market",
+                CredentialKind.PUBLIC,
+                "Which market's trading context OpenD opens: US or HK. Default US.",
+                required=False,
+            ),
+            _BRIDGE_ACCOUNT_CURRENCY,
+            _BRIDGE_LIVE_ORDERS,
         ),
         notes=(
-            "Like IBKR, reached through a local gateway (OpenD) rather than a public REST "
-            "endpoint, so a cloud-hosted platform needs that gateway reachable from where the "
-            "API runs. That is a deployment problem, not an adapter problem, and it has to be "
-            "solved before this is useful unattended."
+            "Like IBKR, reached THROUGH THE BRIDGE AGENT: moomoo's API lives in OpenD, a "
+            "gateway on your own PC (D124). The OpenD address and the trade-unlock password "
+            "are configured on the PC and never sent to or stored on this platform. Orders are "
+            "pre-checked (max buy/sell quantity) and NOT placed unless live_orders is set. "
+            "Codes carry their market prefix (US.AAPL)."
         ),
-        factory=None,
+        factory=_build_moomoo,
+        via_bridge=True,
     ),
     "kraken": BrokerProvider(
         provider="kraken",

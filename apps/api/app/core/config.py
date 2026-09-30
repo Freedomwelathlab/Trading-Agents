@@ -23,6 +23,12 @@ def parse_hh_mm(value: str) -> time:
         raise ValueError(f"Expected a HH:MM wall-clock time, got {value!r}.") from exc
 
 
+BRIDGE_AGENT_TOKEN_MIN_LENGTH = 32
+"""Phase 104 (D124). A bridge token shorter than this is treated as unset:
+it authenticates a process that can ask a real broker gateway for account
+data, and `secrets.token_urlsafe(48)` costs nothing to generate."""
+
+
 class TradingMode(str, Enum):  # noqa: UP042 (str mixin kept for pydantic/env-var interop)
     """Execution context. Spec §3/§46: an LLM alone must never reach LIVE.
 
@@ -717,6 +723,39 @@ class Settings(BaseSettings):
     told to re-enter them, which is the honest outcome: the platform cannot
     recover a plaintext it never kept.
     """
+
+    bridge_agent_token: str | None = None
+    """Phase 104 (D124). The bearer token the bridge agent on the
+    operator's PC presents to `/bridge/agent/*`.
+
+    Unset (or shorter than `BRIDGE_AGENT_TOKEN_MIN_LENGTH`) means the
+    bridge is DISABLED: the agent routes answer 503 NOT_CONFIGURED and the
+    IBKR/moomoo adapters refuse to build. A short token is not rejected at
+    startup - it would take the whole platform down over one optional
+    feature - it is treated as unset and reported so by `/health` and
+    `GET /bridge/status`. Compared as a SHA-256 digest with
+    `hmac.compare_digest`, never logged. Generate one with
+    `python -c "import secrets; print(secrets.token_urlsafe(48))"`."""
+
+    bridge_agent_stale_seconds: int = 45
+    """Phase 104 (D124). How old the agent's last heartbeat may be before
+    the bridged adapters report NOT_CONNECTED instead of queueing work that
+    nothing will pick up. The agent heartbeats every 15 s, so this allows
+    two missed beats."""
+
+    bridge_job_ttl_seconds: int = 25
+    """Phase 104 (D124). How long the platform waits for the agent's answer
+    to one job, and the job's `expires_at`. One number on purpose: a job
+    stays claimable exactly as long as someone is waiting for it, the
+    agent is told how much of that time is left and refuses to START an
+    order with too little of it remaining, and a job nobody is waiting for
+    can never reach a venue later."""
+
+    bridge_claim_max_wait_seconds: int = 20
+    """Phase 104 (D124). Upper bound on one long-poll `claim`. The agent
+    asks for up to this long and re-polls; keeping it well under proxy
+    idle timeouts means a quiet queue costs one request per ~20 s."""
+
     llm_provider_base_url: str | None = None
     llm_provider_api_key: str | None = None
     llm_provider_model: str | None = None
@@ -897,6 +936,27 @@ class Settings(BaseSettings):
                 "database and the market data vendor."
             )
         return self
+
+    @model_validator(mode="after")
+    def _enforce_sane_bridge_settings(self) -> "Settings":
+        """Phase 104 (D124). Non-positive bridge timings would either
+        busy-loop the agent's long-poll or make every bridged call time out
+        before it could be claimed."""
+        for name in (
+            "bridge_agent_stale_seconds",
+            "bridge_job_ttl_seconds",
+            "bridge_claim_max_wait_seconds",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name.upper()} must be positive.")
+        return self
+
+    @property
+    def bridge_enabled(self) -> bool:
+        """True only for a token long enough to be a real secret."""
+        return bool(self.bridge_agent_token) and len(
+            self.bridge_agent_token or ""
+        ) >= BRIDGE_AGENT_TOKEN_MIN_LENGTH
 
     @model_validator(mode="after")
     def _enforce_positive_reconciler_interval(self) -> "Settings":

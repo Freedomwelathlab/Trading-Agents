@@ -101,6 +101,9 @@ class ProviderResponse(BaseModel):
     describe the VENUE; nothing can trade through it in this build."""
     credential_fields: list[CredentialFieldSpec]
     notes: str
+    via_bridge: bool = False
+    """Reached through the bridge agent on the operator's PC (Phase 104,
+    D124). `GET /bridge/status` says whether that agent is connected."""
 
 
 class ProvidersResponse(BaseModel):
@@ -174,6 +177,7 @@ def _provider_response(name: str) -> ProviderResponse:
             for f in p.credential_fields
         ],
         notes=p.notes,
+        via_bridge=p.via_bridge,
     )
 
 
@@ -459,8 +463,9 @@ async def _probe(
     return answer(
         reachable=True,
         detail=(
-            f"Reached {provider.display_name} and read the account using the "
-            f"{resolved.source} credentials. No order was placed."
+            f"Reached {provider.display_name}"
+            f"{' through the bridge agent' if provider.via_bridge else ''} and read the "
+            f"account using the {resolved.source} credentials. No order was placed."
         ),
         cash=cash,
         position_symbols=symbols,

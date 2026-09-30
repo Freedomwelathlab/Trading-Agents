@@ -4009,3 +4009,48 @@ Ledger 7.5 (option routing) and 7.4 (options bot), **paper only**.
 option capital in the equity portfolio views; the Portfolio Manager on
 option orders. **Operator**: `alembic upgrade head` (0036) on deploy;
 the loop stays off until `OPTIONS_BOT_RUNNER_ENABLED=true`.
+
+
+## Phase 104 — IBKR and moomoo through a pull-only bridge agent (D124, migration 0037)
+
+Ledger item 9.8. Both venues only exist as gateways on the operator's PC;
+the API on Railway cannot reach them. Built:
+
+* **Migration 0037** — `bridge_jobs` (queued/claimed/done/failed/expired,
+  payload with no secrets, result, TTL) and `bridge_agent_heartbeats`.
+  `down_revision = "0035"`; re-chain onto 0036 at merge. Verified
+  up/down/up on a scratch database only.
+* **Server** — `apps/api/app/bridge/store.py` (queue, `SKIP LOCKED` claims,
+  forward-only status, late answers kept), `bridge/channel.py` (sync adapter
+  -> async queue via `run_coroutine_threadsafe`; exact errors:
+  NOT_CONNECTED / BRIDGE_TIMEOUT / BRIDGE_OUTCOME_UNKNOWN / job failed),
+  `api/routes/bridge.py` (`/bridge/agent/claim|jobs/{id}/result|heartbeat`
+  behind `BRIDGE_AGENT_TOKEN`, admin `GET /bridge/status`), `/health` key
+  `bridge_agent`. Settings: `BRIDGE_AGENT_TOKEN`, `BRIDGE_AGENT_STALE_SECONDS`
+  (45), `BRIDGE_JOB_TTL_SECONDS` (25), `BRIDGE_CLAIM_MAX_WAIT_SECONDS` (20).
+* **Adapter** — `execution/adapters/bridged.py::BridgedAdapter` (the
+  `BrokerAdapter` Protocol) for `ibkr` and `moomoo`; registry entries now
+  `implemented`, `via_bridge: true`, public fields only (`account_id`,
+  `account_currency`, `live_orders`; moomoo also `trade_env`, `market`).
+  Validate-only unless `live_orders=true`. The provider/broker Test button
+  works through it (account + positions read).
+* **Agent** — `bridge_agent/` (standalone; httpx; futu-api lazy): config
+  from `bridge_agent/.env`, IBKR handler (auth status, tickle, ledger/summary,
+  positions by conid, what-if, orders with `cOID`, status, cancel; never
+  auto-confirms a prompt), moomoo handler (OpenD via futu-api), heartbeat
+  thread every 15 s, refuses an order with < 8 s of the platform's wait left.
+  Windows README, `run_agent.ps1` (venv bootstrap, `-Check`, restart loop),
+  scheduled-task recipe.
+
+Operator to go live: set `BRIDGE_AGENT_TOKEN` + `IBKR_ACCOUNT_ID` on Railway,
+run and log in to the IBKR gateway, fill `bridge_agent/.env`, run
+`run_agent.ps1 -Check` then the agent, press Test. Leave `IBKR_LIVE_ORDERS`
+unset.
+
+Open: no order-path caller uses registry adapters yet (true of every
+registry venue); reconciler has no bridged status hook; moomoo not run
+against a real OpenD; IBKR handler verified against a stubbed gateway only.
+Tests: `tests/api/test_bridge_routes.py`, `tests/execution/test_bridged_adapter.py`,
+`tests/bridge_agent/` (IBKR via httpx MockTransport, moomoo via a stand-in
+module, loop + config), plus registry/permission-matrix/connection-check
+updates. No order placed or previewed at any venue.
