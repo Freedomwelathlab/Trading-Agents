@@ -3944,3 +3944,45 @@ multiplier (1.113) measured on one snapshot day.
 **Operator**: run `alembic upgrade head` (0035) on deploy; set
 `OPTION_SNAPSHOT_SCHEDULER_ENABLED=true` on Railway to start collecting.
 Nothing traded; nothing enabled.
+
+## Phase 102 — Paper option routing and the options paper bot (D122)
+
+Ledger 7.5 (option routing) and 7.4 (options bot), **paper only**.
+
+* **Order path.** `options/paper_orders.py` (economics: single long
+  options, cash-secured put, four verticals, iron condor; naked shorts
+  refused; fills at delayed mid ± k·half-spread, k =
+  `OPTIONS_PAPER_FILL_HAIRCUT_K` 0.5; no two-sided quote →
+  DATA_UNAVAILABLE), `options/risk_gate.py` (opening orders through
+  `risk.engine.evaluate_trade` in defined-risk terms + per-trade max-loss
+  check on the same limit; closes gated by emergency stop + freshness),
+  `options/paper_book.py` (open/close/settle/mark; capital reserved = max
+  loss from the shared `broker_accounts` cash; settlement at intrinsic
+  from the stored daily close, pending without one).
+* **Routes.** `POST|GET /brokers/{id}/option-orders`,
+  `GET /brokers/{id}/option-positions`,
+  `POST /brokers/{id}/option-positions/settle`; live brokers refused
+  `LIVE_NOT_SUPPORTED`.
+* **Bot.** `apps/api/app/options_bot/` (service, selection, engine,
+  runner, learning) + `/options-bots` routes: PENDING_APPROVAL → approve
+  (`strategy:approve_deployment`) → ACTIVE; pause/resume/stop; strikes by
+  vendor delta, nearest expiry in the DTE band, liquidity-filtered, sized
+  to capital per trade of max loss, one entry per session day, profit
+  target / stop on the executable close price, expiry settlement; run and
+  trade ledgers; per-structure learning summary. Loop
+  `OPTIONS_BOT_RUNNER_ENABLED` **false** by default.
+* **Migration 0036**: `options_bots`, `options_bot_runs`,
+  `option_structures`, `option_orders`, `option_fills`,
+  `options_bot_trades`. Applied to the local database only.
+* **Web.** "Options bot (paper)" panel on `/options`
+  (`components/options/OptionsBotPanel.tsx`, proxy
+  `app/api/options-bots/[[...path]]`).
+
+**Tests**: `tests/options/test_paper_orders.py` 30,
+`tests/api/test_option_orders.py` 5, `tests/api/test_options_bots.py` 5,
+`test/OptionsBotPanel.test.tsx` 4.
+
+**Not done**: any LIVE option routing (7.5's live half); partial closes;
+option capital in the equity portfolio views; the Portfolio Manager on
+option orders. **Operator**: `alembic upgrade head` (0036) on deploy;
+the loop stays off until `OPTIONS_BOT_RUNNER_ENABLED=true`.

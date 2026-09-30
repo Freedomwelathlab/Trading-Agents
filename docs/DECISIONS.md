@@ -11601,3 +11601,125 @@ this (Phases 88-101) that used a higher timeframe carry a small optimistic
 bias in that one input; the Phase 101 walk-forward passed no higher
 timeframe and is unaffected.
 Status: Fixed, tested (`test_a_higher_timeframe_bias_is_only_visible_once_its_bar_has_closed`).
+
+## D122 — Paper option routing and an options paper bot, from the delayed chain (Phase 102)
+Date: 2026-09-30
+
+**What was asked.** Ledger items 7.5 (paper and live option routing) and
+7.4 (an options auto-trading bot), built for PAPER.
+
+**Built: an option order path on the paper book.** `options/paper_orders.py`
+(pure economics), `options/risk_gate.py` (the Risk Engine mapping),
+`options/paper_book.py` (open / close / settle / mark), routes
+`POST|GET /brokers/{id}/option-orders`, `GET /brokers/{id}/option-positions`,
+`POST /brokers/{id}/option-positions/settle`; migration 0036.
+
+- **Structures.** Long call / put, cash-secured put, the four verticals and
+  the iron condor, one contract per leg per structure. The declared type is
+  not trusted: legs are validated against it, and any leg set with more
+  sold than bought contracts of one right (other than the one cash-secured
+  put) is refused `NAKED_SHORT_REFUSED` before a price is looked at.
+- **Fills from the chain, labelled.** A bought leg fills at
+  `mid + k × half-spread`, a sold one at `mid − k × half-spread`
+  (`OPTIONS_PAPER_FILL_HAIRCUT_K`, default 0.5), buys rounded up and sells
+  down to the cent. A leg with no two-sided market (bid or ask missing, a
+  zero bid, crossed) is `DATA_UNAVAILABLE` and nothing is written. Every
+  order and every per-leg fill row stores the quote's `source` and
+  `as_of`; responses carry `quote_delayed` and a `pricing_basis` saying
+  the fill is MODELLED. This is the tension with D117's "not enough to
+  fill an order at": it is still not enough to fill a REAL order at. A
+  paper fill has to be priced from something, and a delayed two-sided
+  quote moved against the trade is the most honest thing this account can
+  see - the alternative was a Black-Scholes price, which D119 showed is an
+  assumption, not an observation.
+- **Capital = max loss.** Opening debits the broker's `broker_accounts`
+  cash (locked `FOR UPDATE`, as D014) by the structure's max loss: the
+  debit for a long-premium structure, width − credit for a credit
+  vertical, the wider wing − credit for a condor, strike − premium for a
+  cash-secured put. Closing / settling credits back
+  `capital_reserved + realized_pnl`. The reserve is exactly what the worst
+  settlement can consume, so no short leg is ever uncollateralised - that
+  is the "cash collateral for short legs".
+- **The Risk Engine, not a copy of it.** An opening order calls
+  `risk.engine.evaluate_trade` itself, with the structure expressed in
+  defined-risk terms (quantity = contracts, estimated price = max loss per
+  contract, no stop) and an `AccountState` whose exposure is the capital
+  already reserved by open structures plus any equity positions on the
+  broker. Its position-size, portfolio-exposure ("max open risk"),
+  buying-power, emergency-stop, duplicate and freshness checks therefore
+  run unchanged, against the existing paper `risk_*` limits. Two settings
+  differ, deliberately: `require_stop_price=False` (D035 precedent) and the
+  freshness limit is `OPTIONS_MAX_QUOTE_AGE_SECONDS` (1800) because the
+  only chain available is ~15 minutes late. Per-trade risk - which the
+  engine computes from a stop distance a spread does not have - is checked
+  in `risk_gate.py` against the SAME `max_risk_pct_of_equity_per_trade`
+  and reported with the SAME `EXCEEDS_PER_TRADE_RISK`, naming the
+  contracts that fit. A refusal from any of these writes a `rejected`
+  `option_orders` row; a refusal before the engine is asked writes nothing.
+- **Closing reduces risk**, so only the emergency stop and freshness gate a
+  close (sizing limits must not trap a position open - D087's reasoning).
+- **Settlement** at intrinsic from the underlying's stored `1d` close for
+  the expiry session (New York date), once that session is over (16:15 ET
+  on expiry day, or any later day), optionally fetching the bar from the
+  vendor first. No close, no settlement: `SETTLEMENT_PENDING`, never an
+  adjacent day's close. Cash-settled, which real equity options are not
+  (the same simplification D119 made).
+- **Paper only.** A `kind=live` broker is refused `LIVE_NOT_SUPPORTED` at
+  the route and again in the service, before any quote is read. There is
+  no live option path; 7.5's "live" half is NOT built.
+
+**Kept beside the equity book, not in it.** Option structures, orders and
+fills have their own tables; only the cash row is shared. An `orders` /
+`broker_positions` row is valued by its symbol's stored bar everywhere
+(portfolio views, the autotrade engine, the deployment runner), and an
+option contract has none - held there, it would fail those cycles closed.
+Positions keyed by contract symbol are derived from the open structures'
+legs; the structure stays the unit of entry, exit and settlement because
+a spread is only defined-risk while its legs stay together.
+
+**Built: the options paper bot** (`apps/api/app/options_bot/`, routes
+`/options-bots`). Same safety model as the Autotrade bot (D098): created
+`pending_approval`, `active` only via `strategy:approve_deployment`,
+pause/resume/stop, stop never liquidates, a live broker is refused at
+creation AND at run time (`skipped_live_not_supported`), every cycle a
+terminal `options_bot_runs` row, every order through `submit_open` /
+`submit_close`. Config: underlying, structure type (the verticals, condor,
+long call/put - not the cash-secured put), target |delta| (matched
+against the VENDOR's delta; Greeks are never computed to fill a gap),
+DTE band (nearest listed expiry inside it), spread width, profit target %
+and stop % of the entry premium, max concurrent positions, capital per
+trade (= max loss). Every leg must pass the playbook's own liquidity
+filter (`check_liquidity`). Exits are judged on the price closing would
+actually fill at, not the mid. At most ONE new structure per session day
+(a guard, not a strategy: otherwise a five-slot bot fills all five slots
+with identical structures in five minutes). A per-trade-risk or
+position-size refusal that names a smaller quantity is retried once at
+that quantity, the refused order still recorded. Learning summary per
+structure and per exit reason (win rate, expectancy in $ and on risk,
+MFE/MAE in % of premium); it records, it does not demote.
+
+**The loop is OFF by default** (`OPTIONS_BOT_RUNNER_ENABLED=false`,
+advisory-lock objid `b"obot"`), unlike the Autotrade loop: it is new, it
+trades from a delayed feed and it settles expiries. "Run now" on an
+approved bot works with it off - the switch gates the unattended loop,
+not a person pressing a button.
+
+**Known limits.** Equity-side portfolio views do not include option
+capital, so an equity-only view of a broker shows option capital as cash
+spent. Whole-structure closes only (no partial). The Portfolio Manager
+(D029) is not applied to option orders. Cboe's parser falls back to "now"
+for `as_of` when its document has no timestamp (pre-existing, D117), which
+would let such a document pass the freshness gate. A bot that is refused
+an entry retries every cycle and writes a rejected order row each time.
+
+**Rejected.**
+- *Option contracts as `broker_positions` rows* - see above.
+- *A separate options risk engine* - the rule is one engine; only the one
+  check it cannot express is added, with the same limit and reason.
+- *Filling at the mid* - it would credit the paper account with the
+  spread every trade; k = 0.5 is the default, 1.0 (the far side) allowed.
+- *Model-priced fills when a quote is missing* - fabrication.
+- *Enabling the loop by default.*
+
+Status: Implemented, tested (pure 30, API/DB 10, web 4). Migration 0036
+applied to the local database only. Nothing enabled, nothing live.

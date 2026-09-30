@@ -525,6 +525,38 @@ class Settings(BaseSettings):
     """Same cross-worker advisory-lock discipline as the other loops, on
     the snapshot job's own key, so N workers take one snapshot, not N."""
 
+    options_paper_fill_haircut_k: Decimal = Decimal("0.5")
+    """Phase 102 (D122): how far past the delayed chain's MID a paper option
+    fill is taken, as a fraction of the half-spread. A buy fills at
+    mid + k x half-spread and a sell at mid - k x half-spread, so 0 fills
+    at the mid (optimistic) and 1 fills at the far side of the quote (the
+    ask for a buy, the bid for a sell). Must be within [0, 1]. The fill is
+    still a MODELLED price from a ~15-minute-delayed quote and is labelled
+    with that quote's source and timestamp wherever it is shown."""
+
+    options_max_quote_age_seconds: int = 1800
+    """Phase 102 (D122): the market-data freshness limit an option order is
+    held to, in place of RISK_MAX_MARKET_DATA_AGE_SECONDS (300). The only
+    chain this account can see is Cboe's ~15-minute-delayed feed, so the
+    equity limit would refuse every option order; 30 minutes admits a
+    delayed quote during the session and still refuses one from the
+    previous close, a weekend or a stalled feed."""
+
+    options_bot_runner_enabled: bool = False
+    """Phase 102 (D122): the options paper bot's scheduled loop. Defaults
+    FALSE: unlike the intraday Autotrade runner this loop is new, trades
+    from a delayed feed, and settles expiries - switching it on is the
+    operator's decision. A bot still cannot act until a person creates AND
+    approves it, and it trades PAPER brokers only."""
+
+    options_bot_runner_interval_seconds: int = 300
+    """Seconds between options-bot cycles. Positions are managed on a
+    ~15-minute-delayed quote, so polling faster only re-reads it."""
+
+    options_bot_runner_cycle_lock_enabled: bool = True
+    """Same cross-worker advisory-lock discipline as the other loops, on
+    the options bot runner's own key."""
+
     strategy_drift_min_round_trips: int = 10
     """Phase 66 (D084): a deployment's own closed round trips must reach
     this count before `evaluate_deployment_drift` will render a verdict at
@@ -832,6 +864,19 @@ class Settings(BaseSettings):
         if not Decimal(0) < self.option_snapshot_strike_band_pct < Decimal(1):
             raise ValueError("OPTION_SNAPSHOT_STRIKE_BAND_PCT must be between 0 and 1.")
         parse_hh_mm(self.option_snapshot_capture_after_et)
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_sane_options_paper_settings(self) -> "Settings":
+        """Phase 102 (D122): a haircut outside [0, 1] would fill inside the
+        quote's own mid-to-far-side range backwards (negative) or beyond
+        the far side (above 1) - both are prices nobody quoted."""
+        if not Decimal(0) <= self.options_paper_fill_haircut_k <= Decimal(1):
+            raise ValueError("OPTIONS_PAPER_FILL_HAIRCUT_K must be within [0, 1].")
+        if self.options_max_quote_age_seconds <= 0:
+            raise ValueError("OPTIONS_MAX_QUOTE_AGE_SECONDS must be positive.")
+        if self.options_bot_runner_interval_seconds <= 0:
+            raise ValueError("OPTIONS_BOT_RUNNER_INTERVAL_SECONDS must be positive.")
         return self
 
     @property

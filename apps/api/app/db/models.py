@@ -2509,3 +2509,310 @@ class OptionChainSnapshot(Base):
     vega: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     volume: Mapped[int | None] = mapped_column(BigInteger)
     open_interest: Mapped[int | None] = mapped_column(BigInteger)
+
+
+# --- Phase 102 (D122): paper option routing and the options paper bot -------
+
+
+class OptionsBotStatus(str, enum.Enum):  # noqa: UP042 (str mixin for SQLAlchemy/JSON interop)
+    """The same four-state human gate as `AutotradeBotStatus`: created
+    `PENDING_APPROVAL`, `ACTIVE` only by an explicit approval action,
+    `PAUSED` reversibly, `STOPPED` terminally."""
+
+    PENDING_APPROVAL = "pending_approval"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    STOPPED = "stopped"
+
+
+class OptionsBotRunStatus(str, enum.Enum):  # noqa: UP042
+    """Why one options-bot cycle did or did not act."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED_NOT_ACTIVE = "skipped_not_active"
+    SKIPPED_EMERGENCY_STOP = "skipped_emergency_stop"
+    SKIPPED_MARKET_CLOSED = "skipped_market_closed"
+    SKIPPED_NOT_CONFIGURED = "skipped_not_configured"
+    """No option chain provider is wired: nothing to price against."""
+    SKIPPED_LIVE_NOT_SUPPORTED = "skipped_live_not_supported"
+    """The bot's broker is `kind=live`. Option routing is PAPER ONLY."""
+
+
+class OptionStructureStatus(str, enum.Enum):  # noqa: UP042
+    OPEN = "open"
+    CLOSED = "closed"
+    """Closed before expiry by an order (manual or the bot's exit rule)."""
+    SETTLED = "settled"
+    """Held to expiry and settled at intrinsic from the underlying's close."""
+
+
+class OptionOrderStatus(str, enum.Enum):  # noqa: UP042
+    FILLED = "filled"
+    REJECTED = "rejected"
+    """This system refused it (Risk Engine or an option gate). It never
+    reached any venue - there is no venue; option routing is paper only."""
+
+
+class OptionsBot(Base):
+    """One operator-configured options paper robot (Phase 102, D122,
+    migration 0036).
+
+    Opens the configured defined-risk structure on the underlying from the
+    live DELAYED chain (strike by vendor delta, expiry by DTE band), sized
+    to `capital_per_trade` of max loss, through the same option order path
+    a manual order takes (Risk Engine included), then manages each open
+    structure's profit target / stop every cycle and lets anything held to
+    expiry settle at intrinsic.
+    """
+
+    __tablename__ = "options_bots"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    broker_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[OptionsBotStatus] = mapped_column(
+        _str_enum(OptionsBotStatus, 24), nullable=False, default=OptionsBotStatus.PENDING_APPROVAL
+    )
+    underlying: Mapped[str] = mapped_column(String(32), nullable=False)
+    structure_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    target_delta: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    """|delta| of the leg the structure is anchored on (the long leg of a
+    debit structure, the short leg(s) of a credit one), matched against the
+    VENDOR's delta - never one this platform computed."""
+    dte_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    dte_max: Mapped[int] = mapped_column(Integer, nullable=False)
+    spread_width: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    """Strike distance to the protective / financing leg. NULL for a
+    single-leg structure."""
+    profit_target_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    """Close when unrealised P&L reaches this % of the entry premium (the
+    debit paid, or the credit received)."""
+    stop_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    """Close when unrealised P&L falls to -this % of the entry premium."""
+    max_concurrent_positions: Mapped[int] = mapped_column(Integer, nullable=False)
+    capital_per_trade: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    """Maximum LOSS committed per new structure; contracts =
+    floor(capital_per_trade / max loss per contract)."""
+
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_reason: Mapped[str | None] = mapped_column(String(500))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OptionsBotRun(Base):
+    """One cycle of one options bot. Append-only; always resolves to a
+    terminal status, including WHY nothing happened."""
+
+    __tablename__ = "options_bot_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    bot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("options_bots.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[OptionsBotRunStatus] = mapped_column(
+        _str_enum(OptionsBotRunStatus, 40), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    positions_checked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trades_opened: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trades_closed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OptionStructure(Base):
+    """One open (or formerly open) option position on a paper broker: a
+    single option or a defined-risk multi-leg structure, held as a unit.
+
+    Positions per CONTRACT SYMBOL are the sum of the open structures' legs
+    (`options/paper_book.py::positions_by_contract`); the structure is the
+    unit of risk, entry, exit and settlement, because the defined-risk
+    guarantee of a spread only holds while its legs stay together.
+
+    Cash accounting: opening debits the broker's cash by
+    `capital_reserved` (= the structure's max loss: the debit paid for a
+    long premium structure, width - credit for a credit spread, strike -
+    premium for a cash-secured put); closing or settling credits back
+    `capital_reserved + realized_pnl`. So the reserved capital is exactly
+    what a worst-case outcome can consume and no short leg is ever
+    uncollateralised.
+    """
+
+    __tablename__ = "option_structures"
+    __table_args__ = (Index("ix_option_structures_broker_status", "broker_id", "status"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    broker_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False
+    )
+    options_bot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("options_bots.id", ondelete="SET NULL")
+    )
+    structure_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    underlying: Mapped[str] = mapped_column(String(32), nullable=False)
+    expiry: Mapped[date] = mapped_column(Date, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    """Number of structures (each leg is 1 contract per structure)."""
+    legs: Mapped[list] = mapped_column(JSONB, nullable=False)
+    """[{contract_symbol, right, strike, side, entry_fill, exit_fill}]"""
+    status: Mapped[OptionStructureStatus] = mapped_column(
+        _str_enum(OptionStructureStatus, 16), nullable=False, default=OptionStructureStatus.OPEN
+    )
+    entry_net_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    """Per share, signed from the account's view: + a debit paid, - a
+    credit received."""
+    max_loss: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    max_profit: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    """NULL where it is unbounded (a long call)."""
+    capital_reserved: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    quote_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    quote_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_net_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    settlement_underlying_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    close_reason: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OptionOrder(Base):
+    """One option order this system decided on - filled or refused.
+    Append-only. Kept apart from `orders` on purpose: an `orders` row is a
+    single-symbol equity order the portfolio views value by bar, and a
+    multi-leg option order is neither."""
+
+    __tablename__ = "option_orders"
+    __table_args__ = (Index("ix_option_orders_broker_created", "broker_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    broker_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False
+    )
+    structure_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("option_structures.id", ondelete="SET NULL")
+    )
+    options_bot_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("options_bot_runs.id", ondelete="SET NULL")
+    )
+    submitted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    action: Mapped[str] = mapped_column(String(8), nullable=False)
+    """open | close"""
+    structure_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    structure_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    """Underlying|type|expiry|legs - the identity the duplicate-order check
+    compares on."""
+    underlying: Mapped[str] = mapped_column(String(32), nullable=False)
+    expiry: Mapped[date] = mapped_column(Date, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[OptionOrderStatus] = mapped_column(
+        _str_enum(OptionOrderStatus, 16), nullable=False
+    )
+    block_reason: Mapped[str | None] = mapped_column(String(64))
+    detail: Mapped[str | None] = mapped_column(Text)
+    net_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    cash_change: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    max_loss_per_contract: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    quote_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    quote_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    fill_haircut_k: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OptionFill(Base):
+    """One leg of one FILLED option order, with the quote it was priced
+    from. `fill_price` is MODELLED: the delayed mid moved k half-spreads
+    against the trade; `bid`/`ask`/`mid` are the vendor's figures."""
+
+    __tablename__ = "option_fills"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("option_orders.id", ondelete="CASCADE"), nullable=False
+    )
+    contract_symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    right: Mapped[str] = mapped_column(String(4), nullable=False)
+    strike: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    expiry: Mapped[date] = mapped_column(Date, nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    bid: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    ask: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    mid: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    fill_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    quote_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    quote_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OptionsBotTrade(Base):
+    """The bot's own ledger over one structure it opened: the rule inputs
+    it acted on, the excursion it saw, and the outcome - what the per-
+    structure learning summary is computed from."""
+
+    __tablename__ = "options_bot_trades"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    bot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("options_bots.id", ondelete="CASCADE"), nullable=False
+    )
+    structure_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("option_structures.id", ondelete="CASCADE"), nullable=False
+    )
+    open_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("options_bot_runs.id", ondelete="SET NULL")
+    )
+    close_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("options_bot_runs.id", ondelete="SET NULL")
+    )
+    structure_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    underlying: Mapped[str] = mapped_column(String(32), nullable=False)
+    expiry: Mapped[date] = mapped_column(Date, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_delta: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    entry_delta: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    """The vendor's delta on the anchor leg actually chosen."""
+    entry_net_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    max_loss: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    profit_target_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    stop_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    peak_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    trough_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_net_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    exit_reason: Mapped[str | None] = mapped_column(String(32))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    return_on_risk: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    """realized_pnl / max_loss - the options analogue of R."""
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
