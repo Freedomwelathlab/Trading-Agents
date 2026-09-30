@@ -11601,3 +11601,117 @@ this (Phases 88-101) that used a higher timeframe carry a small optimistic
 bias in that one input; the Phase 101 walk-forward passed no higher
 timeframe and is unaffected.
 Status: Fixed, tested (`test_a_higher_timeframe_bias_is_only_visible_once_its_bar_has_closed`).
+
+
+## D124 — IBKR and moomoo through a pull-only bridge agent on the operator's PC (Phase 104, migration 0037)
+Date: 2026-09-30
+Decision: ledger item 9.8. IBKR (Client Portal Gateway, `https://localhost:5000/v1/api`,
+daily browser login) and moomoo (OpenD, `127.0.0.1:11111`) exist only as
+gateway processes on the operator's own Windows PC, and the API runs on
+Railway, which cannot reach that machine's localhost (D109). Of the three
+answers D109 listed, this builds the first: a small agent on the PC
+(`bridge_agent/`, standalone, `httpx` only, `futu-api` imported lazily)
+that PULLS work from the platform and posts answers back. Both providers
+move from `catalogued` to `implemented` (`via_bridge: true`).
+
+**Why pull, not push.** A push design needs the platform to open a
+connection INTO the PC: a port-forward, a tunnel service, or a VPN - each
+an inbound path to a machine holding a logged-in brokerage session, and
+each another thing to keep running. Pull needs none: the agent opens every
+connection, outbound, over HTTPS, and the PC listens on nothing new. The
+costs are latency (a job waits for the next long-poll, which is already
+open, so in practice well under a second) and that the platform can only
+ASK; it can never reach the gateway on its own. For this system that is
+the right direction to be weak in.
+
+**Server side.** `bridge_jobs` (kind, payload, status queued -> claimed ->
+done/failed, or -> expired; result; timestamps; `expires_at`) and
+`bridge_agent_heartbeats` (one row per agent: last seen, per-gateway
+reachable/authenticated). In Postgres, not process memory, because the
+agent's claim may land on a different API worker from the one waiting.
+Claims use `FOR UPDATE SKIP LOCKED`; a claimed job is never handed out
+twice (a job claimed twice is an order placed twice). Routes:
+`POST /bridge/agent/claim` (long-poll, capped 20 s, holds no DB connection
+while waiting), `POST /bridge/agent/jobs/{id}/result`,
+`POST /bridge/agent/heartbeat`, and admin `GET /bridge/status`.
+
+**Security model.**
+* `BRIDGE_AGENT_TOKEN` (>= 32 chars) authenticates the agent, compared as a
+  SHA-256 digest with `hmac.compare_digest`. Unset or short = bridge
+  disabled: agent routes 503 NOT_CONFIGURED, adapters refuse to build,
+  `/health` says so. A short token is treated as unset rather than failing
+  startup - it would take the whole platform down over one optional feature.
+* The token is NOT a user session and grants only the three agent routes;
+  a user's JWT is refused there. `tests/auth/test_permission_matrix.py`
+  holds this: agent routes must carry `require_bridge_agent` and not
+  `get_current_user`, and nothing else under `/bridge/agent` may exist.
+* **No secret ever crosses the bridge.** The platform holds only PUBLIC
+  fields (account id, SIMULATE/REAL, currency, `live_orders`); the IBKR
+  login lives in the gateway's browser session and the moomoo trade password
+  in the agent's `.env`. `enqueue_job` refuses any payload with a
+  credential-like key, as a backstop.
+* The agent pins its account (`IBKR_ACCOUNT_ID` / `MOOMOO_ACCOUNT_ID`) and
+  refuses jobs for any other; the account must also be one the gateway lists.
+* TLS verification is skipped only for a gateway on localhost (IBKR's own
+  self-signed certificate); the agent refuses a non-https platform URL
+  unless it is local.
+
+**Fail closed, and say exactly what happened.** The adapter checks the
+latest heartbeat BEFORE queueing: none, older than
+`BRIDGE_AGENT_STALE_SECONDS` (45), gateway unreachable or not logged in
+-> `NOT_CONNECTED` / `GATEWAY_UNREACHABLE` / `GATEWAY_NOT_AUTHENTICATED`
+immediately, nothing queued. Otherwise it waits up to
+`BRIDGE_JOB_TTL_SECONDS` (25), which is also the job's `expires_at` - one
+number, so a job is claimable exactly as long as someone is waiting. On
+timeout: never claimed -> `BRIDGE_TIMEOUT`, expired, nothing sent; claimed
+but silent -> `BRIDGE_OUTCOME_UNKNOWN`, which for an order says "it MAY have
+reached the venue; check there before retrying". The agent is told the
+seconds remaining (relative, so clocks need not agree) and refuses to START
+an order or cancel with less than 8 s left. A late answer is still written
+to the job for the audit trail and answered 409. None of these is ever
+turned into a zero balance or an assumed fill.
+
+**Orders.** VALIDATE-ONLY by default, exactly like Kraken (D111): without
+`live_orders=true`, `submit_order` sends `order_validate` (IBKR's
+`/orders/whatif`; moomoo's `acctradinginfo_query` max-quantity pre-check),
+places nothing, and RAISES. Armed, it sends `order_submit` with the job id
+as IBKR's `cOID` (IBKR rejects a duplicate). A fill is returned only from
+the venue's own TERMINAL answer at its own average price; a still-working
+order raises `OrderNotConfirmedError` with the venue's order id, including
+a partially filled one (partials are recorded only once the venue reports
+the order finished, per TRADING_SAFETY). IBKR's `Inactive` maps to
+`unknown`, not rejected, because IBKR uses it for both. **The agent never
+answers an IBKR confirmation prompt**: the order was not transmitted and is
+reported as not placed.
+
+**Symbols.** Per D109's no-unified-namespace rule, IBKR orders are
+addressed by conid (`265598` or `conid:265598`) and positions are keyed by
+conid; no ticker-to-contract mapping. moomoo codes keep their prefix
+(`US.AAPL`).
+
+Rejected: (a) a tunnel (ngrok/Cloudflare) to the gateway - an inbound path
+to a live brokerage session, exposing IBKR's whole API surface rather than
+six job kinds; (b) self-hosting the API next to the gateway - gives up the
+hosted deployment D109 wanted to keep; (c) WebSocket push from platform to
+agent - lower latency, but a long-lived connection through Railway's proxy
+plus reconnect logic, for no safety gain over a long-poll that is already
+open; (d) storing the moomoo trade password in the credential store - it
+only needs to exist where OpenD is.
+
+**What the operator must do** (bridge_agent/README.md): set
+`BRIDGE_AGENT_TOKEN` and `IBKR_ACCOUNT_ID` (and/or `MOOMOO_ACCOUNT_ID`,
+`MOOMOO_TRADE_ENV`) on Railway; run the IBKR gateway and log in daily in a
+browser; copy `bridge_agent/.env.example` to `.env` with the same token;
+`run_agent.ps1 -Check`, then run it (optionally as a logon scheduled task);
+press Test on Interactive Brokers. Leave `*_LIVE_ORDERS` unset.
+
+Not built: nothing in the order path (`trades.py`, bots, deployments)
+routes to a registry adapter yet - that is true of every registry venue
+(D109-D116), so today the bridge serves the connection probe, and the
+order kinds exist for when it does. The reconciler has no bridged
+status-read hook. moomoo is untested against a real OpenD.
+Status: Implemented, tested (`tests/api/test_bridge_routes.py`,
+`tests/execution/test_bridged_adapter.py`, `tests/bridge_agent/`). Migration
+0037 verified up/down/up on a scratch database; NOT applied to the shared
+local database. No order placed or previewed at any venue; no live flag
+touched.

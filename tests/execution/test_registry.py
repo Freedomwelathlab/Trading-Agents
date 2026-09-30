@@ -56,11 +56,34 @@ def test_a_catalogued_provider_refuses_to_build_rather_than_returning_a_stand_in
     # strictly worse than a failure at construction. IBKR is the example
     # because it is gateway-only and so cannot be reached from a hosted
     # API at all (D109) - the catalogue says what the venue does, never
-    # that this build can talk to it.
-    assert get_provider("ibkr").adapter_status == "catalogued"
-    with pytest.raises(AdapterNotImplementedError) as err:
-        build_adapter("ibkr", {"gateway_url": "https://localhost:5000/v1/api"})
+    # that this build can talk to it. Since Phase 104 (D124) every real
+    # venue has an adapter, so the rule is pinned on a catalogued COPY.
+    import dataclasses
+
+    from apps.api.app.execution import registry
+
+    catalogued = dataclasses.replace(PROVIDERS["ibkr"], factory=None)
+    assert catalogued.adapter_status == "catalogued"
+    original = registry.PROVIDERS["ibkr"]
+    registry.PROVIDERS["ibkr"] = catalogued
+    try:
+        with pytest.raises(AdapterNotImplementedError) as err:
+            build_adapter("ibkr", {"account_id": "DU1"})
+    finally:
+        registry.PROVIDERS["ibkr"] = original
     assert "catalogued" in str(err.value)
+
+
+def test_ibkr_and_moomoo_are_implemented_through_the_bridge():
+    # Phase 104 (D124): reached via the bridge agent, and no secret field is
+    # declared on the platform for either - the logins stay on the PC.
+    for name in ("ibkr", "moomoo"):
+        entry = get_provider(name)
+        assert entry.adapter_status == "implemented"
+        assert entry.via_bridge is True
+        assert all(f.kind.value == "public" for f in entry.credential_fields), name
+        assert any(f.name == "live_orders" and not f.required for f in entry.credential_fields)
+    assert get_provider("kraken").via_bridge is False
 
 
 def test_kraken_is_the_one_implemented_venue_and_builds_validate_only_by_default():

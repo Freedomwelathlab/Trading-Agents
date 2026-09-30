@@ -347,3 +347,35 @@ than it sounds: an environment can hold two IG credential sets and only one
 of them is the demo, and a green tick that does not say which is the
 dangerous kind. Secrets are never included — the split is the registry's
 own PUBLIC/SECRET classification, the same one the credential form uses.
+
+## Update, 2026-09-30 — IBKR and moomoo are reachable through the bridge agent (Phase 104, D124)
+
+The "bridge agent" answer from the reachability section above is built.
+`bridge_agent/` runs on the PC next to the gateway, opens every connection
+itself (long-poll over HTTPS), and the PC listens on nothing new. Setup:
+`bridge_agent/README.md`.
+
+| Where | Variable | Notes |
+| --- | --- | --- |
+| Railway | `BRIDGE_AGENT_TOKEN` | >= 32 chars; unset = bridge disabled (NOT_CONFIGURED) |
+| Railway | `IBKR_ACCOUNT_ID` | `DU...` paper or `U...` live; required for the IBKR probe |
+| Railway | `IBKR_ACCOUNT_CURRENCY`, `IBKR_LIVE_ORDERS` | optional; leave `LIVE_ORDERS` unset |
+| Railway | `MOOMOO_ACCOUNT_ID`, `MOOMOO_TRADE_ENV` (SIMULATE/REAL, no default) | optional `MOOMOO_MARKET` (US/HK), `MOOMOO_LIVE_ORDERS` |
+| PC `bridge_agent/.env` | `PLATFORM_URL`, `BRIDGE_AGENT_TOKEN`, `BRIDGE_PROVIDERS`, `IBKR_GATEWAY_URL`, `IBKR_ACCOUNT_ID` | the moomoo OpenD address and trade password live ONLY here |
+
+What changed for these two providers:
+
+* The old `gateway_url` / `opend_host` / `opend_port` / `trade_password`
+  platform fields are gone. Addresses and the moomoo password are the
+  agent's configuration; the platform holds public fields only.
+* The Test button reads cash and positions through the agent. With no fresh
+  heartbeat (45 s) it answers `NOT_CONNECTED` at once; with the IBKR session
+  expired, `GATEWAY_NOT_AUTHENTICATED` - log in again at
+  https://localhost:5000 on the PC. The login is daily and needs a human; the
+  agent only keeps an active session alive.
+* IBKR positions and orders are keyed by **conid**, not ticker.
+* Orders are validate-only (IBKR what-if / moomoo pre-check) until
+  `live_orders=true`, and the agent never answers an IBKR confirmation
+  prompt.
+* No order-path caller routes to registry adapters yet (true of every
+  registry venue); today the bridge serves the probe.

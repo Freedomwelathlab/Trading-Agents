@@ -68,12 +68,21 @@ async def test_a_probe_without_credentials_names_the_variables_to_set(monkeypatc
 
 @pytest.mark.asyncio
 async def test_credentials_do_not_conjure_an_adapter_for_a_catalogued_venue(monkeypatch):
-    """moomoo is catalogued only (gateway-only, D109). The probe must say
-    so rather than let it read as a venue failure the operator would go and
-    investigate. Binance was the example until it gained an adapter (D116)."""
-    monkeypatch.setenv("MOOMOO_OPEND_HOST", "127.0.0.1")
-    monkeypatch.setenv("MOOMOO_OPEND_PORT", "11111")
-    monkeypatch.setenv("MOOMOO_TRADE_PASSWORD", "s")
+    """A catalogued venue: the probe must say so rather than let it read as
+    a venue failure the operator would go and investigate. Binance, then
+    moomoo, were the real examples until each gained an adapter (D116,
+    D124); every venue now has one, so a catalogued copy stands in."""
+    import dataclasses
+
+    from apps.api.app.execution import registry
+
+    monkeypatch.setitem(
+        registry.PROVIDERS,
+        "moomoo",
+        dataclasses.replace(registry.PROVIDERS["moomoo"], factory=None),
+    )
+    monkeypatch.setenv("MOOMOO_ACCOUNT_ID", "123")
+    monkeypatch.setenv("MOOMOO_TRADE_ENV", "SIMULATE")
 
     async with db_session() as session, admin_user(session) as (_uid, email):
         async with broker(session, "moomoo") as broker_id, api_client() as client:

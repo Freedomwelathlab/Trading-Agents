@@ -2509,3 +2509,48 @@ class OptionChainSnapshot(Base):
     vega: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     volume: Mapped[int | None] = mapped_column(BigInteger)
     open_interest: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class BridgeJob(Base):
+    """One request the platform asks the bridge agent to carry out against
+    a gateway on the operator's PC (Phase 104, D124, migration 0037).
+
+    `payload` never holds a secret - the gateway session, the IBKR login
+    and the moomoo trade password all stay on the PC. Status only moves
+    forward (queued -> claimed -> done | failed, or -> expired when the
+    platform stops waiting); a late result for an expired job is still
+    recorded, because a late answer to an ORDER request is precisely the
+    row an operator must be able to find.
+    """
+
+    __tablename__ = "bridge_jobs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    broker_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("brokers.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="queued")
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+    claimed_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BridgeAgentHeartbeat(Base):
+    """The last word from one bridge agent: when, and which gateways it can
+    reach (Phase 104, D124). Upserted by `POST /bridge/agent/heartbeat`."""
+
+    __tablename__ = "bridge_agent_heartbeats"
+
+    agent_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    agent_version: Mapped[str | None] = mapped_column(String(32))
+    gateways: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")

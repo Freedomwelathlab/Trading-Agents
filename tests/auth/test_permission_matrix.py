@@ -81,6 +81,19 @@ path here must be a deliberate, reviewed decision - it is exactly the kind
 of line an attacker would want silently added."""
 
 
+_BRIDGE_AGENT_ROUTES: frozenset[str] = frozenset(
+    {
+        "/bridge/agent/claim",
+        "/bridge/agent/jobs/{job_id}/result",
+        "/bridge/agent/heartbeat",
+    }
+)
+"""Phase 104 (D124): routes called by the bridge agent on the operator's PC.
+Not public - they require `require_bridge_agent` (the BRIDGE_AGENT_TOKEN
+bearer) - but not user routes either, so they are held to THAT dependency
+instead of `get_current_user`, by the test below."""
+
+
 def _iter_api_routes(routes: Iterable[object]) -> Iterator[APIRoute]:
     """Every real `APIRoute` reachable from `routes`, recursing through
     whatever wrapper this FastAPI version uses for `app.include_router(...)`.
@@ -159,7 +172,7 @@ def test_every_non_public_route_requires_get_current_user_somewhere_in_its_depen
     """
     violations: list[str] = []
     for route in _all_api_routes():
-        if route.path in _PUBLIC_ALLOWLIST:
+        if route.path in _PUBLIC_ALLOWLIST or route.path in _BRIDGE_AGENT_ROUTES:
             continue
         names = _dependency_call_names(route.dependant)
         if get_current_user.__name__ not in names:
@@ -169,6 +182,22 @@ def test_every_non_public_route_requires_get_current_user_somewhere_in_its_depen
         "Route(s) with NO authentication dependency found in their dependency "
         "tree, and not on the public allowlist:\n" + "\n".join(sorted(violations))
     )
+
+
+def test_every_bridge_agent_route_requires_the_agent_token_and_nothing_else_is_exempt() -> None:
+    """The bridge exemption is exactly these paths, each exists, and each
+    carries `require_bridge_agent`; every OTHER /bridge route is a user
+    route and is held to `get_current_user` by the test above."""
+    from apps.api.app.api.routes.bridge import require_bridge_agent
+
+    paths_by_route = {route.path: route for route in _all_api_routes()}
+    assert _BRIDGE_AGENT_ROUTES <= paths_by_route.keys()
+    for path in _BRIDGE_AGENT_ROUTES:
+        names = _dependency_call_names(paths_by_route[path].dependant)
+        assert require_bridge_agent.__name__ in names, path
+        assert get_current_user.__name__ not in names, path
+    agent_prefixed = {p for p in paths_by_route if p.startswith("/bridge/agent")}
+    assert agent_prefixed == _BRIDGE_AGENT_ROUTES
 
 
 def test_the_public_allowlist_is_exactly_the_documented_intentionally_public_routes() -> None:
