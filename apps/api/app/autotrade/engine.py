@@ -73,9 +73,17 @@ from apps.api.app.db.models import (
 from apps.api.app.execution.paper_broker import PaperBrokerAdapter
 from apps.api.app.execution.persistence import load_paper_broker, save_paper_broker
 from apps.api.app.marketdata.bar_router import BarBackfillRouter, UnroutableSymbolError
+from apps.api.app.marketdata.fx import is_fx_symbol
 from apps.api.app.marketdata.news_provider import NewsProvider
 from apps.api.app.marketdata.portfolio_risk import load_market_risk_inputs
-from apps.api.app.marketdata.sessions import SessionPhase, session_date, session_phase
+from apps.api.app.marketdata.sessions import (
+    CRYPTO_24H_CALENDAR,
+    FX_24H_CALENDAR,
+    SessionCalendar,
+    SessionPhase,
+    session_date,
+    session_phase,
+)
 from apps.api.app.marketdata.store import MarketDataStore
 from apps.api.app.marketdata.structure import Direction
 from apps.api.app.oms.persistence import get_recent_filled_orders, submit_trade_and_record
@@ -125,7 +133,28 @@ def _rules(bot: AutotradeBot) -> ExitRules:
     )
 
 
-def phase_allowed(ts: datetime, market_type: str) -> bool:
+def bot_calendar(symbol: str | None, market_type: str) -> SessionCalendar | None:
+    """Phase 106 (D130): the clock a `24h` bot trades `symbol` on - crypto
+    around the clock, FX Sunday to Friday. None (the US equity clock) for
+    every other bot and for equities, which do not trade overnight."""
+    if market_type != "24h" or symbol is None:
+        return None
+    if BarBackfillRouter.is_crypto_symbol(symbol):
+        return CRYPTO_24H_CALENDAR
+    if is_fx_symbol(symbol):
+        return FX_24H_CALENDAR
+    return None
+
+
+def phase_allowed(ts: datetime, market_type: str, symbol: str | None = None) -> bool:
+    if market_type == "24h":
+        cal = bot_calendar(symbol, market_type)
+        if cal is not None:
+            return cal.session_phase(ts) is not None
+        # No symbol (the whole-bot gate) - some 24h market is always open;
+        # each symbol is then checked on its own clock. An equity symbol
+        # trades the extended day, as `auto` does.
+        return symbol is None or session_phase(ts) is not None
     phase = session_phase(ts)
     if phase is None:
         return False
@@ -136,11 +165,17 @@ def phase_allowed(ts: datetime, market_type: str) -> bool:
     )
 
 
-def session_ending(last_bar_ts: datetime, *, market_type: str, bar_interval: str) -> bool:
+def session_ending(
+    last_bar_ts: datetime, *, market_type: str, bar_interval: str, symbol: str | None = None
+) -> bool:
     """True when the bar AFTER this one would fall outside the bot's
-    tradeable phase — i.e. this is the last bar the bot may still act on."""
+    tradeable phase — i.e. this is the last bar the bot may still act on.
+    A `24h` crypto position is therefore never forced flat, and a `24h` FX
+    position only before the weekend close (D130)."""
     minutes = _INTERVAL_MINUTES.get(bar_interval, 5)
-    return not phase_allowed(last_bar_ts + timedelta(minutes=minutes), market_type)
+    if market_type == "24h" and symbol is None:
+        return False
+    return not phase_allowed(last_bar_ts + timedelta(minutes=minutes), market_type, symbol)
 
 
 def _finish(
@@ -242,7 +277,8 @@ async def _manage_open_trades(
             bar_close=last.close,
             rules=rules,
             session_ending=session_ending(
-                last.ts, market_type=bot.market_type, bar_interval=bot.bar_interval
+                last.ts, market_type=bot.market_type, bar_interval=bot.bar_interval,
+                symbol=trade.symbol,
             ),
         )
         trade.stop_price = decision.state.stop_price
@@ -440,6 +476,7 @@ def _scan_optimised(
             continue
         outcome = scan_latest_bar(
             symbol, bars, setups=[profile.setup], market_type=bot.market_type,
+            calendar=bot_calendar(symbol, bot.market_type),
             min_score=max(min_score, profile.min_score),
             plan=replace(plan, atr_stop_buffer=profile.atr_stop_buffer),
             allow_directions=directions,
@@ -489,7 +526,12 @@ async def run_bot_cycle(
             clock,
         )
 
-    if bar_router is None or "longbridge" not in bar_router.configured_vendors:
+    needs_equity_vendor = any(
+        not BarBackfillRouter.is_crypto_symbol(s) for s in bot.symbols
+    )  # Phase 106: a crypto-only bot needs only Coinbase, which needs no keys
+    if bar_router is None or (
+        needs_equity_vendor and "longbridge" not in bar_router.configured_vendors
+    ):
         return _finish(
             run, outcome, AutotradeBotRunStatus.SKIPPED_NOT_CONFIGURED,
             "NOT_CONFIGURED: no equity market-data vendor is wired (LONGPORT_* unset)", clock,
@@ -612,6 +654,7 @@ async def run_bot_cycle(
                 symbol, symbol_bars, setups=symbol_setups,
                 market_type=bot.market_type, min_score=effective_min, plan=plan,
                 allow_directions=bot_directions,
+                calendar=bot_calendar(symbol, bot.market_type),
             )
         if scan.hit is None:
             if scan.reason.startswith("rejected:"):
@@ -736,7 +779,8 @@ async def run_bot_cycle(
     # the session (every position is flat by then, so the day is final).
     ending_today = any(
         bars_by_symbol.get(s) and session_ending(
-            bars_by_symbol[s][-1].ts, market_type=bot.market_type, bar_interval=bot.bar_interval
+            bars_by_symbol[s][-1].ts, market_type=bot.market_type,
+            bar_interval=bot.bar_interval, symbol=s,
         )
         for s in bot.symbols
     )

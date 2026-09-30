@@ -35,7 +35,7 @@ from __future__ import annotations
 import enum
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -279,6 +279,32 @@ class FxCalendar(SessionCalendar):
 
 FX_CALENDAR = FxCalendar()
 """The default FX clock: one-hour rollover blackout, Asia as pre-market."""
+
+FX_24H_CALENDAR = FxCalendar(rollover_blackout_minutes=0, trade_asian_session=True)
+"""Phase 106 (D130): the clock of an Autotrade bot set to trade 24 hours -
+every hour from the Sunday 17:00 NY open to the Friday 17:00 NY close is
+tradable, so the only forced flat is the weekend."""
+
+
+class Crypto24hCalendar(SessionCalendar):
+    """Phase 106 (D130): crypto never closes. A session is one UTC day and
+    every bar in it is `REGULAR`, so the session functions (levels, VWAP,
+    opening range) keep working and nothing is ever forced flat."""
+
+    name = "crypto_24h"
+    causal_opening_range = True
+
+    def session_date(self, ts: datetime) -> date:
+        return ts.astimezone(UTC).date()
+
+    def session_phase(self, ts: datetime) -> SessionPhase | None:
+        return SessionPhase.REGULAR
+
+    def regular_open_at(self, day: date) -> datetime:
+        return datetime.combine(day, time(0, 0), tzinfo=UTC)
+
+
+CRYPTO_24H_CALENDAR = Crypto24hCalendar()
 
 
 def _cal(calendar: SessionCalendar | None) -> SessionCalendar:

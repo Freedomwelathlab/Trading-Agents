@@ -531,8 +531,32 @@ class BrokerCannotError(Exception):
     order is built, naming the venue and the capability."""
 
 
+PROVIDER_ALIASES: dict[str, str] = {
+    # Phase 106 (D128). Longbridge's SDK, its environment variables and its
+    # older brand are all "LongPort"; a broker row created as `Longport` means
+    # the Longbridge adapter, which already reads the LONGPORT_* family.
+    "longport": "longbridge",
+    "long-port": "longbridge",
+    "interactive-brokers": "ibkr",
+    "interactivebrokers": "ibkr",
+    "ig-markets": "ig",
+    "igmarkets": "ig",
+    "futu": "moomoo",
+    "coinbase-paper": "paper",
+}
+
+
+def canonical_provider(provider: str) -> str:
+    """The registry key a provider name means: case-insensitive, spaces and
+    underscores read as hyphens, and a few venue brand names mapped to the
+    key they are catalogued under. An unknown name comes back normalised but
+    otherwise unchanged, so `get_provider` still refuses it by name."""
+    key = "-".join(provider.strip().lower().replace("_", " ").split())
+    return PROVIDER_ALIASES.get(key, key)
+
+
 def get_provider(provider: str) -> BrokerProvider:
-    entry = PROVIDERS.get(provider)
+    entry = PROVIDERS.get(canonical_provider(provider))
     if entry is None:
         raise UnknownProviderError(
             f"No broker provider named {provider!r}. Known: {', '.join(sorted(PROVIDERS))}."

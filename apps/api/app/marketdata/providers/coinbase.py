@@ -220,7 +220,10 @@ class CoinbaseBarProvider:
                 "end": end.isoformat().replace("+00:00", "Z"),
             }
         )
-        url = f"{self._base_url}/products/{urllib.parse.quote(symbol)}/candles?{query}"
+        # Phase 106: `BTC/USD` is requested as product `BTC-USD`; the bars
+        # keep the caller's spelling, so they are stored under what was asked.
+        product = symbol.strip().upper().replace("/", "-")
+        url = f"{self._base_url}/products/{urllib.parse.quote(product)}/candles?{query}"
 
         def _get() -> list[list[Any]]:
             request = urllib.request.Request(

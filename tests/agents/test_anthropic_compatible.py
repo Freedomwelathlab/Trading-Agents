@@ -121,3 +121,81 @@ def test_a_half_configured_provider_is_none_not_a_guessed_default(over):
     # key for a model) would make a misconfiguration look like a working
     # agent right up until it billed someone.
     assert build_llm_provider(_settings(**over)) is None
+
+
+# --- Phase 106 (D127): a display name resolves to a model id ---------------
+
+_MODELS = {
+    "data": [
+        {"id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-01"},
+        {"id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-07-01"},
+    ],
+    "has_more": False,
+}
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("claude-opus-5-5", "claude-opus-5-5"),  # exact id
+        ("Claude Opus 5.5", "claude-opus-5-5"),  # exact display name
+        ("Claude Fable 5", "claude-fable-5-1"),  # slug prefix
+        ("claude fable 5.1", "claude-fable-5-1"),
+        ("Claude Haiku 9", None),  # never another family
+    ],
+)
+def test_pick_model(configured, expected):
+    assert mod.pick_model(configured, _MODELS["data"]) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_display_name_is_resolved_and_retried_once(monkeypatch):
+    mod._RESOLVED.clear()
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json=_MODELS)
+        model = __import__("json").loads(request.content)["model"]
+        sent.append(model)
+        if model != "claude-fable-5-1":
+            return httpx.Response(
+                404,
+                json={
+                    "type": "error",
+                    "error": {"type": "not_found_error", "message": f"model: {model}"},
+                },
+            )
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+
+    _wire(monkeypatch, handler)
+    provider = AnthropicCompatibleProvider(
+        base_url="https://x", api_key="k", model="Claude Fable 5"
+    )
+    assert await provider.complete(system="s", user="u", max_tokens=5) == "ok"
+    assert sent == ["Claude Fable 5", "claude-fable-5-1"]
+    # A new provider in the same process goes straight to the resolved id.
+    again = AnthropicCompatibleProvider(base_url="https://x", api_key="k", model="Claude Fable 5")
+    assert await again.complete(system="s", user="u", max_tokens=5) == "ok"
+    assert sent[-1] == "claude-fable-5-1" and len(sent) == 3
+    mod._RESOLVED.clear()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_model_lists_the_ids_that_exist(monkeypatch):
+    mod._RESOLVED.clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json=_MODELS)
+        return httpx.Response(
+            404, json={"type": "error", "error": {"type": "not_found_error", "message": "model: x"}}
+        )
+
+    _wire(monkeypatch, handler)
+    provider = AnthropicCompatibleProvider(
+        base_url="https://x", api_key="k", model="Claude Haiku 9"
+    )
+    with pytest.raises(LLMProviderError) as err:
+        await provider.complete(system="s", user="u", max_tokens=5)
+    assert "LLM_PROVIDER_MODEL" in str(err.value) and "claude-fable-5-1" in str(err.value)

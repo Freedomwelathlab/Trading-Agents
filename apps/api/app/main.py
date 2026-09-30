@@ -88,11 +88,16 @@ from apps.api.app.execution.reconciliation import (
     build_reconciler_cycle_lock,
 )
 from apps.api.app.marketdata.bar_router import BarBackfillRouter
+from apps.api.app.marketdata.depth_provider import RoutedDepthProvider
 from apps.api.app.marketdata.providers.cboe import (
     CboeDelayedOptionChainProvider,
     FallbackOptionChainProvider,
 )
 from apps.api.app.marketdata.providers.coinbase import build_coinbase_bar_provider
+from apps.api.app.marketdata.providers.coinbase_live import (
+    CoinbaseDepthProvider,
+    CoinbaseQuoteProvider,
+)
 from apps.api.app.marketdata.providers.ig_prices import build_ig_fx_bar_provider
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_bar_backfill_provider,
@@ -103,6 +108,7 @@ from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_option_chain_provider,
     build_longbridge_provider,
 )
+from apps.api.app.marketdata.providers.twelvedata import build_twelvedata_fx_bar_provider
 from apps.api.app.marketdata.router import MarketDataRouter
 from apps.api.app.notifications.transactional_email import build_email_provider
 from apps.api.app.options.snapshot_scheduler import (
@@ -125,14 +131,21 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     longbridge = build_longbridge_provider(settings)
-    app.state.market_data_router = MarketDataRouter([longbridge]) if longbridge else None
+    # Phase 106 (D129): crypto quotes from Coinbase's public ticker (no
+    # credentials), equities from Longbridge. Each declares the symbols it
+    # serves, so neither is ever asked for the other's.
+    app.state.market_data_router = MarketDataRouter(
+        [CoinbaseQuoteProvider(), *([longbridge] if longbridge else [])]
+    )
     # D021: same credential gate as the quote provider, but a distinct
     # capability (a price series, not one quote) - see
     # apps/api/app/marketdata/history_provider.py.
     app.state.history_provider = build_longbridge_history_provider(settings)
     # Depth is a separate capability from quotes on purpose: the vendor
     # can serve a quote and still have no order book (D092).
-    app.state.depth_provider = build_longbridge_depth_provider(settings)
+    app.state.depth_provider = RoutedDepthProvider(
+        crypto=CoinbaseDepthProvider(), equity=build_longbridge_depth_provider(settings)
+    )
     # Phase 98 (D117): Longbridge lists option contracts but this account
     # cannot quote them (301604), so chains fall back to Cboe's delayed feed.
     app.state.option_chain_provider = FallbackOptionChainProvider(
@@ -162,7 +175,8 @@ async def lifespan(app: FastAPI):
         # Phase 103 (D123): `*.FX` from IG, only with FX_BAR_PROVIDER=ig
         # and complete IG_* credentials. None (the default) makes FX
         # symbols unroutable with a 422 naming the setting.
-        fx_provider=build_ig_fx_bar_provider(settings),
+        fx_provider=build_ig_fx_bar_provider(settings)
+        or build_twelvedata_fx_bar_provider(settings),
     )
 
     # Phase 79 (D097): owner bootstrap from env. Runs before any scheduler
@@ -386,7 +400,7 @@ async def lifespan(app: FastAPI):
         live_broker=("longbridge" if app.state.live_broker_adapter else "NOT_CONFIGURED"),
         market_data_vendor="longbridge" if longbridge else "NOT_CONFIGURED",
         history_provider="longbridge" if app.state.history_provider else "NOT_CONFIGURED",
-        depth_provider="longbridge" if app.state.depth_provider else "NOT_CONFIGURED",
+        depth_provider=app.state.depth_provider.vendors,
         option_chain_provider=app.state.option_chain_provider.name,
         fundamentals_provider=(
             "longbridge" if app.state.fundamentals_provider else "NOT_CONFIGURED"

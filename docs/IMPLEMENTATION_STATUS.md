@@ -4096,3 +4096,19 @@ end-to-end backfill → bars → session-levels, autotrade refusal); web +3.
 **Not done / operator:** no migration (spread series not persisted; 0038
 unused); IG unverified until a working key; no FX bot; equity
 opening-range look-ahead left for its own phase. Nothing enabled.
+
+## Phase 106 — Operator fixes: LLM model name, broker aliases, crypto data, 24h bots, bot delete, Twelve Data FX
+
+Shipped 2026-09-30. Decisions D127-D132. Migration 0038 (data only).
+
+* Agent Trade: display-name model resolution via `/v1/models` (D127).
+* Broker providers: `canonical_provider`, `Longport` -> `longbridge`,
+  known names stored as registry keys, 0038 rewrites old rows (D128).
+* Crypto: Coinbase ticker + level-2 book; routed by symbol shape; chart
+  bars filled on read (D129). Live-verified BTC/USD quote and 20-level book.
+* Autotrade `24h` market type with per-symbol clocks (D130).
+* Bot delete by tick box, per-bot outcomes (D131).
+* Twelve Data FX bar provider, `FX_BAR_PROVIDER=auto` (D132).
+
+**Operator**: set `TWELVEDATA_API_KEY` for FX charts; optionally set
+`LLM_PROVIDER_MODEL` to an exact id. Nothing traded; no live flag touched.

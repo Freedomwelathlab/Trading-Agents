@@ -43,6 +43,7 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
 
   const loadBots = useCallback(async () => {
     setError(null);
@@ -119,6 +120,64 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
     }
   }
 
+  function toggle(id: string) {
+    setTicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function deleteTicked() {
+    const ids = [...ticked];
+    if (ids.length === 0) return;
+    const names = (bots ?? []).filter((b) => ticked.has(b.id)).map((b) => b.name);
+    if (
+      !window.confirm(
+        `Delete ${ids.length} bot(s): ${names.join(", ")}?\n\n` +
+          "Their runs, trade ledger and insights are removed. Orders they placed stay in the order history. " +
+          "An active bot, or one still holding a position, is refused.",
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/autotrade/bots/delete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ bot_ids: ids }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { results?: { bot_id: string; name: string | null; outcome: string; reason?: string | null }[]; detail?: string }
+        | null;
+      if (handleExpiredSession(res.status)) return;
+      if (!res.ok || !data?.results) {
+        setError(data?.detail ?? `Request failed (HTTP ${res.status})`);
+        return;
+      }
+      const deleted = data.results.filter((r) => r.outcome === "deleted");
+      const refused = data.results.filter((r) => r.outcome !== "deleted");
+      setNotice(
+        `Deleted ${deleted.length}` +
+          (refused.length
+            ? ` · not deleted: ${refused.map((r) => `${r.name ?? r.bot_id} (${r.reason ?? r.outcome})`).join("; ")}`
+            : ""),
+      );
+      setTicked(new Set(refused.map((r) => r.bot_id)));
+      if (selected && deleted.some((r) => r.bot_id === selected)) setSelected(null);
+      await loadBots();
+    } catch {
+      setError("DATA_UNAVAILABLE: could not reach the trading API");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const allTicked = !!bots && bots.length > 0 && bots.every((b) => ticked.has(b.id));
+
   return (
     <div className="flex flex-col gap-5">
       <Panel
@@ -132,10 +191,34 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
         ) : bots.length === 0 ? (
           <EmptyNote>No bots yet. Create one above.</EmptyNote>
         ) : (
+          <>
+          <div className="mb-2 flex items-center gap-3">
+            <button
+              type="button"
+              className={btnSecondary}
+              disabled={busy || ticked.size === 0}
+              onClick={deleteTicked}
+            >
+              Delete selected{ticked.size ? ` (${ticked.size})` : ""}
+            </button>
+            <span className="text-xs text-ink-faint">
+              Tick unused bots to delete them. Pause or stop an active bot first.
+            </span>
+          </div>
           <TableScroll>
             <table className={tableClass}>
               <thead>
                 <tr className={theadRowClass}>
+                  <th className={thClass}>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all bots"
+                      checked={allTicked}
+                      onChange={() =>
+                        setTicked(allTicked ? new Set() : new Set((bots ?? []).map((b) => b.id)))
+                      }
+                    />
+                  </th>
                   <th className={thClass}>name</th>
                   <th className={thClass}>status</th>
                   <th className={thClass}>symbols</th>
@@ -153,6 +236,14 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
                     key={b.id}
                     className={`${tbodyRowClass} ${b.id === selected ? "bg-well" : ""}`}
                   >
+                    <td className={tdClass}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${b.name}`}
+                        checked={ticked.has(b.id)}
+                        onChange={() => toggle(b.id)}
+                      />
+                    </td>
                     <td className={tdClass}>
                       <button type="button" className="underline-offset-2 hover:underline" onClick={() => setSelected(b.id)}>
                         {b.name}
@@ -185,6 +276,7 @@ export default function BotList({ refreshKey }: { refreshKey: number }) {
               </tbody>
             </table>
           </TableScroll>
+          </>
         )}
       </Panel>
 

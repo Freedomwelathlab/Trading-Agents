@@ -34,6 +34,7 @@ const MARKET_TYPES = [
   ["auto", "Auto — any phase with bars (04:00–20:00 ET)"],
   ["pre_market", "Pre-market only (04:00–09:30 ET)"],
   ["post_market", "Post-market only (16:00–20:00 ET)"],
+  ["24h", "24 hours — crypto around the clock, FX Sun–Fri (stocks as Auto)"],
 ] as const;
 
 export default function CreateBotForm({ onCreated }: { onCreated: (bot: Bot) => void }) {
@@ -174,7 +175,7 @@ export default function CreateBotForm({ onCreated }: { onCreated: (bot: Bot) => 
             ))}
           </select>
         </Field>
-        <Field label="Market" hint="Which session phase the bot may open and manage positions in. It is always flat by the end of that phase.">
+        <Field label="Market" hint="Which session phase the bot may open and manage positions in. It is flat by the end of that phase - except 24 hours: crypto positions are never forced flat, FX only before the weekend close.">
           <select id="bot-market" value={marketType} onChange={(e) => setMarketType(e.target.value)} className={inputClass}>
             {MARKET_TYPES.map(([v, l]) => (
               <option key={v} value={v}>{l}</option>

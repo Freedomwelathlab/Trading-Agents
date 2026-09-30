@@ -90,6 +90,12 @@ class BarBackfillRouter:
             names.append(getattr(self._fx, "name", "fx"))
         return tuple(names)
 
+    @property
+    def configured_roles(self) -> tuple[str, ...]:
+        """Which symbol families this router can serve: equity/crypto/fx."""
+        roles = (("equity", self._equity), ("crypto", self._crypto), ("fx", self._fx))
+        return tuple(name for name, provider in roles if provider is not None)
+
     @staticmethod
     def is_crypto_symbol(symbol: str) -> bool:
         """`BASE-QUOTE` with a hyphen and no dot - a Coinbase product id.
@@ -99,7 +105,8 @@ class BarBackfillRouter:
         `BRK-B.US` (a Longbridge symbol that happens to contain a hyphen)
         from being mistaken for a crypto product.
         """
-        return "-" in symbol and "." not in symbol
+        # Phase 106 (D129): `BTC/USD` (Kraken's spelling) is crypto too.
+        return ("-" in symbol or "/" in symbol) and "." not in symbol
 
     def provider_for(self, symbol: str) -> HistoricalBarProvider:
         """The vendor for this symbol, or a refusal naming why.
@@ -113,8 +120,8 @@ class BarBackfillRouter:
             if self._fx is None:
                 raise UnroutableSymbolError(
                     f"{symbol!r} looks like an FX pair, but no FX bar provider is "
-                    "configured - set FX_BAR_PROVIDER=ig together with the complete IG_* "
-                    "credential set (IG_API_KEY, IG_USERNAME, IG_PASSWORD, IG_ACCOUNT_TYPE)."
+                    "configured - set TWELVEDATA_API_KEY (free at twelvedata.com), or "
+                    "FX_BAR_PROVIDER=ig together with the complete IG_* credential set."
                 )
             return self._fx
 

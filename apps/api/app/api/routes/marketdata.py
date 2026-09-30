@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.api.dependencies import (
     get_depth_provider,
+    get_market_data_bar_backfill_provider,
     get_market_data_router,
     get_option_chain_provider,
 )
@@ -30,9 +31,11 @@ from apps.api.app.api.schemas_marketdata import (
     SessionLevelsResponse,
 )
 from apps.api.app.auth.dependencies import get_current_user
+from apps.api.app.core.logging import get_logger
 from apps.api.app.db.base import get_session
 from apps.api.app.db.models import User
 from apps.api.app.marketdata.bar_provider import BarInterval
+from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.marketdata.depth_provider import DepthProvider
 from apps.api.app.marketdata.fx import calendar_for_symbol, is_fx_symbol
 from apps.api.app.marketdata.option_chain_provider import (
@@ -54,6 +57,8 @@ from apps.api.app.marketdata.sessions import (
 from apps.api.app.marketdata.store import MarketDataStore
 from apps.api.app.marketdata.structure import Direction
 from apps.api.app.options.pricing import OptionRight
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/market-data", tags=["market-data"])
 
@@ -92,6 +97,74 @@ complete while ending in the middle of the requested window, and a reader
 would have no way to tell."""
 
 
+CRYPTO_READ_THROUGH_INTERVALS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
+"""Phase 106 (D129): the intervals Coinbase serves natively. 30m is absent
+because Coinbase has no 30-minute candle and none is synthesised here."""
+
+_CRYPTO_REFRESH_MIN_SECONDS = 30.0
+_FX_REFRESH_MIN_SECONDS = 300.0
+"""FX bars come from a metered free plan (800 requests/day), so an open FX
+chart refreshes at most every five minutes - under 300 requests a day."""
+_last_crypto_refresh: dict[tuple[str, str], float] = {}
+
+
+async def _refresh_crypto_bars(
+    session: AsyncSession,
+    backfill: BarBackfillRouter,
+    symbol: str,
+    bar_interval: str,
+    start_date: date,
+    end_date: date,
+) -> None:
+    """Phase 106 (D129): fetch-on-read for crypto only.
+
+    Crypto trades around the clock and its vendor (Coinbase's public candle
+    API) is free and needs no key, so an empty or stale crypto chart is
+    filled from the vendor on view instead of waiting for an admin
+    backfill. Only the missing tail is fetched and it is upserted into the
+    same store every other reader uses, so the chart, the signals and the
+    bot still see one set of bars. At most one fetch per symbol and
+    interval every 30 seconds. A vendor failure is logged and the stored
+    bars are returned as they are - never replaced by anything invented.
+    Equities keep the original read-only contract below.
+    """
+    import time
+    from datetime import UTC, datetime, timedelta
+
+    step = CRYPTO_READ_THROUGH_INTERVALS.get(bar_interval, 1800)
+    key = (symbol, bar_interval)
+    now = time.monotonic()
+    min_gap = _FX_REFRESH_MIN_SECONDS if is_fx_symbol(symbol) else _CRYPTO_REFRESH_MIN_SECONDS
+    if now - _last_crypto_refresh.get(key, 0.0) < min_gap:
+        return
+    _last_crypto_refresh[key] = now
+
+    store = MarketDataStore(session)
+    latest = await store.get_latest_bars(symbol, bar_interval=bar_interval, count=1)
+    fetch_from = start_date
+    if latest:
+        last_ts = latest[-1].ts
+        if last_ts >= datetime.now(UTC) - timedelta(seconds=2 * step):
+            return  # already current
+        fetch_from = max(start_date, last_ts.date())
+    try:
+        provider = backfill.provider_for(symbol)
+        bars = await provider.get_bars(
+            symbol, bar_interval=bar_interval, start_date=fetch_from, end_date=end_date
+        )
+    except Exception as exc:  # vendor down, unknown product, bad interval
+        logger.warning(
+            "crypto_bars_read_through_failed",
+            symbol=symbol,
+            bar_interval=bar_interval,
+            error=str(exc)[:300],
+        )
+        return
+    bars = [b if b.symbol == symbol else b.model_copy(update={"symbol": symbol}) for b in bars]
+    await store.upsert_bars(bars)
+    await session.commit()
+
+
 @router.get("/{symbol}/bars", response_model=BarsResponse)
 async def get_bars(
     symbol: str,
@@ -99,6 +172,7 @@ async def get_bars(
     end_date: date = Query(...),
     bar_interval: BarInterval = Query("1d"),
     session: AsyncSession = Depends(get_session),
+    backfill: BarBackfillRouter = Depends(get_market_data_bar_backfill_provider),
     _current_user: User = Depends(get_current_user),
 ) -> BarsResponse:
     """Persisted OHLCV bars for one symbol and interval over a window.
@@ -126,6 +200,12 @@ async def get_bars(
             detail=f"end_date {end_date.isoformat()} is before start_date "
             f"{start_date.isoformat()}.",
         )
+
+    if BarBackfillRouter.is_crypto_symbol(symbol) and bar_interval in CRYPTO_READ_THROUGH_INTERVALS:
+        await _refresh_crypto_bars(session, backfill, symbol, bar_interval, start_date, end_date)
+    elif is_fx_symbol(symbol) and "fx" in backfill.configured_roles:
+        # Phase 106 (D132): FX charts fill the same way once a vendor is set.
+        await _refresh_crypto_bars(session, backfill, symbol, bar_interval, start_date, end_date)
 
     bars = await MarketDataStore(session).get_bars(
         symbol, bar_interval=bar_interval, start_date=start_date, end_date=end_date
@@ -198,11 +278,15 @@ async def get_depth(
     return OrderBookResponse(
         symbol=book.symbol,
         bids=[
-            DepthLevelResponse(price=lvl.price, volume=lvl.volume, order_count=lvl.order_count)
+            DepthLevelResponse(
+                price=lvl.price, volume=float(lvl.volume), order_count=lvl.order_count
+            )
             for lvl in book.bids
         ],
         asks=[
-            DepthLevelResponse(price=lvl.price, volume=lvl.volume, order_count=lvl.order_count)
+            DepthLevelResponse(
+                price=lvl.price, volume=float(lvl.volume), order_count=lvl.order_count
+            )
             for lvl in book.asks
         ],
         spread=book.spread,
@@ -481,8 +565,7 @@ async def get_option_chain(
 
     def side(right: OptionRight) -> list[OptionQuoteResponse]:
         return [
-            _option_quote_response(q)
-            for q in sorted(chain.by_right(right), key=lambda q: q.strike)
+            _option_quote_response(q) for q in sorted(chain.by_right(right), key=lambda q: q.strike)
         ]
 
     quoted = sum(
@@ -572,9 +655,7 @@ async def get_chart_signals(
     )
 
     names = (
-        [n.strip() for n in setups.split(",") if n.strip() in SETUPS]
-        if setups
-        else sorted(SETUPS)
+        [n.strip() for n in setups.split(",") if n.strip() in SETUPS] if setups else sorted(SETUPS)
     )
     if not names:
         raise HTTPException(

@@ -11996,3 +11996,87 @@ the equity scanner*.
 Status: Implemented, tested (stubbed IG; real HistData for research).
 Nothing enabled (`FX_BAR_PROVIDER` defaults `none`), no migration, nothing
 traded. Live-trading flags untouched.
+
+## D127 — The LLM model setting accepts a display name (Phase 106)
+Date: 2026-09-30
+
+Agent Trade answered HTTP 502: Anthropic returned 404 `not_found_error` for
+`model: Claude Fable 5` - the operator had set `LLM_PROVIDER_MODEL` to the
+name a console shows, not an API id. Variables are the operator's to set,
+so the provider now resolves the text itself: on a model 404 it reads the
+endpoint's `GET /v1/models` and picks the id the text names (exact id, exact
+display name, or the newest id starting with the text as a slug -
+`claude-fable-5` -> `claude-fable-5-1`), retries once and remembers it for
+the process. It never switches to a different model family; when nothing
+matches, the error lists the ids that exist.
+Status: Done, tested (`tests/agents/test_anthropic_compatible.py`).
+
+## D128 — Broker provider names are case-insensitive, with brand aliases (Phase 106, migration 0038)
+Date: 2026-09-30
+
+A broker created with provider `Longport` broke Admin -> Broker credentials
+with UNKNOWN_PROVIDER: registry keys are lower-case and Longbridge's is
+`longbridge`. `canonical_provider()` lower-cases, reads spaces/underscores
+as hyphens and maps brand names (`longport` -> `longbridge`, `interactive
+brokers` -> `ibkr`, `ig markets` -> `ig`, `futu` -> `moomoo`); `get_provider`
+uses it, new rows naming a known provider are stored under its registry key
+(other names stay free text, as before), and migration 0038 rewrites existing `brokers` and
+`broker_credentials` rows (only to a name the registry knows).
+Status: Done, tested.
+
+## D129 — Crypto quotes, order book and chart bars from Coinbase's public API (Phase 106)
+Date: 2026-09-30
+
+BTC-USD on the Markets page had no chart and an order-book error: quotes
+and depth were Longbridge-only (301600 invalid symbol, no spot crypto on
+this account) and no crypto bars were ever stored. Crypto symbols
+(`BTC-USD`, and Kraken's `BTC/USD`) now route by shape to Coinbase's
+public ticker and level-2 book - no key needed; equities never touch it
+and crypto never touches Longbridge. Depth volume became fractional.
+
+The bars endpoint keeps its read-only contract for equities, but for
+crypto it fills an empty or stale window from Coinbase on read (only the
+missing tail, upserted into the same store the bot and signals use, at
+most once per symbol/interval every 30 s; a vendor failure returns what is
+stored, never anything invented). Rationale: crypto trades around the
+clock and the vendor is free, so waiting for an admin backfill left a
+blank chart. Coinbase has no 30-minute candle; that interval stays empty.
+Status: Done, tested (`tests/api/test_crypto_market_data.py`), live-verified.
+
+## D130 — A `24h` market type for the Autotrade bot (Phase 106)
+Date: 2026-09-30
+
+Each symbol trades on its own clock: crypto every hour of every day
+(`Crypto24hCalendar`, a UTC day per session, never forced flat), FX
+Sunday 17:00 to Friday 17:00 New York with no daily rollover gap (flat
+only before the weekend), and US equities the extended day exactly as
+`auto`. The scanner takes the calendar for levels, VWAP and phase; a
+crypto-only bot no longer requires Longbridge to be configured. FX bots
+remain refused (`FX_NOT_SUPPORTED`): no FX price feed for fills and no FX
+setup survived costs (D123) - the clock is ready for when both change.
+Status: Done, tested (`tests/autotrade/test_24h_market.py`).
+
+## D131 — Delete unused Autotrade bots by tick box (Phase 106)
+Date: 2026-09-30
+
+`POST /autotrade/bots/delete` answers per bot: refused while ACTIVE (pause
+or stop first) or while it still holds an open position (stopping never
+sells, so deleting would orphan it); otherwise deleted with its runs,
+ledger and insights. Orders it placed are `orders` rows and stay in the
+order history. The "Your bots" table gains tick boxes, select-all and
+"Delete selected" with a confirmation.
+Status: Done, tested.
+
+## D132 — Twelve Data as the FX bar vendor; free data-provider survey (Phase 106)
+Date: 2026-09-30
+
+TradingView has no public market-data API (its charting library needs your
+own feed), so it cannot be "connected". Surveyed free providers for US / SG
+/ IN across asset classes (table in the Phase 106 ledger artifact). Built:
+`TwelveDataFxBarProvider` (free Basic: 8/min, 800/day, personal use),
+chosen by `FX_BAR_PROVIDER=auto` (new default) when `TWELVEDATA_API_KEY`
+is set; never picks IG on its own. FX charts refresh on read at most every
+5 minutes to stay inside the daily quota. Live-verified with the vendor's
+demo key: 713 EUR/USD 5m bars. Singapore: the Longbridge account has US
+LV1 and HK entitlements only, and no free SGX API exists.
+Status: Done; FX charts start working once the key is set.

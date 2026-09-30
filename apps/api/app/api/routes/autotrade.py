@@ -61,6 +61,7 @@ from apps.api.app.db.models import (
     AutotradeBot,
     AutotradeBotInsight,
     AutotradeBotRun,
+    AutotradeBotStatus,
     AutotradeBotTrade,
     User,
 )
@@ -144,19 +145,34 @@ class BotResponse(BaseModel):
     @classmethod
     def from_row(cls, b: AutotradeBot) -> BotResponse:
         return cls(
-            id=b.id, name=b.name, broker_id=b.broker_id, status=b.status.value,
-            watchlist_id=b.watchlist_id, symbols=list(b.symbols), market_type=b.market_type,
-            bar_interval=b.bar_interval, max_trades_per_session=b.max_trades_per_session,
-            max_trades_per_day=b.max_trades_per_day, capital_per_trade=b.capital_per_trade,
-            strategy_mode=b.strategy_mode, setups=list(b.setups), min_score=b.min_score,
-            extended_hours_min_score=b.extended_hours_min_score, allow_short=b.allow_short,
-            stop_loss_mode=b.stop_loss_mode, stop_loss_max_pct=b.stop_loss_max_pct,
-            trailing_stop_pct=b.trailing_stop_pct, take_profit_mode=b.take_profit_mode,
+            id=b.id,
+            name=b.name,
+            broker_id=b.broker_id,
+            status=b.status.value,
+            watchlist_id=b.watchlist_id,
+            symbols=list(b.symbols),
+            market_type=b.market_type,
+            bar_interval=b.bar_interval,
+            max_trades_per_session=b.max_trades_per_session,
+            max_trades_per_day=b.max_trades_per_day,
+            capital_per_trade=b.capital_per_trade,
+            strategy_mode=b.strategy_mode,
+            setups=list(b.setups),
+            min_score=b.min_score,
+            extended_hours_min_score=b.extended_hours_min_score,
+            allow_short=b.allow_short,
+            stop_loss_mode=b.stop_loss_mode,
+            stop_loss_max_pct=b.stop_loss_max_pct,
+            trailing_stop_pct=b.trailing_stop_pct,
+            take_profit_mode=b.take_profit_mode,
             take_profit_min_pct=b.take_profit_min_pct,
             trailing_take_profit_pct=b.trailing_take_profit_pct,
-            news_blackout_minutes=b.news_blackout_minutes, approved_at=b.approved_at,
-            paused_reason=b.paused_reason, stopped_at=b.stopped_at,
-            last_evaluated_at=b.last_evaluated_at, created_at=b.created_at,
+            news_blackout_minutes=b.news_blackout_minutes,
+            approved_at=b.approved_at,
+            paused_reason=b.paused_reason,
+            stopped_at=b.stopped_at,
+            last_evaluated_at=b.last_evaluated_at,
+            created_at=b.created_at,
         )
 
 
@@ -271,6 +287,22 @@ class RunNowResponse(BaseModel):
     trades_closed: int
 
 
+class DeleteBotsRequest(BaseModel):
+    bot_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+
+class DeleteBotResult(BaseModel):
+    bot_id: uuid.UUID
+    name: str | None
+    outcome: str
+    """`deleted`, `refused` or `not_found`."""
+    reason: str | None = None
+
+
+class DeleteBotsResponse(BaseModel):
+    results: list[DeleteBotResult]
+
+
 class SetupsResponse(BaseModel):
     setups: list[str]
 
@@ -278,9 +310,7 @@ class SetupsResponse(BaseModel):
 # --- helpers ---------------------------------------------------------------
 
 
-async def _load_owned_bot(
-    session: AsyncSession, bot_id: uuid.UUID, user: User
-) -> AutotradeBot:
+async def _load_owned_bot(session: AsyncSession, bot_id: uuid.UUID, user: User) -> AutotradeBot:
     bot = await session.get(AutotradeBot, bot_id)
     if bot is None:
         raise HTTPException(status_code=404, detail=f"No bot with id {bot_id}.")
@@ -319,17 +349,24 @@ async def create_autotrade_bot(
     session: AsyncSession = Depends(get_session),
 ) -> BotResponse:
     spec = BotSpec(
-        name=payload.name, broker_id=payload.broker_id, watchlist_id=payload.watchlist_id,
-        symbols=payload.symbols, market_type=payload.market_type,
+        name=payload.name,
+        broker_id=payload.broker_id,
+        watchlist_id=payload.watchlist_id,
+        symbols=payload.symbols,
+        market_type=payload.market_type,
         bar_interval=payload.bar_interval,
         max_trades_per_session=payload.max_trades_per_session,
         max_trades_per_day=payload.max_trades_per_day,
-        capital_per_trade=payload.capital_per_trade, strategy_mode=payload.strategy_mode,
-        setups=payload.setups, min_score=payload.min_score,
+        capital_per_trade=payload.capital_per_trade,
+        strategy_mode=payload.strategy_mode,
+        setups=payload.setups,
+        min_score=payload.min_score,
         extended_hours_min_score=payload.extended_hours_min_score,
         allow_short=payload.allow_short,
-        stop_loss_mode=payload.stop_loss_mode, stop_loss_max_pct=payload.stop_loss_max_pct,
-        trailing_stop_pct=payload.trailing_stop_pct, take_profit_mode=payload.take_profit_mode,
+        stop_loss_mode=payload.stop_loss_mode,
+        stop_loss_max_pct=payload.stop_loss_max_pct,
+        trailing_stop_pct=payload.trailing_stop_pct,
+        take_profit_mode=payload.take_profit_mode,
         take_profit_min_pct=payload.take_profit_min_pct,
         trailing_take_profit_pct=payload.trailing_take_profit_pct,
         news_blackout_minutes=payload.news_blackout_minutes,
@@ -349,13 +386,83 @@ async def list_autotrade_bots(
     session: AsyncSession = Depends(get_session),
 ) -> ListBotsResponse:
     rows = (
-        await session.execute(
-            select(AutotradeBot)
-            .where(AutotradeBot.owner_user_id == current_user.id)
-            .order_by(AutotradeBot.created_at.desc())
+        (
+            await session.execute(
+                select(AutotradeBot)
+                .where(AutotradeBot.owner_user_id == current_user.id)
+                .order_by(AutotradeBot.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return ListBotsResponse(bots=[BotResponse.from_row(b) for b in rows])
+
+
+@router.post("/bots/delete", response_model=DeleteBotsResponse)
+async def delete_autotrade_bots(
+    payload: DeleteBotsRequest,
+    current_user: User = Depends(require_permission(Permission.STRATEGY_DEPLOY)),
+    session: AsyncSession = Depends(get_session),
+) -> DeleteBotsResponse:
+    """Phase 106 (D131): delete unused bots, answered per bot.
+
+    * **refused** while the bot is ACTIVE (pause or stop it first), or while
+      it still holds an open position - stopping never liquidates, so
+      deleting such a bot would orphan a position nothing then manages.
+    * **deleted** otherwise, with its runs, trade ledger and insights. The
+      orders it placed are ordinary `orders` rows and stay in the order
+      history, which is the audit trail.
+    * **not_found** for an id that is not one of this user's bots (an admin
+      may delete any bot, as with every other bot action).
+    """
+    is_admin = current_user.role is not None and Permission.ADMIN.value in (
+        current_user.role.permissions or []
+    )
+    results: list[DeleteBotResult] = []
+    for bot_id in dict.fromkeys(payload.bot_ids):  # de-duplicated, order kept
+        bot = await session.get(AutotradeBot, bot_id)
+        if bot is None or (bot.owner_user_id != current_user.id and not is_admin):
+            results.append(DeleteBotResult(bot_id=bot_id, name=None, outcome="not_found"))
+            continue
+        if bot.status is AutotradeBotStatus.ACTIVE:
+            results.append(
+                DeleteBotResult(
+                    bot_id=bot_id,
+                    name=bot.name,
+                    outcome="refused",
+                    reason="The bot is active - pause or stop it first.",
+                )
+            )
+            continue
+        open_trades = (
+            (
+                await session.execute(
+                    select(AutotradeBotTrade.symbol).where(
+                        AutotradeBotTrade.bot_id == bot.id, AutotradeBotTrade.closed_at.is_(None)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if open_trades:
+            results.append(
+                DeleteBotResult(
+                    bot_id=bot_id,
+                    name=bot.name,
+                    outcome="refused",
+                    reason=(
+                        f"The bot still holds {', '.join(sorted(set(open_trades)))} - close the "
+                        "position on the desk first; stopping a bot never sells."
+                    ),
+                )
+            )
+            continue
+        await session.delete(bot)
+        results.append(DeleteBotResult(bot_id=bot_id, name=bot.name, outcome="deleted"))
+    await session.commit()
+    return DeleteBotsResponse(results=results)
 
 
 @router.get("/bots/{bot_id}", response_model=BotResponse)
@@ -478,22 +585,32 @@ async def list_autotrade_bot_runs(
 ) -> ListBotRunsResponse:
     await _load_owned_bot(session, bot_id, current_user)
     rows = (
-        await session.execute(
-            select(AutotradeBotRun)
-            .where(AutotradeBotRun.bot_id == bot_id)
-            .order_by(AutotradeBotRun.started_at.desc())
-            .limit(limit)
-            .offset(offset)
+        (
+            await session.execute(
+                select(AutotradeBotRun)
+                .where(AutotradeBotRun.bot_id == bot_id)
+                .order_by(AutotradeBotRun.started_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return ListBotRunsResponse(
         runs=[
             BotRunResponse(
-                id=r.id, status=r.status.value, started_at=r.started_at,
-                completed_at=r.completed_at, symbols_scanned=r.symbols_scanned,
-                signals_found=r.signals_found, signals_skipped=r.signals_skipped,
-                trades_opened=r.trades_opened, trades_closed=r.trades_closed,
-                setups_active=list(r.setups_active or []), detail=r.detail,
+                id=r.id,
+                status=r.status.value,
+                started_at=r.started_at,
+                completed_at=r.completed_at,
+                symbols_scanned=r.symbols_scanned,
+                signals_found=r.signals_found,
+                signals_skipped=r.signals_skipped,
+                trades_opened=r.trades_opened,
+                trades_closed=r.trades_closed,
+                setups_active=list(r.setups_active or []),
+                detail=r.detail,
             )
             for r in rows
         ],
@@ -512,26 +629,42 @@ async def list_autotrade_bot_trades(
 ) -> ListBotTradesResponse:
     await _load_owned_bot(session, bot_id, current_user)
     rows = (
-        await session.execute(
-            select(AutotradeBotTrade)
-            .where(AutotradeBotTrade.bot_id == bot_id)
-            .order_by(AutotradeBotTrade.opened_at.desc())
-            .limit(limit)
-            .offset(offset)
+        (
+            await session.execute(
+                select(AutotradeBotTrade)
+                .where(AutotradeBotTrade.bot_id == bot_id)
+                .order_by(AutotradeBotTrade.opened_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return ListBotTradesResponse(
         trades=[
             BotTradeResponse(
-                id=t.id, symbol=t.symbol, session_date=t.session_date,
-                setup_name=t.setup_name, score=t.score, evidence=dict(t.evidence or {}),
-                quantity=t.quantity, entry_price=t.entry_price,
-                initial_stop_price=t.initial_stop_price, stop_price=t.stop_price,
-                take_profit_price=t.take_profit_price, peak_price=t.peak_price,
-                take_profit_armed=t.take_profit_armed, opened_at=t.opened_at,
-                closed_at=t.closed_at, exit_price=t.exit_price, exit_reason=t.exit_reason,
-                realized_pnl=t.realized_pnl, r_multiple=t.r_multiple,
-                entry_order_id=t.entry_order_id, exit_order_id=t.exit_order_id,
+                id=t.id,
+                symbol=t.symbol,
+                session_date=t.session_date,
+                setup_name=t.setup_name,
+                score=t.score,
+                evidence=dict(t.evidence or {}),
+                quantity=t.quantity,
+                entry_price=t.entry_price,
+                initial_stop_price=t.initial_stop_price,
+                stop_price=t.stop_price,
+                take_profit_price=t.take_profit_price,
+                peak_price=t.peak_price,
+                take_profit_armed=t.take_profit_armed,
+                opened_at=t.opened_at,
+                closed_at=t.closed_at,
+                exit_price=t.exit_price,
+                exit_reason=t.exit_reason,
+                realized_pnl=t.realized_pnl,
+                r_multiple=t.r_multiple,
+                entry_order_id=t.entry_order_id,
+                exit_order_id=t.exit_order_id,
             )
             for t in rows
         ],
@@ -553,10 +686,18 @@ async def get_autotrade_bot_stats(
 
     def _row(s) -> SetupStatsResponse:
         return SetupStatsResponse(
-            setup_name=s.setup_name, trades=s.trades, wins=s.wins, win_rate=s.win_rate,
-            expectancy_r=s.expectancy_r, total_r=s.total_r, total_pnl=s.total_pnl,
-            demoted=s.demoted, symbol=s.symbol, hour=s.hour,
-            avg_mfe_r=s.avg_mfe_r, avg_mae_r=s.avg_mae_r,
+            setup_name=s.setup_name,
+            trades=s.trades,
+            wins=s.wins,
+            win_rate=s.win_rate,
+            expectancy_r=s.expectancy_r,
+            total_r=s.total_r,
+            total_pnl=s.total_pnl,
+            demoted=s.demoted,
+            symbol=s.symbol,
+            hour=s.hour,
+            avg_mfe_r=s.avg_mfe_r,
+            avg_mae_r=s.avg_mae_r,
         )
 
     return BotStatsResponse(
@@ -585,20 +726,31 @@ async def list_autotrade_bot_insights(
     recorded for the operator to act on."""
     await _load_owned_bot(session, bot_id, current_user)
     rows = (
-        await session.execute(
-            select(AutotradeBotInsight)
-            .where(AutotradeBotInsight.bot_id == bot_id)
-            .order_by(AutotradeBotInsight.session_date.desc())
-            .limit(limit)
+        (
+            await session.execute(
+                select(AutotradeBotInsight)
+                .where(AutotradeBotInsight.bot_id == bot_id)
+                .order_by(AutotradeBotInsight.session_date.desc())
+                .limit(limit)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return ListBotInsightsResponse(
         insights=[
             BotInsightResponse(
-                id=r.id, session_date=r.session_date, trades=r.trades, wins=r.wins,
-                total_r=r.total_r, total_pnl=r.total_pnl, best_setup=r.best_setup,
-                worst_setup=r.worst_setup, findings=list(r.findings or []),
-                demoted_setups=list(r.demoted_setups or []), created_at=r.created_at,
+                id=r.id,
+                session_date=r.session_date,
+                trades=r.trades,
+                wins=r.wins,
+                total_r=r.total_r,
+                total_pnl=r.total_pnl,
+                best_setup=r.best_setup,
+                worst_setup=r.worst_setup,
+                findings=list(r.findings or []),
+                demoted_setups=list(r.demoted_setups or []),
+                created_at=r.created_at,
             )
             for r in rows
         ]

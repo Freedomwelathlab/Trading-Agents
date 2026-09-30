@@ -48,7 +48,8 @@ class DepthLevel:
     """
 
     price: Decimal
-    volume: int
+    volume: Decimal | int
+    """Whole shares for equities; fractional coins for crypto (Phase 106)."""
     order_count: int | None = None
 
 
@@ -96,3 +97,33 @@ class DepthProvider(Protocol):
     name: str
 
     async def get_depth(self, symbol: str) -> OrderBook: ...
+
+
+class RoutedDepthProvider:
+    """Phase 106 (D129): crypto symbols to the crypto venue, everything
+    else to the equity vendor. Routed by symbol shape, never by trying one
+    and falling back, so an equity's book is never looked up on a crypto
+    exchange (or the reverse) and a real error is reported as itself."""
+
+    name = "routed"
+
+    def __init__(self, *, crypto: DepthProvider, equity: DepthProvider | None) -> None:
+        self._crypto = crypto
+        self._equity = equity
+
+    @property
+    def vendors(self) -> str:
+        return "+".join(p.name for p in (self._equity, self._crypto) if p is not None)
+
+    async def get_depth(self, symbol: str) -> OrderBook:
+        from apps.api.app.marketdata.provider import DataUnavailableError
+        from apps.api.app.marketdata.providers.coinbase_live import is_crypto_symbol
+
+        if is_crypto_symbol(symbol):
+            return await self._crypto.get_depth(symbol)
+        if self._equity is None:
+            raise DataUnavailableError(
+                f"No equity order-book vendor is configured for {symbol!r} - set the "
+                "LONGPORT_* credentials."
+            )
+        return await self._equity.get_depth(symbol)

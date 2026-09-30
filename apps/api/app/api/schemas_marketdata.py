@@ -61,7 +61,8 @@ class DepthLevelResponse(BaseModel):
     adapter, never sent as a zero (Phase 74, D092)."""
 
     price: Decimal
-    volume: int
+    volume: float
+    """Shares for equities, coins (fractional) for crypto (Phase 106)."""
     order_count: int | None = None
 
 

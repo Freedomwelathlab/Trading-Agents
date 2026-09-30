@@ -155,7 +155,7 @@ function Ladder({
             {lvl.price}
           </span>
           <span className="relative text-ink-faint">
-            {lvl.volume.toLocaleString()}
+            {lvl.volume.toLocaleString(undefined, { maximumFractionDigits: 8 })}
             {lvl.order_count !== null ? ` · ${lvl.order_count}` : ""}
           </span>
         </li>

@@ -615,12 +615,20 @@ class Settings(BaseSettings):
     be set together or the Longbridge provider isn't built at all - see
     apps/api/app/marketdata/providers/longbridge.py and docs/DECISIONS.md D015."""
 
-    fx_bar_provider: Literal["none", "ig"] = "none"
-    """Phase 103 (D123): which vendor serves `*.FX` bar backfills. `none`
-    (the default) leaves FX unroutable - `POST /admin/market-data/backfill`
-    refuses an FX symbol with a 422 naming this setting. `ig` needs the
-    complete `IG_*` credential set too; building the provider never logs
-    in, so switching this on cannot by itself spend a login attempt."""
+    fx_bar_provider: Literal["auto", "none", "ig", "twelvedata"] = "auto"
+    """Phase 103 (D123): which vendor serves `*.FX` bars. `none` leaves FX
+    unroutable - `POST /admin/market-data/backfill` refuses an FX symbol
+    with a 422 naming this setting. `ig` needs the complete `IG_*`
+    credential set too; building the provider never logs in, so switching
+    this on cannot by itself spend a login attempt. Phase 106 (D132):
+    `twelvedata` needs `TWELVEDATA_API_KEY`; `auto` (the default) uses
+    Twelve Data when that key is set and nothing otherwise - it never
+    picks IG on its own, because an IG login attempt can extend a key
+    suspension."""
+
+    twelvedata_api_key: str | None = None
+    """Phase 106 (D132): a Twelve Data API key (free Basic plan: 8 requests
+    a minute, 800 a day, personal use). Serves FX and spot-metal bars."""
 
     fx_ig_epic_template: str = "CS.D.{pair}.MINI.IP"
     """How `EURUSD.FX` becomes an IG epic. Account types differ (mini CFD

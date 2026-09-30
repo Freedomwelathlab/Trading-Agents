@@ -34,6 +34,12 @@ class MarketDataRouter:
     async def get_snapshot(self, symbol: str) -> MarketSnapshot:
         attempts: list[str] = []
         for provider in self._providers:
+            # Phase 106 (D129): a provider that declares which symbols it
+            # serves is skipped for the others, so a crypto venue is never
+            # asked for `TQQQ.US` and Longbridge is never asked for `BTC-USD`.
+            supports = getattr(provider, "supports", None)
+            if supports is not None and not supports(symbol):
+                continue
             try:
                 return await provider.get_snapshot(symbol)
             except (DataUnavailableError, VendorError) as exc:

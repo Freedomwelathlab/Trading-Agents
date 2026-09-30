@@ -104,6 +104,18 @@ class CreateBrokerRequest(BaseModel):
     provider: str = Field(min_length=1, max_length=64)
     is_active: bool = False
 
+    @field_validator("provider")
+    @classmethod
+    def _registry_key(cls, value: str) -> str:
+        """Phase 106 (D128): a name the registry knows is stored as its key
+        (`Longport` -> `longbridge`, `Paper` -> `paper`). Any other name is
+        kept as typed, as before - broker rows have always allowed free-text
+        providers, and the broker pages report an unknown one by name."""
+        from apps.api.app.execution.registry import PROVIDERS, canonical_provider
+
+        key = canonical_provider(value)
+        return key if key in PROVIDERS else value.strip()
+
     confirm_live: bool = False
     """Required when `kind` is `live`, ignored otherwise. Creating a
     live-kind broker is what makes a broker id eligible for the real-money

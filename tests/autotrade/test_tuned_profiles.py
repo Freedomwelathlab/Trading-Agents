@@ -77,7 +77,8 @@ def test_the_scan_uses_each_setups_own_parameters(tmp_path, monkeypatch):
     )
     calls = []
 
-    def fake_scan(symbol, bars, *, setups, market_type, min_score, plan, allow_directions):
+    def fake_scan(symbol, bars, *, setups, market_type, min_score, plan, allow_directions,
+                  calendar=None):
         calls.append((setups[0], min_score, plan.atr_stop_buffer, allow_directions))
         return ScanOutcome(None, "no_signal")
 

@@ -35,9 +35,12 @@ async def granted_paper_broker(session, user_id):
     finally:
         await session.rollback()
         bot_ids = [
-            b.id for b in (await session.execute(
-                AutotradeBot.__table__.select().where(AutotradeBot.broker_id == broker_id)
-            )).all()
+            b.id
+            for b in (
+                await session.execute(
+                    AutotradeBot.__table__.select().where(AutotradeBot.broker_id == broker_id)
+                )
+            ).all()
         ]
         for bid in bot_ids:
             await session.execute(delete(AutotradeBotTrade).where(AutotradeBotTrade.bot_id == bid))
@@ -65,11 +68,20 @@ async def granted_paper_broker(session, user_id):
 
 def body(broker_id, **over):
     base = dict(
-        name="TQQQ intraday", broker_id=str(broker_id), symbols=["tqqq.us", "QQQ.US"],
-        market_type="regular", max_trades_per_session=2, max_trades_per_day=4,
-        capital_per_trade="2500", strategy_mode="auto", stop_loss_mode="max",
-        stop_loss_max_pct="1.5", trailing_stop_pct="1", take_profit_mode="auto",
-        trailing_take_profit_pct="0.5", news_blackout_minutes=30,
+        name="TQQQ intraday",
+        broker_id=str(broker_id),
+        symbols=["tqqq.us", "QQQ.US"],
+        market_type="regular",
+        max_trades_per_session=2,
+        max_trades_per_day=4,
+        capital_per_trade="2500",
+        strategy_mode="auto",
+        stop_loss_mode="max",
+        stop_loss_max_pct="1.5",
+        trailing_stop_pct="1",
+        take_profit_mode="auto",
+        trailing_take_profit_pct="0.5",
+        news_blackout_minutes=30,
     )
     base.update(over)
     return base
@@ -77,8 +89,12 @@ def body(broker_id, **over):
 
 @pytest.mark.asyncio
 async def test_create_is_pending_until_the_separately_permissioned_approval():
-    async with db_session() as session, deploy_only_user(session) as (uid, email), \
-            granted_paper_broker(session, uid) as broker_id, api_client() as client:
+    async with (
+        db_session() as session,
+        deploy_only_user(session) as (uid, email),
+        granted_paper_broker(session, uid) as broker_id,
+        api_client() as client,
+    ):
         token = await _get_token(client, email)
         r = await client.post("/autotrade/bots", json=body(broker_id), headers=_h(token))
         assert r.status_code == 201, r.text
@@ -97,16 +113,21 @@ async def test_create_is_pending_until_the_separately_permissioned_approval():
 
 @pytest.mark.asyncio
 async def test_full_lifecycle_and_run_now_writes_a_run_row():
-    async with db_session() as session, deploy_user(session) as (uid, email), \
-            granted_paper_broker(session, uid) as broker_id, api_client() as client:
+    async with (
+        db_session() as session,
+        deploy_user(session) as (uid, email),
+        granted_paper_broker(session, uid) as broker_id,
+        api_client() as client,
+    ):
         token = await _get_token(client, email)
         bot = (await client.post("/autotrade/bots", json=body(broker_id), headers=_h(token))).json()
         bid = bot["id"]
 
         r = await client.post(f"/autotrade/bots/{bid}/approve", headers=_h(token))
         assert r.status_code == 200 and r.json()["status"] == "active"
-        r = await client.post(f"/autotrade/bots/{bid}/pause", json={"reason": "lunch"},
-                              headers=_h(token))
+        r = await client.post(
+            f"/autotrade/bots/{bid}/pause", json={"reason": "lunch"}, headers=_h(token)
+        )
         assert r.json()["status"] == "paused" and r.json()["paused_reason"] == "lunch"
         r = await client.post(f"/autotrade/bots/{bid}/resume", headers=_h(token))
         assert r.json()["status"] == "active"
@@ -150,13 +171,18 @@ async def test_full_lifecycle_and_run_now_writes_a_run_row():
 
 @pytest.mark.asyncio
 async def test_guardrails_are_specific_4xx():
-    async with db_session() as session, deploy_user(session) as (uid, email), \
-            granted_paper_broker(session, uid) as broker_id, api_client() as client:
+    async with (
+        db_session() as session,
+        deploy_user(session) as (uid, email),
+        granted_paper_broker(session, uid) as broker_id,
+        api_client() as client,
+    ):
         token = await _get_token(client, email)
 
         async def post(**over):
-            return await client.post("/autotrade/bots", json=body(broker_id, **over),
-                                     headers=_h(token))
+            return await client.post(
+                "/autotrade/bots", json=body(broker_id, **over), headers=_h(token)
+            )
 
         r = await post(max_trades_per_session=5, max_trades_per_day=2)
         assert r.status_code == 400 and "BAD_LIMITS" in r.json()["detail"]
@@ -171,18 +197,22 @@ async def test_guardrails_are_specific_4xx():
         # Phase 103 (D123): the bot runs the equity clock; FX fails closed.
         r = await post(symbols=["TQQQ.US", "EURUSD.FX"])
         assert r.status_code == 400 and "FX_NOT_SUPPORTED" in r.json()["detail"]
-        r = await client.post(
-            "/autotrade/bots", json=body(uuid.uuid4()), headers=_h(token)
-        )
+        r = await client.post("/autotrade/bots", json=body(uuid.uuid4()), headers=_h(token))
         assert r.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_a_broker_without_a_grant_is_refused_and_other_users_bots_are_hidden():
-    async with db_session() as session, deploy_user(session) as (uid, email), \
-            granted_paper_broker(session, uid) as broker_id, \
-            _role_user(session, permissions=[Permission.STRATEGY_DEPLOY.value],
-                       label="other") as (_oid, other_email), api_client() as client:
+    async with (
+        db_session() as session,
+        deploy_user(session) as (uid, email),
+        granted_paper_broker(session, uid) as broker_id,
+        _role_user(session, permissions=[Permission.STRATEGY_DEPLOY.value], label="other") as (
+            _oid,
+            other_email,
+        ),
+        api_client() as client,
+    ):
         token = await _get_token(client, email)
         other = await _get_token(client, other_email)
 
@@ -197,3 +227,51 @@ async def test_a_broker_without_a_grant_is_refused_and_other_users_bots_are_hidd
         assert r.json()["bots"] == []
         r = await client.get(f"/autotrade/bots/{uuid.uuid4()}", headers=_h(token))
         assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unused_bots_are_deleted_by_tick_box_and_an_active_one_is_refused():
+    """Phase 106 (D131): per-bot answers - an active bot is refused, a
+    pending or stopped one is deleted with its runs, and an id that is not
+    one of this user's bots is not_found (never another user's bot)."""
+    async with (
+        db_session() as session,
+        deploy_user(session) as (uid, email),
+        granted_paper_broker(session, uid) as broker_id,
+        api_client() as client,
+    ):
+        token = await _get_token(client, email)
+        ids = []
+        for _ in range(3):
+            r = await client.post("/autotrade/bots", json=body(broker_id), headers=_h(token))
+            assert r.status_code == 201, r.text
+            ids.append(r.json()["id"])
+        pending, active, stopped = ids
+        await client.post(f"/autotrade/bots/{active}/approve", headers=_h(token))
+        await client.post(f"/autotrade/bots/{stopped}/approve", headers=_h(token))
+        await client.post(f"/autotrade/bots/{stopped}/stop", headers=_h(token))
+        stranger = str(uuid.uuid4())
+
+        r = await client.post(
+            "/autotrade/bots/delete",
+            json={"bot_ids": [pending, active, stopped, stranger]},
+            headers=_h(token),
+        )
+        assert r.status_code == 200, r.text
+        outcome = {x["bot_id"]: x["outcome"] for x in r.json()["results"]}
+        assert outcome == {
+            pending: "deleted",
+            active: "refused",
+            stopped: "deleted",
+            stranger: "not_found",
+        }
+        listed = {
+            b["id"] for b in (await client.get("/autotrade/bots", headers=_h(token))).json()["bots"]
+        }
+        assert listed == {active}
+        # Clean up the one that was refused.
+        await client.post(f"/autotrade/bots/{active}/stop", headers=_h(token))
+        r = await client.post(
+            "/autotrade/bots/delete", json={"bot_ids": [active]}, headers=_h(token)
+        )
+        assert r.json()["results"][0]["outcome"] == "deleted"

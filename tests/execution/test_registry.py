@@ -19,6 +19,7 @@ from apps.api.app.execution.registry import (
     BrokerCannotError,
     UnknownProviderError,
     build_adapter,
+    canonical_provider,
     check_supported,
     get_provider,
     opens_short,
@@ -174,3 +175,42 @@ def test_longbridge_and_binance_are_implemented_and_refuse_an_incomplete_set():
     with pytest.raises(ValueError) as err:
         build_adapter("longbridge", {"app_key": "a"})
     assert "app_secret" in str(err.value) and "access_token" in str(err.value)
+
+
+# --- Phase 106 (D128): provider names are case-insensitive, with aliases ----
+
+
+
+@pytest.mark.parametrize(
+    ("typed", "key"),
+    [
+        ("Longport", "longbridge"),
+        ("LongPort", "longbridge"),
+        ("Longbridge", "longbridge"),
+        ("IG Markets", "ig"),
+        ("Interactive_Brokers", "ibkr"),
+        ("Paper", "paper"),
+        (" kraken ", "kraken"),
+    ],
+)
+def test_provider_names_resolve_to_registry_keys(typed, key):
+    from apps.api.app.execution.registry import get_provider
+
+    assert canonical_provider(typed) == key
+    assert get_provider(typed) is get_provider(key)
+
+
+def test_an_unknown_provider_is_still_refused_by_name():
+    from apps.api.app.execution.registry import UnknownProviderError, get_provider
+
+    with pytest.raises(UnknownProviderError, match="'Robinhood'"):
+        get_provider("Robinhood")
+
+
+def test_a_new_broker_row_is_stored_under_the_registry_key():
+    from apps.api.app.api.schemas_admin import CreateBrokerRequest
+
+    req = CreateBrokerRequest(name="Longport-Live", kind="paper", provider="Longport")
+    assert req.provider == "longbridge"
+    # Unknown names stay free text, as broker rows always allowed.
+    assert CreateBrokerRequest(name="x", kind="paper", provider="paper-sim").provider == "paper-sim"

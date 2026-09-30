@@ -23,11 +23,11 @@ from apps.api.app.backtesting.brackets import BracketPlan, stop_quality_ok
 from apps.api.app.backtesting.setups import SETUPS, BarContext, SetupSignal, run_detector
 from apps.api.app.marketdata.indicators import InsufficientDataError, atr, ema, rsi
 from apps.api.app.marketdata.sessions import (
+    US_EQUITY_CALENDAR,
+    SessionCalendar,
     SessionPhase,
     build_session_levels,
     group_by_session,
-    session_date,
-    session_phase,
     session_vwap,
 )
 from apps.api.app.marketdata.structure import Direction, find_swings
@@ -67,7 +67,7 @@ class ScanOutcome:
 def _phase_allowed(phase: SessionPhase | None, market_type: str) -> bool:
     if phase is None:
         return False
-    if market_type == "auto":
+    if market_type in ("auto", "24h"):
         return True
     return {
         "regular": SessionPhase.REGULAR,
@@ -86,6 +86,7 @@ def scan_latest_bar(
     plan: BracketPlan,
     swing_strength: int = 3,
     allow_directions: Sequence[Direction] = (Direction.LONG,),
+    calendar: SessionCalendar | None = None,
 ) -> ScanOutcome:
     """Evaluate `setups` at the last bar of `bars` and return the best hit.
 
@@ -102,9 +103,13 @@ def scan_latest_bar(
     """
     if not bars:
         return ScanOutcome(None, "no_bars")
+    # Phase 106 (D130): a 24-hour bot scans on the symbol's own clock
+    # (crypto: every hour of a UTC day; FX: Sunday to Friday). Everything
+    # else keeps the US equity clock, exactly as before.
+    cal = calendar or US_EQUITY_CALENDAR
     ordered = sorted(bars, key=lambda b: b.ts)
     last = ordered[-1]
-    phase = session_phase(last.ts)
+    phase = cal.session_phase(last.ts)
     if not _phase_allowed(phase, market_type):
         return ScanOutcome(None, f"phase_{phase.value if phase else 'closed'}_not_allowed")
 
@@ -112,18 +117,18 @@ def scan_latest_bar(
     if not detectors:
         return ScanOutcome(None, "no_known_setups")
 
-    levels_by_session = build_session_levels(ordered)
-    sessions = group_by_session(ordered)
-    day = session_date(last.ts)
+    levels_by_session = build_session_levels(ordered, calendar=cal)
+    sessions = group_by_session(ordered, calendar=cal)
+    day = cal.session_date(last.ts)
     session_bars = sessions.get(day, [])
     # The bot evaluates on the phase it is allowed to trade in. For the
     # regular session that is exactly the backtest's `regular` list; for
     # `auto` it is the whole extended day, which the backtest never
     # traded — a documented difference, not a hidden one.
     if market_type == "regular":
-        phase_bars = [b for b in session_bars if session_phase(b.ts) is SessionPhase.REGULAR]
+        phase_bars = [b for b in session_bars if cal.session_phase(b.ts) is SessionPhase.REGULAR]
     else:
-        phase_bars = [b for b in session_bars if session_phase(b.ts) is not None]
+        phase_bars = [b for b in session_bars if cal.session_phase(b.ts) is not None]
     if len(phase_bars) < MIN_SESSION_BARS:
         return ScanOutcome(None, f"only_{len(phase_bars)}_bars_in_phase")
     if phase_bars[-1].ts != last.ts:
@@ -132,7 +137,7 @@ def scan_latest_bar(
     levels = levels_by_session.get(day)
     if levels is None:
         return ScanOutcome(None, "no_session_levels")
-    vwap_points = {p.ts: p for p in session_vwap(session_bars)}
+    vwap_points = {p.ts: p for p in session_vwap(session_bars, calendar=cal)}
     swings = find_swings(phase_bars, strength=swing_strength)
 
     i = len(phase_bars) - 1

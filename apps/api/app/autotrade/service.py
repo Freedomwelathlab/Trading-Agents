@@ -29,7 +29,7 @@ from apps.api.app.db.models import (
 from apps.api.app.execution.registry import UnknownProviderError, get_provider
 from apps.api.app.marketdata.fx import is_fx_symbol
 
-MARKET_TYPES = ("auto", "regular", "pre_market", "post_market")
+MARKET_TYPES = ("auto", "regular", "pre_market", "post_market", "24h")
 STRATEGY_MODES = ("auto", "single", "multi", "tuned")
 STOP_MODES = ("auto", "max")
 TAKE_PROFIT_MODES = ("auto", "min")
@@ -89,7 +89,7 @@ def _extended_hours_bar(spec: BotSpec) -> int | None:
     it later."""
     if spec.extended_hours_min_score is not None:
         return spec.extended_hours_min_score
-    if spec.market_type in ("auto", "pre_market", "post_market"):
+    if spec.market_type in ("auto", "pre_market", "post_market", "24h"):
         return min(10, spec.min_score + EXTENDED_HOURS_SCORE_PREMIUM)
     return None
 
@@ -107,9 +107,7 @@ def _touch(bot: AutotradeBot) -> None:
     bot.updated_at = datetime.now(UTC)
 
 
-async def create_bot(
-    session: AsyncSession, spec: BotSpec, *, user_id: uuid.UUID
-) -> AutotradeBot:
+async def create_bot(session: AsyncSession, spec: BotSpec, *, user_id: uuid.UUID) -> AutotradeBot:
     """Validate every operator input against what the engine can honour,
     then persist the bot PENDING_APPROVAL. Refusals are specific."""
     broker = await session.get(Broker, spec.broker_id)
@@ -153,10 +151,14 @@ async def create_bot(
             )
         if not symbols:
             items = (
-                await session.execute(
-                    select(WatchlistItem.symbol).where(WatchlistItem.watchlist_id == wl.id)
+                (
+                    await session.execute(
+                        select(WatchlistItem.symbol).where(WatchlistItem.watchlist_id == wl.id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             symbols = _normalize_symbols(items)
     if not symbols:
         raise AutotradeError("NO_SYMBOLS: pick at least one symbol (or a non-empty watchlist).")
@@ -170,8 +172,9 @@ async def create_bot(
     fx = [s for s in symbols if is_fx_symbol(s)]
     if fx:
         raise AutotradeError(
-            f"FX_NOT_SUPPORTED: the autotrade bot does not trade FX pairs ({', '.join(fx)}). "
-            "It runs on the US equity session clock and equity costs; see D123."
+            f"FX_NOT_SUPPORTED: the autotrade bot does not trade FX pairs yet ({', '.join(fx)}). "
+            "No FX price feed is connected (the IG demo key is on hold) and no FX setup "
+            "survived spread costs (D123). The 24-hour clock is ready for when both change (D130)."
         )
 
     if spec.market_type not in MARKET_TYPES:
@@ -203,9 +206,7 @@ async def create_bot(
     if spec.max_trades_per_session < 1 or spec.max_trades_per_day < 1:
         raise AutotradeError("BAD_LIMITS: trade limits must be at least 1.")
     if spec.max_trades_per_session > spec.max_trades_per_day:
-        raise AutotradeError(
-            "BAD_LIMITS: trades in live at once cannot exceed trades per day."
-        )
+        raise AutotradeError("BAD_LIMITS: trades in live at once cannot exceed trades per day.")
     if spec.capital_per_trade <= 0:
         raise AutotradeError("BAD_CAPITAL: capital per trade must be positive.")
     if spec.news_blackout_minutes < 0:
@@ -231,9 +232,7 @@ async def create_bot(
         setups = [s for s in spec.setups if s in SETUPS]
         unknown = [s for s in spec.setups if s not in SETUPS]
         if unknown:
-            raise AutotradeError(
-                f"UNKNOWN_SETUP: {unknown}; known setups are {sorted(SETUPS)}."
-            )
+            raise AutotradeError(f"UNKNOWN_SETUP: {unknown}; known setups are {sorted(SETUPS)}.")
         if not setups:
             raise AutotradeError("NO_SETUPS: pick at least one setup, or use strategy mode 'auto'.")
         if spec.strategy_mode == "single" and len(setups) != 1:
