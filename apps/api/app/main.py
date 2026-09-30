@@ -32,9 +32,11 @@ from apps.api.app.api.routes.monte_carlo import router as monte_carlo_router
 from apps.api.app.api.routes.monte_carlo import (
     runs_router as monte_carlo_runs_router,
 )
+from apps.api.app.api.routes.option_orders import router as option_orders_router
 from apps.api.app.api.routes.option_plans import router as option_plans_router
 from apps.api.app.api.routes.option_snapshots import admin_router as option_snapshots_admin_router
 from apps.api.app.api.routes.option_snapshots import router as option_snapshots_router
+from apps.api.app.api.routes.options_bots import router as options_bots_router
 from apps.api.app.api.routes.orders import fills_router as order_fills_router
 from apps.api.app.api.routes.orders import router as orders_router
 from apps.api.app.api.routes.portfolio import router as portfolio_router
@@ -103,6 +105,10 @@ from apps.api.app.notifications.transactional_email import build_email_provider
 from apps.api.app.options.snapshot_scheduler import (
     OptionSnapshotScheduler,
     build_option_snapshot_cycle_lock,
+)
+from apps.api.app.options_bot.runner import (
+    OptionsBotRunner,
+    build_options_bot_runner_cycle_lock,
 )
 from apps.api.app.portfolio.cycle_lock import SnapshotCycleLock
 from apps.api.app.portfolio.market_hours import MarketHoursGate
@@ -338,6 +344,24 @@ async def lifespan(app: FastAPI):
         option_snapshots.start()
         app.state.option_snapshot_scheduler = option_snapshots
 
+    # Phase 102 (D122): the options paper bot loop - sixth loop, own
+    # advisory-lock objid b"obot". OFF by default; even on, a bot acts only
+    # after a person approves it, and only on a PAPER broker.
+    app.state.options_bot_runner = None
+    if settings.options_bot_runner_enabled:
+        options_runner = OptionsBotRunner(
+            get_session_factory(),
+            settings=settings,
+            interval_seconds=settings.options_bot_runner_interval_seconds,
+            provider=app.state.option_chain_provider,
+            bar_router=app.state.market_data_bar_backfill_provider,
+            cycle_lock=build_options_bot_runner_cycle_lock(
+                enabled=settings.options_bot_runner_cycle_lock_enabled
+            ),
+        )
+        options_runner.start()
+        app.state.options_bot_runner = options_runner
+
     logger.info(
         "trading_os_startup",
         trading_mode=settings.trading_mode.value,
@@ -441,6 +465,8 @@ async def lifespan(app: FastAPI):
         await app.state.autotrade_bot_runner.stop()
     if app.state.option_snapshot_scheduler is not None:
         await app.state.option_snapshot_scheduler.stop()
+    if app.state.options_bot_runner is not None:
+        await app.state.options_bot_runner.stop()
 
     # The engine created at import time in apps/api/app/db/base.py owns a
     # live asyncpg connection pool. Process exit reclaims those sockets
@@ -501,6 +527,11 @@ app.include_router(option_plans_router)
 # /admin/options (admin:manage, because it writes).
 app.include_router(option_snapshots_router)
 app.include_router(option_snapshots_admin_router)
+# Phase 102 (D122): paper option routing under /brokers/{id}/option-*
+# (paths one level deeper than brokers_router's /brokers/{broker_id}, so
+# registration order is not load-bearing) and the options paper bot.
+app.include_router(option_orders_router)
+app.include_router(options_bots_router)
 app.include_router(brokers_router)
 # Phase 50: user-scoped, not broker-scoped - registered next to the
 # market-data router it shares a resolution path with rather than with the

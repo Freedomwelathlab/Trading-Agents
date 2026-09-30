@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import OptionChainTerminal from "@/components/options/OptionChainTerminal";
+import OptionsBotPanel from "@/components/options/OptionsBotPanel";
 
 export const metadata: Metadata = {
   title: "Options · Trading OS",
@@ -31,6 +32,8 @@ export default async function OptionsPage({
         </p>
       </header>
       <OptionChainTerminal initialSymbol={initial} />
+      {/* Phase 102 (D122): the options paper bot. */}
+      <OptionsBotPanel underlying={initial} />
     </main>
   );
 }

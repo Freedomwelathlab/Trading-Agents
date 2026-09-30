@@ -2387,3 +2387,29 @@ captures each weekday once the New York clock passes
 `OPTION_SNAPSHOT_CAPTURE_AFTER_ET` (16:30), for each symbol in
 `OPTION_SNAPSHOT_UNDERLYINGS` (TQQQ.US), and writes nothing when the
 vendor's quotes are for a different day (a holiday).
+
+### Options — Phase 102 additions (D122): paper option routing and the options bot
+
+All option routing is **PAPER ONLY**: a `kind=live` broker answers 400
+`LIVE_NOT_SUPPORTED` before any quote is read or row written. Fills are
+MODELLED from the wired chain (in practice `cboe-delayed`, ~15 min late):
+buy at mid + k·half-spread, sell at mid − k·half-spread
+(`OPTIONS_PAPER_FILL_HAIRCUT_K`, 0.5), each labelled with the quote's
+`source` and `as_of`.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/brokers/{id}/option-orders` | `trade:submit:paper` + grant. Open: `{ action: "open", underlying, expiry, structure: long_call\|long_put\|cash_secured_put\|bull_call\|bear_put\|bull_put\|bear_call\|iron_condor, legs: [{ right, strike, side }], quantity }`. Close: `{ action: "close", structure_id }` (whole structure). Expired structures on the broker are settled first. 200 `{ order_id, action, status: filled\|rejected, approved, block_reason, detail, structure_id, structure_type, underlying, expiry, quantity, net_price (per share, + paid / − received), cash_change, max_loss, max_profit, realized_pnl (close), quote_source, quote_as_of, quote_delayed, fill_haircut_k, pricing_basis, fills: [{ contract_symbol, right, strike, side, quantity, bid, ask, mid, fill_price, quote_source, quote_as_of }] }`. A Risk Engine refusal (`emergency_stop_active`, `market_data_stale` — limit `OPTIONS_MAX_QUOTE_AGE_SECONDS`=1800, `duplicate_order`, `exceeds_max_position_size`, `exceeds_portfolio_exposure`, `insufficient_buying_power`, `exceeds_per_trade_risk` with the fitting count in `detail`) is a **200 with `status: rejected`** and a recorded row. Refusals before the engine write nothing: 400 `BAD_STRUCTURE` / `NAKED_SHORT_REFUSED` / `BAD_PRICE` / `BAD_REQUEST` / `LIVE_NOT_SUPPORTED` / `EXPIRED`; 409 `DATA_UNAVAILABLE` (no two-sided quote on a leg, strike not listed, expired); 404 `NO_SUCH_STRUCTURE`; 409 `NOT_OPEN`; 502 `VENDOR_ERROR`; 503 `NOT_CONFIGURED`. |
+| GET | `/brokers/{id}/option-orders?limit&offset` | `portfolio:view` + grant. Newest first, each with its fills. |
+| GET | `/brokers/{id}/option-positions` | `portfolio:view` + grant. `{ broker_id, cash, capital_reserved, equity_at_cost, structures: [{ id, options_bot_id, structure_type, underlying, expiry, quantity, legs, entry_net_price, max_loss, max_profit, capital_reserved, opened_at, entry_quote_source, entry_quote_as_of, mid_value, close_value, unrealized_pnl_mid, unrealized_pnl_close, mark_source, mark_as_of, mark_delayed, note }], positions: [{ contract_symbol, underlying, expiry, right, strike, quantity (signed), avg_entry_price, bid, ask, mid, quote_source, quote_as_of }], marks_basis }`. A structure whose chain or any leg quote is unavailable is shown unmarked with `note`, never priced at a guess. |
+| POST | `/brokers/{id}/option-positions/settle` | `trade:submit:paper` + grant. Settles every open structure whose expiry session is over at intrinsic from the underlying's stored `1d` close for that session: `{ results: [{ structure_id, settled, detail, realized_pnl, settlement_underlying_price }] }`; no close → `settled: false`, `SETTLEMENT_PENDING`. |
+| POST | `/options-bots` | `strategy:deploy`. `{ name, broker_id, underlying, structure_type (bull_put\|bear_call\|iron_condor\|bull_call\|bear_put\|long_call\|long_put), target_delta (0-1), dte_min, dte_max, spread_width (spreads only), profit_target_pct, stop_pct (of entry premium), max_concurrent_positions (1-20), capital_per_trade (max loss per structure) }` → 201, `status: pending_approval`. 400 `LIVE_NOT_SUPPORTED` for a live broker; 403 `NO_BROKER_GRANT`; 404 `NO_SUCH_BROKER`; 400 `BAD_STRUCTURE`/`WIDTH_REQUIRED`/`BAD_WIDTH`/`BAD_DTE_BAND`/`BAD_PERCENT`/`BAD_LIMITS`/`BAD_CAPITAL`. |
+| GET | `/options-bots`, `/options-bots/{id}`, `/options-bots/structures` | The caller's bots; one bot (owner or `admin:manage`); the bot structure types. |
+| POST | `/options-bots/{id}/approve` | `strategy:approve_deployment` → `active`. 409 unless pending. |
+| POST | `/options-bots/{id}/pause \| resume \| stop` | `strategy:deploy`. Stop is terminal and closes nothing. |
+| POST | `/options-bots/{id}/run` | One cycle now, with the scheduled loop on or off: `{ status, run_status, run_detail, positions_checked, trades_opened, trades_closed }`. Run statuses: `succeeded`, `failed`, `skipped_not_active`, `skipped_emergency_stop`, `skipped_market_closed` (regular session, weekdays only), `skipped_not_configured`, `skipped_live_not_supported`. |
+| GET | `/options-bots/{id}/runs?limit&offset`, `/options-bots/{id}/trades?limit&offset` | Every cycle row; every structure the bot opened (entry delta, entry net, max loss, peak/trough P&L %, exit reason, realized P&L, return on risk). |
+| GET | `/options-bots/{id}/stats` | `{ bot_id, closed_trades, total_pnl, by_structure: [...], by_exit_reason: [...] }`, each `{ key, trades, wins, win_rate, expectancy, expectancy_on_risk, total_pnl, avg_peak_pnl_pct, avg_trough_pnl_pct }` — nulls, not zeros, where there are no trades. |
+
+The scheduled loop (`OPTIONS_BOT_RUNNER_ENABLED`, default **false**,
+`OPTIONS_BOT_RUNNER_INTERVAL_SECONDS` 300) runs every ACTIVE bot.
