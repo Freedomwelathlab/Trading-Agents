@@ -89,6 +89,7 @@ from apps.api.app.marketdata.providers.cboe import (
     FallbackOptionChainProvider,
 )
 from apps.api.app.marketdata.providers.coinbase import build_coinbase_bar_provider
+from apps.api.app.marketdata.providers.ig_prices import build_ig_fx_bar_provider
 from apps.api.app.marketdata.providers.longbridge import (
     build_longbridge_bar_backfill_provider,
     build_longbridge_depth_provider,
@@ -150,6 +151,10 @@ async def lifespan(app: FastAPI):
     app.state.market_data_bar_backfill_provider = BarBackfillRouter(
         equity_provider=build_longbridge_bar_backfill_provider(settings),
         crypto_provider=build_coinbase_bar_provider(),
+        # Phase 103 (D123): `*.FX` from IG, only with FX_BAR_PROVIDER=ig
+        # and complete IG_* credentials. None (the default) makes FX
+        # symbols unroutable with a 422 naming the setting.
+        fx_provider=build_ig_fx_bar_provider(settings),
     )
 
     # Phase 79 (D097): owner bootstrap from env. Runs before any scheduler

@@ -34,6 +34,7 @@ from apps.api.app.db.base import get_session
 from apps.api.app.db.models import User
 from apps.api.app.marketdata.bar_provider import BarInterval
 from apps.api.app.marketdata.depth_provider import DepthProvider
+from apps.api.app.marketdata.fx import calendar_for_symbol, is_fx_symbol
 from apps.api.app.marketdata.option_chain_provider import (
     OptionChainProvider,
     OptionQuote,
@@ -271,12 +272,14 @@ async def get_session_levels(
             ),
         )
 
-    levels_by_day = build_session_levels(bars)
+    # Phase 103 (D123): the symbol's own clock - FX sessions roll at 17:00 NY.
+    calendar = calendar_for_symbol(symbol)
+    levels_by_day = build_session_levels(bars, calendar=calendar)
     latest_day = max(levels_by_day)
     levels = levels_by_day[latest_day]
 
-    session_bars = [b for b in bars if session_date(b.ts) == latest_day]
-    vwap_points = session_vwap(session_bars)
+    session_bars = [b for b in bars if calendar.session_date(b.ts) == latest_day]
+    vwap_points = session_vwap(session_bars, calendar=calendar)
     last_vwap = vwap_points[-1] if vwap_points else None
     lower = upper = None
     if last_vwap is not None:
@@ -286,6 +289,7 @@ async def get_session_levels(
         symbol=symbol,
         bar_interval=bar_interval,
         session_date=latest_day,
+        session_calendar=calendar.name,
         previous_high=levels.previous_high,
         previous_low=levels.previous_low,
         previous_close=levels.previous_close,
@@ -343,7 +347,20 @@ async def get_extended_hours(
     and the bars this platform trades from are the only ones whose phase it
     can vouch for. 404 when nothing is stored - an absent series is a gap to
     backfill, never a session of zeros.
+
+    **Refused for FX (Phase 103, D123)** with 422 NOT_APPLICABLE: spot FX
+    trades one continuous session, so "pre-market" and "after-hours" moves
+    do not exist and computing them on the equity clock would invent them.
     """
+    if is_fx_symbol(symbol):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"NOT_APPLICABLE: {symbol} is spot FX, which trades one continuous "
+                "Sunday-17:00-to-Friday-17:00 New York session - it has no pre-market or "
+                "after-hours phases to measure."
+            ),
+        )
     store = MarketDataStore(session)
     end = date.today()
     bars = await store.get_bars(
@@ -532,7 +549,21 @@ async def get_chart_signals(
     `apps/api/app/backtesting/signal_calibration.py` for how a win is
     defined. `min_score`, `scores` and `min_confidence` filter what is
     returned; `found` still reports how many fired before filtering.
+
+    **Refused for FX (Phase 103, D123)** with 422 NOT_SUPPORTED_FOR_FX: the
+    chart scanner replays the equity clock and equity costs, and no FX setup
+    survived walk-forward (docs/RESEARCH_FX.md), so FX markers would be
+    measurement of the wrong session presented as signals.
     """
+    if is_fx_symbol(symbol):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"NOT_SUPPORTED_FOR_FX: chart signals are not computed for {symbol}. The "
+                "scanner runs on the US equity session clock; FX research lives in "
+                "scripts/research_fx.py and docs/RESEARCH_FX.md."
+            ),
+        )
     from apps.api.app.backtesting.setups import SETUPS
     from apps.api.app.backtesting.signal_calibration import (
         bucket_key,

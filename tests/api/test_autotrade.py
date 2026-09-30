@@ -168,6 +168,9 @@ async def test_guardrails_are_specific_4xx():
         assert r.status_code == 400 and "UNKNOWN_SETUP" in r.json()["detail"]
         r = await post(symbols=[])
         assert r.status_code == 400 and "NO_SYMBOLS" in r.json()["detail"]
+        # Phase 103 (D123): the bot runs the equity clock; FX fails closed.
+        r = await post(symbols=["TQQQ.US", "EURUSD.FX"])
+        assert r.status_code == 400 and "FX_NOT_SUPPORTED" in r.json()["detail"]
         r = await client.post(
             "/autotrade/bots", json=body(uuid.uuid4()), headers=_h(token)
         )

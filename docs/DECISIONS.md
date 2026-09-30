@@ -11601,3 +11601,113 @@ this (Phases 88-101) that used a higher timeframe carry a small optimistic
 bias in that one input; the Phase 101 walk-forward passed no higher
 timeframe and is unaffected.
 Status: Fixed, tested (`test_a_higher_timeframe_bias_is_only_visible_once_its_bar_has_closed`).
+
+## D123 — Spot FX: a 24h session clock, a spread cost model, an IG bar provider built blind, and research that says no (Phase 103)
+Date: 2026-09-30
+
+Ledger item 8.4 ("FX ingestion, panels, strategies, bot"). Builds on
+D109–D113: spot FX has no volume, IBKR's FX bars are MidPoint, and IG is
+the reachable FX venue — but IG's demo API key is **suspended by IG**
+(`client-suspended`), so no IG data could be fetched and none was attempted.
+
+**1. Symbols and routing.** `EURUSD.FX` (six letters + `.FX`) is the FX
+convention (`marketdata/fx.py`). `BarBackfillRouter` checks it BEFORE the
+generic "has a dot → Longbridge" rule, which would otherwise send FX to a
+vendor that cannot price it. The FX leg is `IgFxBarProvider`, built only
+when `FX_BAR_PROVIDER=ig` (default `none`) AND the full `IG_*` set exist;
+construction never logs in. Unconfigured, an FX backfill is a 422 naming the
+setting — never a silent empty success.
+
+**2. IG prices → mid bars + spread series, built against documentation.**
+`GET /prices/{epic}` v3, paged; every price divided by `snapshot.scalingFactor`
+from `GET /markets/{epic}` (refused if absent — a guessed scale is a
+four-orders-of-magnitude fabrication); timestamps from `snapshotTimeUTC`;
+stored bars are the bid/ask average with `volume=None` (IG's
+`lastTradedVolume` on a currency CFD is a tick count) and `source="ig-mid"`;
+a row without a two-sided close is skipped and counted, never filled from
+one side; `1d` refused (FX days end at 17:00 NY). The close spread per bar
+is returned and its median/p90 in pips logged on every fetch, so the
+cost defaults can be replaced by what IG actually quoted. **Not persisted**:
+that needs a table and migration 0038 was left unused rather than spent on
+an unverified shape. IG's weekly historical allowance (~10k points) means
+~a month of 5m bars per week of allowance — documented in the provider.
+`IgAdapter.market_data_get` is the one new adapter method (GET only).
+
+**3. Session calendars.** `sessions.py` gains `SessionCalendar`
+(`UsEquityCalendar`, `FxCalendar`); `group_by_session`,
+`build_session_levels`, `session_vwap`, the intraday engine
+(`IntradayRunConfig.calendar`) and the bracket simulator take one, defaulting
+to US equity so every existing caller is unchanged (full suite green). The
+FX clock: session 17:00→17:00 NY named by the date it ends; weekend Fri
+17:00 → Sun 17:00 closed; **17:00–18:00 NY rollover blacked out** (no phase:
+feeds no level, never traded); Asia = `PRE_MARKET` (so the Asian range is
+the "premarket" level); **London 08:00 (London DST) → 17:00 NY =
+`REGULAR`**. `trade_asian_session=True` makes all post-blackout bars regular.
+Time stops therefore flatten before the roll, so an intraday FX trade owes
+no financing.
+
+**4. A causality fix scoped to FX, and a finding about equities.**
+`SessionLevels.known_at(ts)` hides the opening range from bars that open
+before it has finished (`opening_range_complete_at`, set only by calendars
+with `causal_opening_range`). The engine applies it for every calendar, but
+the equity calendar does not set the timestamp, so equity results are
+byte-for-byte unchanged. **Finding, not fixed here:** on the equity path,
+`candle_reversal` and `fib_confluence` can read the
+opening-range high/low on the first bars of the session (09:30–09:40 on 5m)
+before that range is complete — a look-ahead of the same kind as D121.
+Fixing it is a one-line flag (`UsEquityCalendar.causal_opening_range =
+True`) but changes published equity research numbers, so it is left for
+its own phase with its own re-run.
+
+**5. Costs.** `FxSpreadCostModel`: fills at mid ± half-spread (pips, per
+pair: EUR/USD 0.5, GBP/USD 0.75, USD/JPY 0.5 …, an unknown pair refused
+rather than guessed); no volume slippage; optional annual financing rates
+per direction charged per rollover day (`rollover_days`: 17:00 NY, Wed×3,
+none at the Sunday open), deducted per partial via `BracketTrade.financing`
+and so included in R. `FillPricer` protocol lets the bracket simulator take
+either cost model.
+
+**6. Volume-gated setups refuse** — verified, not assumed:
+`quiet_pullback`, `volume_climax_reversal` and `vwap_reversion` produced 0
+signals over 519 real EUR/USD sessions.
+
+**7. Data for research.** Free, legitimate intraday FX was sought:
+Dukascopy's datafeed now answers 429 and documents only a requester-pays S3
+bucket (AWS account + payment — not used); FXCM's candle host is behind a
+Cloudflare bot challenge (not bypassed); Yahoo's terms forbid automated use.
+**HistData.com's free annual M1 files** (bid, EST without DST, no volume,
+no warranty, robots.txt disallows only `/wp-admin/`) were downloaded once by
+hand for EUR/USD 2024–2025. They are read from local disk by
+`providers/histdata.py` (no network, not wired into the router, not written
+to the shared bar store, not committed — no redistribution right).
+
+**8. Result (docs/RESEARCH_FX.md): no edge.** At a 1-pip round trip the
+walk-forward (60/20 sessions, 22 folds) pools **764 OOS trades at −0.078 R,
+t −1.96**. `sweep_mss` has a real gross asymmetry (+0.161 R, t +4.70
+frictionless) that the spread consumes (+0.022 R, t +0.66); every other
+setup is negative after costs. Stops of 4–9 pips make a 1-pip spread
+0.1–0.25 R per trade. A post-hoc sensitivity (sweep_mss alone, chosen after
+looking) at IG's advertised 0.6-pip minimum gives +0.079 R full-sample and
++0.052 R (t +1.42) rolled OOS — not significant; break-even ≈ 1.1 pips.
+
+**9. The bot: FX refused, deliberately.** `create_bot` rejects any `*.FX`
+symbol with `FX_NOT_SUPPORTED`: the bot's scanner and bracket manager run
+the equity clock and bps costs, and nothing measured survives costs. An FX
+bot is deferred until research on real IG spreads says otherwise.
+
+**10. Markets page.** An FX symbol charts from stored bars with a
+"mid-price, no volume" note; signals and the extended-hours panel are not
+requested for FX, and the backend refuses both with 422 (NOT_SUPPORTED_FOR_FX
+/ NOT_APPLICABLE). `session-levels` reads the FX clock and reports
+`session_calendar`.
+
+Rejected: *storing tick counts as volume* (would silently arm three
+volume setups on noise); *US equity sessions for FX* (misfiles every
+evening print); *a bps cost for FX* (wrong by 100× on JPY pairs);
+*defaulting an unknown pair's spread*; *scraping FXCM past its bot
+challenge or paying for Dukascopy S3 without the operator*; *an FX bot on
+the equity scanner*.
+
+Status: Implemented, tested (stubbed IG; real HistData for research).
+Nothing enabled (`FX_BAR_PROVIDER` defaults `none`), no migration, nothing
+traded. Live-trading flags untouched.

@@ -3944,3 +3944,45 @@ multiplier (1.113) measured on one snapshot day.
 **Operator**: run `alembic upgrade head` (0035) on deploy; set
 `OPTION_SNAPSHOT_SCHEDULER_ENABLED=true` on Railway to start collecting.
 Nothing traded; nothing enabled.
+
+## Phase 103 — Spot FX: 24h calendar, spread costs, IG bar provider, research (ledger 8.4)
+
+Shipped 2026-09-30 (branch `phase103-forex`, not deployed). Decision:
+`docs/DECISIONS.md` D123. Research: `docs/RESEARCH_FX.md`.
+
+* **Symbols/routing.** `marketdata/fx.py` (`EURUSD.FX` convention, pair
+  specs with pip size and default half-spread, IG epic template, UTC
+  resampler). `BarBackfillRouter(fx_provider=...)` routes `.FX` before the
+  Longbridge dot rule; unconfigured → 422 naming `FX_BAR_PROVIDER`.
+* **IG prices.** `marketdata/providers/ig_prices.py::IgFxBarProvider` —
+  `/prices/{epic}` v3, paged, scaled by `/markets/{epic}` scalingFactor,
+  mid bars (`volume=None`, `source=ig-mid`) plus a spread series logged in
+  pips. Built against IG's docs; **the IG key is suspended, so it has only
+  been exercised with a stub.** Gate: `FX_BAR_PROVIDER=ig` (default `none`)
+  + complete `IG_*`. `IgAdapter.market_data_get` (GET only) added.
+* **Calendar.** `sessions.SessionCalendar` / `FxCalendar` (17:00 NY roll,
+  1h rollover blackout, Asia = pre-market, London→NY = regular) threaded
+  through session levels, VWAP, the intraday engine
+  (`IntradayRunConfig.calendar`) and brackets; equity default unchanged.
+  `SessionLevels.known_at` hides an incomplete opening range (FX only;
+  equity look-ahead flagged in D123, not changed).
+* **Costs.** `backtesting/costs.py::FxSpreadCostModel` (mid ± half-spread
+  in pips, optional per-direction financing per rollover day,
+  `rollover_days` with Wednesday ×3); `BracketTrade.financing`.
+* **Research.** `scripts/research_fx.py` on HistData free EUR/USD M1 bid
+  files 2024–2025 (local only; `providers/histdata.py` reader, no network):
+  volume setups 0 signals; walk-forward pooled OOS **764 trades −0.078 R,
+  t −1.96** at a 1-pip round trip. No edge.
+* **Bot.** `create_bot` refuses `*.FX` (`FX_NOT_SUPPORTED`).
+* **Markets.** FX charts from stored bars with a "mid-price, no volume"
+  note (`apps/web/lib/fx.ts`); signals/extended-hours not requested for FX
+  and refused server-side (422); `session-levels` returns
+  `session_calendar`.
+
+**Tests**: 36 new/extended backend (FX calendar/levels/resample/HistData,
+costs/financing/engine, IG provider stub + router + builder gate, API
+end-to-end backfill → bars → session-levels, autotrade refusal); web +3.
+
+**Not done / operator:** no migration (spread series not persisted; 0038
+unused); IG unverified until a working key; no FX bot; equity
+opening-range look-ahead left for its own phase. Nothing enabled.

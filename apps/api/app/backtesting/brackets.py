@@ -44,9 +44,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
-from apps.api.app.backtesting.costs import CostModel
+from apps.api.app.backtesting.costs import FillPricer
 from apps.api.app.marketdata.ohlcv import OHLCVBar
-from apps.api.app.marketdata.sessions import is_regular_hours, session_date
+from apps.api.app.marketdata.sessions import US_EQUITY_CALENDAR, SessionCalendar
 from apps.api.app.marketdata.structure import Direction, SwingKind, SwingPoint, find_swings
 
 
@@ -204,6 +204,11 @@ class BracketTrade:
     setup_name: str
     fills: list[BracketFill] = field(default_factory=list)
     size_was_capped: bool = False
+    financing: Decimal = Decimal(0)
+    """Overnight financing paid (positive) over the trade's life (Phase 103,
+    D123). Zero unless the cost model prices financing AND the position was
+    held across a 17:00 NY roll; subtracted in `gross_pnl`, so it flows into
+    R exactly like any other cost."""
 
     @property
     def exit_ts(self) -> datetime | None:
@@ -220,7 +225,7 @@ class BracketTrade:
                 else self.entry_price - fill.price
             )
             total += move * fill.quantity
-        return total
+        return total - self.financing
 
     @property
     def r_multiple(self) -> Decimal:
@@ -323,10 +328,11 @@ def simulate_bracket(
     quantity: Decimal,
     atr: Decimal | None,
     plan: BracketPlan,
-    costs: CostModel,
+    costs: FillPricer,
     setup_name: str,
     size_was_capped: bool = False,
     swings: Sequence[SwingPoint] | None = None,
+    calendar: SessionCalendar | None = None,
 ) -> BracketTrade | None:
     """Replay `bars` from `entry_index + 1` until the bracket is resolved.
 
@@ -342,6 +348,7 @@ def simulate_bracket(
     """
     if quantity <= 0:
         return None
+    cal = calendar or US_EQUITY_CALENDAR
 
     fill_entry = (
         costs.buy_price(entry_price)
@@ -388,7 +395,9 @@ def simulate_bracket(
                 if swings is not None
                 else find_swings(bars, strength=plan.structure_swing_strength)
             ),
+            calendar=cal,
         )
+        _charge_financing(trade, costs)
         return trade if trade.fills else None
 
     sign = Decimal(1) if direction is Direction.LONG else Decimal(-1)
@@ -399,7 +408,7 @@ def simulate_bracket(
     stop = stop_price
     took_tp1 = took_tp2 = False
     best_close = fill_entry
-    entry_session = session_date(bars[entry_index].ts)
+    entry_session = cal.session_date(bars[entry_index].ts)
 
     def close_slice(bar: OHLCVBar, qty: Decimal, raw_price: Decimal, reason: ExitReason) -> Decimal:
         price = (
@@ -433,7 +442,7 @@ def simulate_bracket(
         # exactly the overnight exposure this stop exists to remove. On a
         # 3x ETF that gap is where the largest moves live, and the error
         # would look like edge.
-        if session_date(bar.ts) != entry_session or not is_regular_hours(bar.ts):
+        if cal.session_date(bar.ts) != entry_session or not cal.is_regular_hours(bar.ts):
             close_slice(
                 last_in_session, remaining, last_in_session.close, ExitReason.TIME_STOP
             )
@@ -500,7 +509,30 @@ def simulate_bracket(
     if remaining > 0 and bars[entry_index + 1 :]:
         close_slice(bars[-1], remaining, bars[-1].close, ExitReason.TIME_STOP)
 
+    _charge_financing(trade, costs)
     return trade if trade.fills else None
+
+
+def _charge_financing(trade: BracketTrade, costs: object) -> None:
+    """Overnight financing per partial, for a cost model that prices it.
+
+    Each slice pays for the time IT was held, at the entry price - a third
+    closed at TP1 on day one does not pay for the runner's two nights.
+    `CostModel` has no `financing_for`, so equity runs are untouched.
+    """
+    financing_for = getattr(costs, "financing_for", None)
+    if financing_for is None:
+        return
+    total = Decimal(0)
+    for fill in trade.fills:
+        total += financing_for(
+            is_long=trade.direction is Direction.LONG,
+            quantity=fill.quantity,
+            price=trade.entry_price,
+            entry_ts=trade.entry_ts,
+            exit_ts=fill.ts,
+        )
+    trade.financing = total
 
 
 def _ride_structure(
@@ -510,8 +542,9 @@ def _ride_structure(
     entry_index: int,
     atr: Decimal | None,
     plan: BracketPlan,
-    costs: CostModel,
+    costs: FillPricer,
     swings: Sequence[SwingPoint],
+    calendar: SessionCalendar | None = None,
 ) -> None:
     """The structure exit (Phase 101, D120): hold the whole position until
     the trend's own structure says it has ended.
@@ -549,7 +582,8 @@ def _ride_structure(
     stop_source = "initial"  # initial | structure | atr
     best_close = fill_entry
     buffer = (atr or Decimal(0)) * plan.structure_trail_buffer_atr
-    entry_session = session_date(entry_bar.ts)
+    cal = calendar or US_EQUITY_CALENDAR
+    entry_session = cal.session_date(entry_bar.ts)
     last_bar = entry_bar
 
     def tighter(level: Decimal, than: Decimal) -> bool:
@@ -569,12 +603,12 @@ def _ride_structure(
         )
 
     for bar in bars[entry_index + 1 :]:
-        if not is_regular_hours(bar.ts):
+        if not cal.is_regular_hours(bar.ts):
             if plan.hold_overnight:
                 continue
             exit_at(last_bar, last_bar.close, ExitReason.TIME_STOP)
             return
-        if not plan.hold_overnight and session_date(bar.ts) != entry_session:
+        if not plan.hold_overnight and cal.session_date(bar.ts) != entry_session:
             exit_at(last_bar, last_bar.close, ExitReason.TIME_STOP)
             return
         last_bar = bar

@@ -37,14 +37,14 @@ from apps.api.app.backtesting.brackets import (
     simulate_bracket,
     stop_quality_ok,
 )
-from apps.api.app.backtesting.costs import CostModel
+from apps.api.app.backtesting.costs import CostModel, FxSpreadCostModel
 from apps.api.app.backtesting.setups import SETUPS, BarContext, SetupSignal
 from apps.api.app.marketdata.indicators import InsufficientDataError, atr, ema, rsi
 from apps.api.app.marketdata.sessions import (
+    US_EQUITY_CALENDAR,
+    SessionCalendar,
     build_session_levels,
     group_by_session,
-    is_regular_hours,
-    session_date,
     session_vwap,
 )
 from apps.api.app.marketdata.structure import Direction, find_swings
@@ -63,7 +63,7 @@ class IntradayRunConfig:
     symbol: str
     setups: tuple[str, ...] = ("sweep_mss",)
     plan: BracketPlan = field(default_factory=BracketPlan)
-    costs: CostModel = field(default_factory=CostModel.frictionless)
+    costs: CostModel | FxSpreadCostModel = field(default_factory=CostModel.frictionless)
     starting_equity: Decimal = Decimal("100000")
     min_score: int = 0
     """Section 14's trade filter. Its own text calls 8/10 a starting test
@@ -81,6 +81,14 @@ class IntradayRunConfig:
     swing_strength: int = 2
     opening_range_minutes: int = 15
     allow_directions: tuple[Direction, ...] = (Direction.LONG, Direction.SHORT)
+    calendar: SessionCalendar | None = None
+    """The market clock sessions, levels and the time stop are read from
+    (Phase 103, D123). `None` is the US equity clock every run before this
+    phase used; pass `marketdata.fx.calendar_for_symbol(symbol)` for FX."""
+
+    @property
+    def session_calendar(self) -> SessionCalendar:
+        return self.calendar or US_EQUITY_CALENDAR
 
 
 @dataclass
@@ -102,7 +110,7 @@ class IntradayRunResult:
         points: list[tuple[date, Decimal]] = []
         for trade in self.trades:
             equity += trade.gross_pnl
-            points.append((session_date(trade.entry_ts), equity))
+            points.append((self.config.session_calendar.session_date(trade.entry_ts), equity))
         return points
 
 
@@ -228,14 +236,15 @@ def run_intraday_backtest(
         return result
 
     ordered = sorted(bars, key=lambda b: b.ts)
+    cal = config.session_calendar
     # Levels for the WHOLE series up front. This is not look-ahead: each
     # session's entry describes its own premarket and opening range plus
     # the PREVIOUS session's extremes, and the engine only ever reads the
     # entry for the session it is currently replaying.
     levels_by_session = build_session_levels(
-        ordered, opening_range_minutes=config.opening_range_minutes
+        ordered, opening_range_minutes=config.opening_range_minutes, calendar=cal
     )
-    sessions = group_by_session(ordered)
+    sessions = group_by_session(ordered, calendar=cal)
     result.sessions_available = len(sessions)
 
     def timeline(series: Sequence | None, fast: int, slow: int) -> list:
@@ -278,7 +287,7 @@ def run_intraday_backtest(
     global_index: dict = {}
     overnight_swings: list = []
     if overnight:
-        all_regular = [b for b in ordered if is_regular_hours(b.ts)]
+        all_regular = [b for b in ordered if cal.is_regular_hours(b.ts)]
         global_index = {b.ts: k for k, b in enumerate(all_regular)}
         overnight_swings = find_swings(all_regular, strength=plan.structure_swing_strength)
     # Exit time of a position still open from an EARLIER session. Always
@@ -288,12 +297,12 @@ def run_intraday_backtest(
 
     for day in sorted(sessions):
         session_bars = sessions[day]
-        regular = [b for b in session_bars if is_regular_hours(b.ts)]
+        regular = [b for b in session_bars if cal.is_regular_hours(b.ts)]
         if len(regular) < 6:
             continue
 
         levels = levels_by_session[day]
-        vwap_points = {p.ts: p for p in session_vwap(session_bars)}
+        vwap_points = {p.ts: p for p in session_vwap(session_bars, calendar=cal)}
         # Swings are found on the session's regular bars and each carries
         # its own confirmation time, so `last_confirmed_swing` can hide
         # the ones not yet knowable at any given bar.
@@ -333,7 +342,9 @@ def run_intraday_backtest(
                 ctx = BarContext(
                     bars=regular[: i + 1],
                     index=i,
-                    levels=levels,
+                    # Phase 103 (D123): a level not yet complete at this bar
+                    # is hidden from it. Inert for the equity calendar.
+                    levels=levels.known_at(bar.ts),
                     swings=swings,
                     vwap=vwap_points.get(bar.ts),
                     atr=_indicator(atr, window, 14),
@@ -396,6 +407,7 @@ def run_intraday_backtest(
                 setup_name=signal.setup_name,
                 size_was_capped=capped,
                 swings=overnight_swings if overnight else trail_swings,
+                calendar=cal,
             )
             if trade is None:
                 result.signals_rejected_by_sizing += 1
