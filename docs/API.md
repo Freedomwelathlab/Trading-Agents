@@ -2236,6 +2236,21 @@ The three VWAP figures are quantized to six decimals — the precision
 `market_data_bars` stores. Levels taken straight from a bar are passed
 through unrounded so the API cannot disagree with the bar it read.
 
+**Spot FX (Phase 103, D123).** Symbols in the `EURUSD.FX` convention are
+read on the FX clock, and the response carries `session_calendar`
+(`us_equity` or `fx_24h`). For `fx_24h`: the session runs 17:00→17:00
+New York (named by the date it ends on), `premarket_*` is the Asian
+(pre-London) range after a one-hour rollover blackout, the opening range is
+anchored at the 08:00 London open, and `vwap` is always null because spot
+FX has no volume. On FX symbols `GET /market-data/{symbol}/extended-hours`
+answers **422 NOT_APPLICABLE** (one continuous session has no pre-market or
+after-hours) and `GET /market-data/{symbol}/signals` answers **422
+NOT_SUPPORTED_FOR_FX** (the chart scanner runs the equity clock).
+`POST /admin/market-data/backfill` routes `*.FX` to IG only when
+`FX_BAR_PROVIDER=ig` and the complete `IG_*` set are configured; otherwise
+it refuses with **422** naming that setting. FX bars are stored as mid
+prices with `volume: null` and `source: "ig-mid"`.
+
 ### Creating the first user
 
 There is no public registration. Accounts are created through

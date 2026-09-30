@@ -2,6 +2,7 @@ from datetime import time
 from decimal import Decimal
 from enum import Enum
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -613,6 +614,17 @@ class Settings(BaseSettings):
     must render as NOT_CONFIGURED, not a fabricated feed). All three must
     be set together or the Longbridge provider isn't built at all - see
     apps/api/app/marketdata/providers/longbridge.py and docs/DECISIONS.md D015."""
+
+    fx_bar_provider: Literal["none", "ig"] = "none"
+    """Phase 103 (D123): which vendor serves `*.FX` bar backfills. `none`
+    (the default) leaves FX unroutable - `POST /admin/market-data/backfill`
+    refuses an FX symbol with a 422 naming this setting. `ig` needs the
+    complete `IG_*` credential set too; building the provider never logs
+    in, so switching this on cannot by itself spend a login attempt."""
+
+    fx_ig_epic_template: str = "CS.D.{pair}.MINI.IP"
+    """How `EURUSD.FX` becomes an IG epic. Account types differ (mini CFD
+    `.MINI.IP`, full CFD `.CFD.IP`, spread bet `.TODAY.IP`)."""
 
     longport_live_app_key: str | None = None
     longport_live_app_secret: str | None = None

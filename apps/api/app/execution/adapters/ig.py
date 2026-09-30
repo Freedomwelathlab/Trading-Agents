@@ -265,6 +265,22 @@ class IgAdapter:
         self._auth = {"CST": cst, "X-SECURITY-TOKEN": security}
         return dict(self._auth)
 
+    # --- market data (Phase 103, D123) ------------------------------------
+
+    def market_data_get(self, path: str, *, version: str) -> Mapping[str, Any]:
+        """One authenticated, read-only GET - prices and market details.
+
+        Exists so `marketdata/providers/ig_prices.py` reuses THIS login
+        (and its error translation, including the suspended-client
+        refusal that must stop further attempts) instead of a second copy
+        of IG's session handling. GET only: nothing here can place, amend
+        or close a deal.
+        """
+        status, _, body = self._client.request(
+            "GET", path, version=version, headers=self._headers()
+        )
+        return _check(status, body, what=f"GET {path.split('?', 1)[0]}")
+
     # --- account ----------------------------------------------------------
 
     def _load(self) -> None:

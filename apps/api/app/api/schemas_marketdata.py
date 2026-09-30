@@ -94,6 +94,11 @@ class SessionLevelsResponse(BaseModel):
     symbol: str
     bar_interval: str
     session_date: date
+    session_calendar: str = "us_equity"
+    """Phase 103 (D123): which clock the levels were built on. For
+    `fx_24h` the session runs 17:00 NY to 17:00 NY, "premarket" is the
+    Asian (pre-London) range and the opening range is anchored at the
+    London open; VWAP is always null because spot FX has no volume."""
     previous_high: Decimal | None
     previous_low: Decimal | None
     previous_close: Decimal | None

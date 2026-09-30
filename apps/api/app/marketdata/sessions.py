@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -125,6 +125,166 @@ def is_regular_hours(ts: datetime) -> bool:
     return session_phase(ts) is SessionPhase.REGULAR
 
 
+# ---------------------------------------------------------------------------
+# Session calendars (Phase 103, D123)
+#
+# Everything above is the US equity clock, and every function below that
+# groups, levels or anchors bars used to call it directly. Spot FX has a
+# different clock entirely - one continuous session from Sunday 17:00 New
+# York to Friday 17:00 New York, rolling each day at 17:00 NY - and running
+# FX bars through the equity clock does not fail: it silently files a
+# 20:00 NY print under the wrong day, calls 04:00 NY "pre-market" and ends
+# every session at 16:00. So the clock is now an object the session
+# functions take, defaulting to the equity one, so every existing caller is
+# byte-for-byte unchanged.
+# ---------------------------------------------------------------------------
+
+
+class SessionCalendar:
+    """The questions the session functions ask of a market's clock.
+
+    `causal_opening_range` says whether `build_session_levels` stamps the
+    instant a session's opening range becomes KNOWN, so the intraday engine
+    can hide it from bars that print before then. It is False for the US
+    equity calendar ONLY to keep every existing equity result reproducible;
+    see D123 for why that is flagged as a known look-ahead in the equity
+    path rather than silently changed here.
+    """
+
+    name: str = "abstract"
+    causal_opening_range: bool = False
+
+    def session_date(self, ts: datetime) -> date:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def session_phase(self, ts: datetime) -> SessionPhase | None:  # pragma: no cover
+        raise NotImplementedError
+
+    def is_regular_hours(self, ts: datetime) -> bool:
+        return self.session_phase(ts) is SessionPhase.REGULAR
+
+    def regular_open_at(self, day: date) -> datetime:  # pragma: no cover - interface
+        """The instant the tradable part of session `day` begins, which is
+        what the opening range is anchored to."""
+        raise NotImplementedError
+
+
+class UsEquityCalendar(SessionCalendar):
+    """The module-level functions above, as a calendar. Nothing new."""
+
+    name = "us_equity"
+    causal_opening_range = False
+
+    def session_date(self, ts: datetime) -> date:
+        return session_date(ts)
+
+    def session_phase(self, ts: datetime) -> SessionPhase | None:
+        return session_phase(ts)
+
+    def is_regular_hours(self, ts: datetime) -> bool:
+        return is_regular_hours(ts)
+
+    def regular_open_at(self, day: date) -> datetime:
+        return datetime.combine(day, REGULAR_OPEN, tzinfo=US_EQUITY_TZ)
+
+
+US_EQUITY_CALENDAR = UsEquityCalendar()
+
+FX_ROLL = time(17, 0)
+"""The FX day rolls at 17:00 New York, in New York's own DST - the
+convention FX venues (IG included) settle and finance against."""
+
+LONDON_TZ = ZoneInfo("Europe/London")
+LONDON_OPEN = time(8, 0)
+
+
+class FxCalendar(SessionCalendar):
+    """Spot FX: Sunday 17:00 NY to Friday 17:00 NY, rolling daily at 17:00 NY.
+
+    **A session is named by the New York date it ENDS on.** The session
+    that opens Sunday 17:00 NY is Monday's; the one that opens Monday
+    17:00 NY is Tuesday's. There are therefore exactly five sessions a
+    week and no Saturday or Sunday session - the same "a bar belongs to the
+    trading day it settles in" rule the equity calendar uses.
+
+    Within a session, three parts, each an explicit assumption:
+
+    * **Rollover blackout** (`rollover_blackout_minutes`, default 60) right
+      after 17:00 NY. Liquidity is at its daily minimum while every venue
+      rolls positions, and spreads routinely widen several-fold. Bars here
+      belong to NO phase: they feed no level and are never traded.
+    * **Pre-London** (the Asian session) until London's 08:00 open, in
+      London's own DST. Classified as `PRE_MARKET` so the Asian range lands
+      in `premarket_high`/`premarket_low` - the FX analogue of the equity
+      pre-market range, and complete before anything trades against it.
+    * **London + New York** from 08:00 London to the 17:00 NY roll, the
+      `REGULAR` phase the intraday engine trades.
+
+    `trade_asian_session=True` makes everything after the blackout
+    `REGULAR` instead (no pre-market range at all), for measuring whether
+    excluding Asia matters rather than assuming it.
+
+    The weekend - Friday 17:00 NY to Sunday 17:00 NY - is no phase. There
+    is no holiday table, exactly as for equities: a day with no bars
+    yields no session.
+    """
+
+    name = "fx_24h"
+    causal_opening_range = True
+
+    def __init__(
+        self, *, rollover_blackout_minutes: int = 60, trade_asian_session: bool = False
+    ) -> None:
+        if not 0 <= rollover_blackout_minutes < 600:
+            raise ValueError(
+                "rollover_blackout_minutes must be in [0, 600); "
+                f"got {rollover_blackout_minutes}."
+            )
+        self.rollover_blackout_minutes = rollover_blackout_minutes
+        self.trade_asian_session = trade_asian_session
+
+    def session_date(self, ts: datetime) -> date:
+        local = to_exchange_time(ts)
+        return local.date() + timedelta(days=1) if local.time() >= FX_ROLL else local.date()
+
+    def session_open_at(self, day: date) -> datetime:
+        """17:00 NY on the calendar day before `day` - the roll that opens it."""
+        return datetime.combine(day - timedelta(days=1), FX_ROLL, tzinfo=US_EQUITY_TZ)
+
+    def is_weekend_closed(self, ts: datetime) -> bool:
+        local = to_exchange_time(ts)
+        wd, t = local.weekday(), local.time()
+        return (wd == 4 and t >= FX_ROLL) or wd == 5 or (wd == 6 and t < FX_ROLL)
+
+    def session_phase(self, ts: datetime) -> SessionPhase | None:
+        if self.is_weekend_closed(ts):
+            return None
+        day = self.session_date(ts)
+        opened = self.session_open_at(day)
+        if ts < opened + timedelta(minutes=self.rollover_blackout_minutes):
+            return None
+        if self.trade_asian_session or ts >= datetime.combine(
+            day, LONDON_OPEN, tzinfo=LONDON_TZ
+        ):
+            return SessionPhase.REGULAR
+        return SessionPhase.PRE_MARKET
+
+    def regular_open_at(self, day: date) -> datetime:
+        if self.trade_asian_session:
+            return self.session_open_at(day) + timedelta(
+                minutes=self.rollover_blackout_minutes
+            )
+        return datetime.combine(day, LONDON_OPEN, tzinfo=LONDON_TZ)
+
+
+FX_CALENDAR = FxCalendar()
+"""The default FX clock: one-hour rollover blackout, Asia as pre-market."""
+
+
+def _cal(calendar: SessionCalendar | None) -> SessionCalendar:
+    return US_EQUITY_CALENDAR if calendar is None else calendar
+
+
 @dataclass(frozen=True)
 class SessionLevels:
     """The fixed locations a session's reversal setups are measured against.
@@ -146,10 +306,26 @@ class SessionLevels:
     opening_range_high: Decimal | None = None
     opening_range_low: Decimal | None = None
     regular_open: Decimal | None = None
+    opening_range_complete_at: datetime | None = None
+    """When the opening range became KNOWN (Phase 103, D123). Set only by a
+    calendar with `causal_opening_range`; `None` means "not tracked", which
+    is the equity calendar's historical behaviour."""
 
     @property
     def has_previous_day(self) -> bool:
         return self.previous_high is not None and self.previous_low is not None
+
+    def known_at(self, ts: datetime) -> SessionLevels:
+        """These levels as a decision at bar `ts` could know them.
+
+        A bar that OPENS before the opening range has finished cannot know
+        the range's extremes - handing them to it is look-ahead. Previous
+        day and pre-market levels are complete before the regular session
+        starts, so only the opening range needs hiding.
+        """
+        if self.opening_range_complete_at is None or ts >= self.opening_range_complete_at:
+            return self
+        return replace(self, opening_range_high=None, opening_range_low=None)
 
 
 
@@ -162,16 +338,19 @@ def _low(bar: OHLCVBar) -> Decimal:
     return bar.low if bar.low is not None else bar.close
 
 
-def group_by_session(bars: Iterable[OHLCVBar]) -> dict[date, list[OHLCVBar]]:
+def group_by_session(
+    bars: Iterable[OHLCVBar], *, calendar: SessionCalendar | None = None
+) -> dict[date, list[OHLCVBar]]:
     """Bars bucketed by exchange-local session date, each bucket ordered.
 
     Sorting here rather than trusting the caller is the same discipline the
     vendor adapters apply: an out-of-order bucket would make "the first
     fifteen minutes" whichever bars happened to arrive first.
     """
+    cal = _cal(calendar)
     grouped: dict[date, list[OHLCVBar]] = {}
     for bar in bars:
-        grouped.setdefault(session_date(bar.ts), []).append(bar)
+        grouped.setdefault(cal.session_date(bar.ts), []).append(bar)
     for bucket in grouped.values():
         bucket.sort(key=lambda b: b.ts)
     return grouped
@@ -181,6 +360,7 @@ def build_session_levels(
     bars: Sequence[OHLCVBar],
     *,
     opening_range_minutes: int = DEFAULT_OPENING_RANGE_MINUTES,
+    calendar: SessionCalendar | None = None,
 ) -> dict[date, SessionLevels]:
     """One `SessionLevels` per session date present in `bars`.
 
@@ -196,7 +376,8 @@ def build_session_levels(
             f"opening_range_minutes must be positive; got {opening_range_minutes}."
         )
 
-    grouped = group_by_session(bars)
+    cal = _cal(calendar)
+    grouped = group_by_session(bars, calendar=cal)
     levels: dict[date, SessionLevels] = {}
     previous: tuple[Decimal, Decimal, Decimal] | None = None
 
@@ -205,17 +386,15 @@ def build_session_levels(
     # and a post-holiday session's the last day that traded.
     for day in sorted(grouped):
         session_bars = grouped[day]
-        regular = [b for b in session_bars if is_regular_hours(b.ts)]
+        regular = [b for b in session_bars if cal.is_regular_hours(b.ts)]
         premarket = [
-            b for b in session_bars if session_phase(b.ts) is SessionPhase.PRE_MARKET
+            b for b in session_bars if cal.session_phase(b.ts) is SessionPhase.PRE_MARKET
         ]
 
         opening_range_high = opening_range_low = None
+        cutoff = cal.regular_open_at(day) + timedelta(minutes=opening_range_minutes)
         if regular:
-            cutoff = datetime.combine(
-                day, REGULAR_OPEN, tzinfo=US_EQUITY_TZ
-            ) + timedelta(minutes=opening_range_minutes)
-            window = [b for b in regular if to_exchange_time(b.ts) < cutoff]
+            window = [b for b in regular if b.ts < cutoff]
             if window:
                 opening_range_high = max(_high(b) for b in window)
                 opening_range_low = min(_low(b) for b in window)
@@ -230,6 +409,7 @@ def build_session_levels(
             opening_range_high=opening_range_high,
             opening_range_low=opening_range_low,
             regular_open=regular[0].open if regular and regular[0].open else None,
+            opening_range_complete_at=cutoff if cal.causal_opening_range else None,
         )
 
         # Only a session that actually traded regular hours becomes the
@@ -263,7 +443,10 @@ class VwapPoint:
 
 
 def session_vwap(
-    bars: Sequence[OHLCVBar], *, regular_hours_only: bool = True
+    bars: Sequence[OHLCVBar],
+    *,
+    regular_hours_only: bool = True,
+    calendar: SessionCalendar | None = None,
 ) -> list[VwapPoint]:
     """Cumulative session VWAP with volume-weighted σ, reset each session.
 
@@ -288,10 +471,11 @@ def session_vwap(
     cumulative_pv2 = Decimal(0)
     current_session: date | None = None
 
+    cal = _cal(calendar)
     for bar in sorted(bars, key=lambda b: b.ts):
-        if regular_hours_only and not is_regular_hours(bar.ts):
+        if regular_hours_only and not cal.is_regular_hours(bar.ts):
             continue
-        day = session_date(bar.ts)
+        day = cal.session_date(bar.ts)
         if day != current_session:
             current_session = day
             cumulative_volume = Decimal(0)

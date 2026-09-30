@@ -27,6 +27,7 @@ from apps.api.app.db.models import (
     WatchlistItem,
 )
 from apps.api.app.execution.registry import UnknownProviderError, get_provider
+from apps.api.app.marketdata.fx import is_fx_symbol
 
 MARKET_TYPES = ("auto", "regular", "pre_market", "post_market")
 STRATEGY_MODES = ("auto", "single", "multi", "tuned")
@@ -159,6 +160,19 @@ async def create_bot(
             symbols = _normalize_symbols(items)
     if not symbols:
         raise AutotradeError("NO_SYMBOLS: pick at least one symbol (or a non-empty watchlist).")
+
+    # Phase 103 (D123): fail closed on FX. The bot's scanner, bracket
+    # manager and sizing run on the US equity clock and bps costs; an FX
+    # pair through them would be scanned in the wrong session, sized in
+    # whole "shares" and priced without its spread. No FX setup survived
+    # walk-forward (docs/RESEARCH_FX.md), so an FX bot is deferred rather
+    # than half-supported.
+    fx = [s for s in symbols if is_fx_symbol(s)]
+    if fx:
+        raise AutotradeError(
+            f"FX_NOT_SUPPORTED: the autotrade bot does not trade FX pairs ({', '.join(fx)}). "
+            "It runs on the US equity session clock and equity costs; see D123."
+        )
 
     if spec.market_type not in MARKET_TYPES:
         raise AutotradeError(f"BAD_MARKET_TYPE: expected one of {MARKET_TYPES}.")

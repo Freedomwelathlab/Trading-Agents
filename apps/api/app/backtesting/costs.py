@@ -47,7 +47,10 @@ perfect. It does not make a backtest accurate.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Protocol
+from zoneinfo import ZoneInfo
 
 _BPS = Decimal(10_000)
 """Basis points per unit. One place, so no call site divides by a literal
@@ -125,3 +128,151 @@ class CostModel:
             notional * self.fee_bps / _BPS,
             notional * self.slippage_bps / _BPS,
         )
+
+
+# ---------------------------------------------------------------------------
+# Spot FX (Phase 103, D123)
+# ---------------------------------------------------------------------------
+
+class FillPricer(Protocol):
+    """What the bracket simulator needs from a cost model: the price a buy
+    and a sell actually fill at, given a mid. `CostModel` (bps, equities)
+    and `FxSpreadCostModel` (pips, FX) both satisfy it."""
+
+    def buy_price(self, mid: Decimal) -> Decimal: ...
+
+    def sell_price(self, mid: Decimal) -> Decimal: ...
+
+
+_DAYS_PER_YEAR = Decimal(365)
+_NY = ZoneInfo("America/New_York")
+
+
+def rollover_days(entry_ts: datetime, exit_ts: datetime) -> int:
+    """Financing days charged for a position held from `entry_ts` to `exit_ts`.
+
+    FX positions are rolled at 17:00 New York each weekday. A position open
+    across a roll pays (or earns) one day of financing - except Wednesday's
+    roll, which carries THREE, because spot settles T+2 and Wednesday's is
+    the roll whose value date spans the weekend. Five rolls a week therefore
+    charge seven days: Mon 1, Tue 1, Wed 3, Thu 1, Fri 1. There is no roll
+    at the Sunday 17:00 open.
+
+    A roll counts when `entry_ts < roll <= exit_ts`: a position opened on
+    the roll instant itself has not yet been held across it.
+    """
+    if exit_ts <= entry_ts:
+        return 0
+    day = entry_ts.astimezone(_NY).date()
+    days = 0
+    while True:
+        roll = datetime(day.year, day.month, day.day, 17, 0, tzinfo=_NY)
+        if roll > exit_ts:
+            break
+        if roll > entry_ts and roll.weekday() < 5:
+            days += 3 if roll.weekday() == 2 else 1
+        day = day + timedelta(days=1)
+    return days
+
+
+@dataclass(frozen=True)
+class FxSpreadCostModel:
+    """Spread-based costs for spot FX / FX CFDs.
+
+    **Why not `CostModel`.** `CostModel` charges basis points of notional,
+    which is how an equity venue's commission and a thin book's slippage
+    scale. A retail FX CFD venue charges neither: its whole fee is the
+    SPREAD it quotes, a fixed number of pips regardless of price level or
+    (at retail size) order size. Expressing 0.5 pips on EUR/USD as bps
+    would be a coincidence of today's price, and wrong for USD/JPY by two
+    orders of magnitude.
+
+    **The fill rule.** Bars are MID prices (see `marketdata/fx.py`). A buy
+    fills at mid + half-spread and a sell at mid - half-spread, so a round
+    trip costs one full spread. There is no volume-based slippage because
+    there is no volume; a stop that gaps is already filled at the bar's
+    open by the bracket simulator rather than at the stop.
+
+    **Financing** is optional and off by default (`None`). When set it is
+    an ANNUAL rate on notional, per direction, charged per rollover day
+    (`rollover_days`). A venue's real overnight charge is its admin fee
+    plus or minus the tom-next interest differential, which moves with both
+    currencies' policy rates; this model takes the rate as an input rather
+    than inventing a curve. An intraday run that is flat by the 17:00 NY
+    roll never crosses one and pays none.
+
+    Duck-type compatible with `CostModel` where the intraday engine and the
+    bracket simulator touch it: `buy_price`, `sell_price`, `costs_for`.
+    """
+
+    pair: str
+    pip_size: Decimal
+    half_spread_pips: Decimal
+    financing_annual_rate_long: Decimal | None = None
+    financing_annual_rate_short: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.pip_size <= 0:
+            raise ValueError(f"pip_size must be positive; got {self.pip_size}.")
+        if self.half_spread_pips < 0:
+            raise ValueError(
+                f"half_spread_pips must not be negative; got {self.half_spread_pips}."
+            )
+
+    @classmethod
+    def for_symbol(
+        cls,
+        symbol: str,
+        *,
+        half_spread_pips: Decimal | None = None,
+        financing_annual_rate_long: Decimal | None = None,
+        financing_annual_rate_short: Decimal | None = None,
+    ) -> "FxSpreadCostModel":
+        """Per-pair defaults from `marketdata.fx.FX_PAIRS`, any overridden."""
+        from apps.api.app.marketdata.fx import pair_spec
+
+        spec = pair_spec(symbol)
+        return cls(
+            pair=spec.pair,
+            pip_size=spec.pip_size,
+            half_spread_pips=(
+                spec.default_half_spread_pips if half_spread_pips is None else half_spread_pips
+            ),
+            financing_annual_rate_long=financing_annual_rate_long,
+            financing_annual_rate_short=financing_annual_rate_short,
+        )
+
+    @property
+    def half_spread(self) -> Decimal:
+        """Half the spread in PRICE units."""
+        return self.half_spread_pips * self.pip_size
+
+    def buy_price(self, mid: Decimal) -> Decimal:
+        return mid + self.half_spread
+
+    def sell_price(self, mid: Decimal) -> Decimal:
+        price = mid - self.half_spread
+        return price if price > 0 else Decimal(0)
+
+    def costs_for(self, *, quantity: Decimal, mid: Decimal) -> tuple[Decimal, Decimal]:
+        """`(fee, spread)` for one fill: no commission, half a spread."""
+        return (Decimal(0), quantity * self.half_spread)
+
+    def financing_for(
+        self,
+        *,
+        is_long: bool,
+        quantity: Decimal,
+        price: Decimal,
+        entry_ts: datetime,
+        exit_ts: datetime,
+    ) -> Decimal:
+        """Financing cost (positive = paid) for holding `quantity` from
+        `entry_ts` to `exit_ts`. Zero when no rate is configured."""
+        rate = self.financing_annual_rate_long if is_long else self.financing_annual_rate_short
+        if rate is None:
+            return Decimal(0)
+        days = rollover_days(entry_ts, exit_ts)
+        if days == 0:
+            return Decimal(0)
+        return quantity * price * rate * Decimal(days) / _DAYS_PER_YEAR

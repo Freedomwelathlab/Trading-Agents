@@ -24,12 +24,21 @@ Longbridge symbols always carry a market suffix after a dot (`.US`, `.HK`,
 `.SG`); Coinbase product ids are always `BASE-QUOTE` with a hyphen and
 never a dot. The two grammars cannot collide, and a symbol matching
 neither is exactly the case that should be refused rather than guessed at.
+
+**Phase 103 (D123): a third, FX, universe.** `EURUSD.FX` - six letters and
+a `.FX` suffix - routes to the FX provider (IG, behind `FX_BAR_PROVIDER`).
+It is checked BEFORE the generic dotted-symbol rule, because `.FX` is also
+"a symbol with a dot" and would otherwise be sent to Longbridge, which
+would answer with an invalid-symbol error about a market it does not
+serve. No Longbridge market suffix is `.FX`, so the grammars still cannot
+collide.
 """
 
 from datetime import date
 
 from apps.api.app.core.logging import get_logger
 from apps.api.app.marketdata.bar_provider import Bar, HistoricalBarProvider
+from apps.api.app.marketdata.fx import is_fx_symbol
 
 logger = get_logger(__name__)
 
@@ -60,9 +69,11 @@ class BarBackfillRouter:
         *,
         equity_provider: HistoricalBarProvider | None = None,
         crypto_provider: HistoricalBarProvider | None = None,
+        fx_provider: HistoricalBarProvider | None = None,
     ) -> None:
         self._equity = equity_provider
         self._crypto = crypto_provider
+        self._fx = fx_provider
 
     @property
     def configured_vendors(self) -> tuple[str, ...]:
@@ -75,6 +86,8 @@ class BarBackfillRouter:
             names.append(getattr(self._equity, "name", "equity"))
         if self._crypto is not None:
             names.append(getattr(self._crypto, "name", "crypto"))
+        if self._fx is not None:
+            names.append(getattr(self._fx, "name", "fx"))
         return tuple(names)
 
     @staticmethod
@@ -96,6 +109,15 @@ class BarBackfillRouter:
         "did not recognize the shape" is an operator fixing a typo. One
         generic message would leave them guessing which.
         """
+        if is_fx_symbol(symbol):
+            if self._fx is None:
+                raise UnroutableSymbolError(
+                    f"{symbol!r} looks like an FX pair, but no FX bar provider is "
+                    "configured - set FX_BAR_PROVIDER=ig together with the complete IG_* "
+                    "credential set (IG_API_KEY, IG_USERNAME, IG_PASSWORD, IG_ACCOUNT_TYPE)."
+                )
+            return self._fx
+
         if self.is_crypto_symbol(symbol):
             if self._crypto is None:
                 raise UnroutableSymbolError(
@@ -115,8 +137,8 @@ class BarBackfillRouter:
 
         raise UnroutableSymbolError(
             f"{symbol!r} matches no known symbol convention. Use a Longbridge symbol "
-            "with a market suffix (e.g. 'IBIT.US') or a Coinbase product id "
-            "(e.g. 'BTC-USD')."
+            "with a market suffix (e.g. 'IBIT.US'), a Coinbase product id "
+            "(e.g. 'BTC-USD') or an FX pair (e.g. 'EURUSD.FX')."
         )
 
     async def get_bars(

@@ -10,6 +10,7 @@ import SignalFilter, {
   type SignalFilterValue,
 } from "@/components/markets/SignalFilter";
 import { DEFAULT_INDICATORS, type IndicatorSettings } from "@/lib/indicators";
+import { FX_BARS_NOTE, isFxSymbol } from "@/lib/fx";
 import OrderBookPanel from "@/components/markets/OrderBookPanel";
 import ExtendedHoursPanel from "@/components/markets/ExtendedHoursPanel";
 import SessionLevelsPanel, {
@@ -158,7 +159,10 @@ export default function MarketsTerminal({
   // session-level lines and B/S markers are drawn at all, so the menu is
   // the single answer to "what is on this chart".
   const [indicators, setIndicators] = useState<IndicatorSettings>(DEFAULT_INDICATORS);
-  const showSignals = indicators.signals.on;
+  const fx = isFxSymbol(symbol);
+  // Phase 103 (D123): the chart-signal scanner runs on the US equity clock,
+  // and the backend refuses it for FX, so the markers are not requested.
+  const showSignals = indicators.signals.on && !fx;
   // Phase 98 (D117): markers only when they meet the operator's bar -
   // score 7+ and measured confidence 70%+ by default, adjustable beside
   // the Indicators tab. The backend applies it and still reports how many
@@ -256,7 +260,8 @@ export default function MarketsTerminal({
         }
       >
         <p id="markets-symbol-hint" className="text-xs text-ink-faint">
-          Longbridge symbols carry a market suffix (<code>TQQQ.US</code>, <code>700.HK</code>).
+          Longbridge symbols carry a market suffix (<code>TQQQ.US</code>, <code>700.HK</code>);
+          FX pairs use <code>.FX</code> (<code>EURUSD.FX</code>) and chart once bars are stored.
           Quote and book refresh every {QUOTE_REFRESH_MS / 1000}s by polling — this platform has
           no streaming socket, so nothing here is claimed to be tick-by-tick.
         </p>
@@ -307,6 +312,11 @@ export default function MarketsTerminal({
           ) : null}
           {bars.length > 0 ? (
             <div className="flex flex-col gap-2">
+              {fx ? (
+                <p className="text-xs text-ink-faint" data-testid="fx-bars-note">
+                  {FX_BARS_NOTE}
+                </p>
+              ) : null}
               {showSignals ? (
                 <SignalScoreTable
                   signals={chartSignals}
@@ -338,7 +348,9 @@ export default function MarketsTerminal({
 
         <div className="xl:col-span-4 flex flex-col gap-4">
           <OrderBookPanel symbol={symbol} />
-          <ExtendedHoursPanel symbol={symbol} interval={interval === "1d" ? "5m" : interval} />
+          {fx ? null : (
+            <ExtendedHoursPanel symbol={symbol} interval={interval === "1d" ? "5m" : interval} />
+          )}
           <SessionLevelsPanel
             levels={levels}
             unavailable={levelsUnavailable}
