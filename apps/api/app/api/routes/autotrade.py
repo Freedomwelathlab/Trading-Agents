@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.api.schemas_scan import BotScanResponse, SymbolBoardResponse
 from apps.api.app.auth.dependencies import get_current_user, require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.autotrade.learning import (
@@ -65,6 +66,7 @@ from apps.api.app.db.models import (
     AutotradeBotTrade,
     User,
 )
+from apps.api.app.marketdata.sessions import session_phase
 
 router = APIRouter(prefix="/autotrade", tags=["autotrade"])
 
@@ -141,10 +143,16 @@ class BotResponse(BaseModel):
     stopped_at: datetime | None
     last_evaluated_at: datetime | None
     created_at: datetime
+    asset_class: str = "equity"
+    """Phase 107 (D133): crypto / forex / equity, from the bot's symbols."""
 
     @classmethod
     def from_row(cls, b: AutotradeBot) -> BotResponse:
+        from apps.api.app.bots.scanboard import asset_class_of
+
+        classes = {asset_class_of(s) for s in b.symbols}
         return cls(
+            asset_class=classes.pop() if len(classes) == 1 else "mixed",
             id=b.id,
             name=b.name,
             broker_id=b.broker_id,
@@ -463,6 +471,120 @@ async def delete_autotrade_bots(
         results.append(DeleteBotResult(bot_id=bot_id, name=bot.name, outcome="deleted"))
     await session.commit()
     return DeleteBotsResponse(results=results)
+
+
+ASSET_EVIDENCE: dict[str, list[str]] = {
+    "crypto": [
+        "No crypto walk-forward has been run on this platform yet. Confidence figures are "
+        "each coin's own last 60 sessions on its 24-hour clock (+1R before the stop).",
+        "Crypto trades around the clock; a 24-hour bot is never forced flat.",
+    ],
+    "forex": [
+        "EUR/USD walk-forward (D123): every setup lost after a 1-pip round trip; pooled "
+        "-0.078R per trade, t -1.96 over 764 trades. sweep_mss had a real gross edge "
+        "(+0.161R, t 4.7) that breaks even near 1.1 pips.",
+        "Bars are mid prices with no volume, so volume-based setups never fire on FX.",
+    ],
+    "equity": [
+        "TQQQ 5m walk-forward with the stop buffer searched (D125): 1 promising setup "
+        "(bollinger_confluence +0.058R, t 0.18, 23 trades), 0 recommended.",
+    ],
+}
+
+
+@router.get("/bots/{bot_id}/scan", response_model=BotScanResponse)
+async def scan_autotrade_bot(
+    bot_id: uuid.UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BotScanResponse:
+    """Phase 107 (D133): the bot's dashboard - every setup scored on each
+    symbol's latest bar, the recommendation it adds up to, and the
+    research evidence for the asset class. Read-only: places nothing. For
+    crypto and forex the newest bars are fetched first (same throttled path
+    as the charts); equities read what the bot's last cycle stored."""
+    from datetime import UTC, timedelta
+
+    from apps.api.app.api.routes.marketdata import refresh_live_bars
+    from apps.api.app.autotrade.engine import bot_calendar
+    from apps.api.app.autotrade.profiles import deployable_profiles
+    from apps.api.app.backtesting.brackets import BracketPlan
+    from apps.api.app.bots.scanboard import (
+        asset_class_of,
+        build_board,
+        calibration_or_start,
+    )
+    from apps.api.app.db.base import get_session_factory
+    from apps.api.app.marketdata.sessions import SessionPhase
+    from apps.api.app.marketdata.store import MarketDataStore
+    from apps.api.app.marketdata.structure import Direction
+
+    bot = await _load_owned_bot(session, bot_id, current_user)
+    history = await closed_trades(session, bot.id)
+    enabled = active_setups(
+        list(bot.setups), strategy_mode=bot.strategy_mode, stats=stats_by_setup(history)
+    )
+    directions = (Direction.LONG, Direction.SHORT) if bot.allow_short else (Direction.LONG,)
+    backfill = request.app.state.market_data_bar_backfill_provider
+    store = MarketDataStore(session)
+    today = datetime.now(UTC).date()
+    history_days = 12 if bot.bar_interval == "1m" else 92
+    boards = []
+    for symbol in bot.symbols:
+        cls = asset_class_of(symbol)
+        if cls == "crypto" or (cls == "forex" and "fx" in backfill.configured_roles):
+            await refresh_live_bars(
+                session, backfill, symbol, bot.bar_interval, today - timedelta(days=3), today
+            )
+        bars = await store.get_bars(
+            symbol, bar_interval=bot.bar_interval,
+            start_date=today - timedelta(days=6), end_date=today,
+        )
+
+        def loader(symbol: str = symbol, cls: str = cls):
+            async def load() -> list:
+                # Crypto history comes straight from the free vendor; equity
+                # and FX from what is stored (FX is metered - D132).
+                start = today - timedelta(days=history_days)
+                if cls == "crypto":
+                    return await backfill.provider_for(symbol).get_bars(
+                        symbol, bar_interval=bot.bar_interval, start_date=start, end_date=today
+                    )
+                async with get_session_factory()() as own:
+                    return await MarketDataStore(own).get_bars(
+                        symbol, bar_interval=bot.bar_interval, start_date=start, end_date=today
+                    )
+
+            return load
+
+        symbol_enabled = enabled
+        if bot.strategy_mode == "tuned":
+            symbol_enabled = [p.setup for p in deployable_profiles(symbol, bot.bar_interval)]
+        min_score = bot.min_score
+        if bot.extended_hours_min_score is not None and bars and bot_calendar(
+            symbol, bot.market_type
+        ) is None and session_phase(bars[-1].ts) in (
+            SessionPhase.PRE_MARKET, SessionPhase.AFTER_HOURS
+        ):
+            min_score = max(min_score, bot.extended_hours_min_score)
+        calibration, calibration_status = calibration_or_start(
+            symbol, bot.bar_interval, bot.market_type, loader()
+        )
+        board = build_board(
+            symbol, bars, enabled_setups=symbol_enabled, market_type=bot.market_type,
+            plan=BracketPlan(), min_score=min_score, allow_directions=directions,
+            calibration=calibration,
+        )
+        boards.append(SymbolBoardResponse.of(board, calibration=calibration_status))
+    classes = {asset_class_of(s) for s in bot.symbols}
+    asset_class = classes.pop() if len(classes) == 1 else "mixed"
+    return BotScanResponse(
+        bot_id=str(bot.id), name=bot.name, asset_class=asset_class,
+        market_type=bot.market_type, bar_interval=bot.bar_interval, min_score=bot.min_score,
+        directions=[d.value for d in directions], generated_at=datetime.now(UTC),
+        boards=boards, evidence=ASSET_EVIDENCE.get(asset_class, []),
+    )
 
 
 @router.get("/bots/{bot_id}", response_model=BotResponse)

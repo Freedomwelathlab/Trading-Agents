@@ -77,6 +77,7 @@ from apps.api.app.options.paper_orders import (
     realized_pnl,
 )
 from apps.api.app.options_bot.selection import SelectionRefused, build_candidate, pick_expiry
+from apps.api.app.options_bot.signal import SIGNAL_MODE, structure_for, underlying_board
 from apps.api.app.risk.models import BlockReason
 from apps.api.app.safety.emergency_stop import is_emergency_stop_active
 
@@ -259,6 +260,7 @@ async def _enter(
     now: datetime,
     outcome: OptionsBotCycleOutcome,
     chains: dict[tuple[str, Any], OptionChain | str],
+    bar_router: Any | None = None,
 ) -> None:
     open_trades = await _open_trades(session, bot.id)
     if len(open_trades) >= bot.max_concurrent_positions:
@@ -276,7 +278,21 @@ async def _enter(
         outcome.notes.append("no entry: one new structure per session day, already opened today")
         return
 
-    structure = OptionStructureType(bot.structure_type)
+    if bot.structure_type == SIGNAL_MODE:
+        # Phase 107 (D134): the underlying's scan decides the side.
+        board = await underlying_board(
+            session, bot.underlying,
+            min_score=bot.min_signal_score if bot.min_signal_score is not None else 5,
+            bar_router=bar_router, now=now,
+        )
+        chosen = structure_for(board.recommendation)
+        if chosen is None:
+            outcome.notes.append(f"no entry: {board.headline}")
+            return
+        outcome.notes.append(f"signal: {board.headline} -> {chosen.value}")
+        structure = chosen
+    else:
+        structure = OptionStructureType(bot.structure_type)
     try:
         expiries = await provider.get_expiries(bot.underlying)
     except (DataUnavailableError, VendorError) as exc:
@@ -432,7 +448,7 @@ async def run_options_bot_cycle(
                   outcome=outcome, chains=chains)
     outcome.trades_closed += await sync_closed_trades(session, bot, run)
     await _enter(session, bot, run, broker, provider=provider, settings=settings, now=now,
-                 outcome=outcome, chains=chains)
+                 outcome=outcome, chains=chains, bar_router=bar_router)
 
     bot.last_evaluated_at = clock()
     detail = "; ".join(outcome.notes) if outcome.notes else None

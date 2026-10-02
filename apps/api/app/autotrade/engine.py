@@ -34,7 +34,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
 
 from sqlalchemy import select
@@ -199,6 +199,25 @@ def _finish(
     return outcome
 
 
+CRYPTO_QUANTITY_STEP = Decimal("0.00000001")
+FX_REFRESH_MIN_SECONDS = 900
+"""Phase 107 (D133): a forex bot refreshes each pair at most every 15
+minutes. Twelve Data's free plan allows 800 requests a day; a bot cycle
+every minute would otherwise spend 1,440 per pair."""
+_last_fx_refresh: dict[tuple[str, str], float] = {}
+
+
+def position_size(symbol: str, capital: Decimal, price: Decimal) -> Decimal:
+    """Units `capital` buys at `price`: fractional coins for crypto (to 1e-8,
+    rounded down), whole units for everything else (shares; FX units)."""
+    if price <= 0:
+        return Decimal(0)
+    raw = capital / price
+    if BarBackfillRouter.is_crypto_symbol(symbol):
+        return raw.quantize(CRYPTO_QUANTITY_STEP, rounding=ROUND_FLOOR)
+    return raw.to_integral_value(rounding=ROUND_FLOOR)
+
+
 async def _refresh_bars(
     store: MarketDataStore,
     router: BarBackfillRouter,
@@ -208,9 +227,19 @@ async def _refresh_bars(
     as_of: datetime,
     notes: list[str],
 ) -> None:
-    end = session_date(as_of)
+    import time as _time
+
+    # The UTC date can run a day ahead of the New York session date; a
+    # 24-hour symbol's newest bars sit on the UTC date (Phase 107).
+    end = max(session_date(as_of), as_of.astimezone(UTC).date())
     start = end - timedelta(days=REFRESH_LOOKBACK_DAYS)
     for symbol in symbols:
+        if is_fx_symbol(symbol):
+            key = (symbol, bar_interval)
+            now_mono = _time.monotonic()
+            if now_mono - _last_fx_refresh.get(key, -1e9) < FX_REFRESH_MIN_SECONDS:
+                continue
+            _last_fx_refresh[key] = now_mono
         try:
             fresh = await router.get_bars(
                 symbol, bar_interval=bar_interval, start_date=start, end_date=end
@@ -527,14 +556,20 @@ async def run_bot_cycle(
         )
 
     needs_equity_vendor = any(
-        not BarBackfillRouter.is_crypto_symbol(s) for s in bot.symbols
+        not BarBackfillRouter.is_crypto_symbol(s) and not is_fx_symbol(s) for s in bot.symbols
     )  # Phase 106: a crypto-only bot needs only Coinbase, which needs no keys
+    needs_fx_vendor = any(is_fx_symbol(s) for s in bot.symbols)
     if bar_router is None or (
         needs_equity_vendor and "longbridge" not in bar_router.configured_vendors
     ):
         return _finish(
             run, outcome, AutotradeBotRunStatus.SKIPPED_NOT_CONFIGURED,
             "NOT_CONFIGURED: no equity market-data vendor is wired (LONGPORT_* unset)", clock,
+        )
+    if needs_fx_vendor and "fx" not in bar_router.configured_roles:
+        return _finish(
+            run, outcome, AutotradeBotRunStatus.SKIPPED_NOT_CONFIGURED,
+            "NOT_CONFIGURED: no forex bar vendor - set TWELVEDATA_API_KEY (D132)", clock,
         )
 
     if not phase_allowed(now, bot.market_type):
@@ -637,7 +672,13 @@ async def run_bot_cycle(
         # would fire on, not from the wall clock, so a cycle that runs late
         # still judges the bar it is actually looking at.
         effective_min = bot.min_score
-        if bot.extended_hours_min_score is not None and symbol_bars:
+        # Not for a 24-hour crypto/FX symbol: its own clock has no
+        # pre/post-market, so the equity premium would mis-fire at night.
+        if (
+            bot.extended_hours_min_score is not None
+            and symbol_bars
+            and bot_calendar(symbol, bot.market_type) is None
+        ):
             phase = session_phase(symbol_bars[-1].ts)
             if phase in (SessionPhase.PRE_MARKET, SessionPhase.AFTER_HOURS):
                 effective_min = max(bot.min_score, bot.extended_hours_min_score)
@@ -691,7 +732,7 @@ async def run_bot_cycle(
             continue
 
         price = hit.last_close
-        quantity = (bot.capital_per_trade / price).to_integral_value(rounding=ROUND_FLOOR)
+        quantity = position_size(hit.symbol, bot.capital_per_trade, price)
         if quantity <= 0:
             outcome.signals_skipped += 1
             outcome.notes.append(

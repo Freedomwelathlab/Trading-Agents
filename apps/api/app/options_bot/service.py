@@ -71,6 +71,7 @@ class OptionsBotSpec:
     stop_pct: Decimal
     max_concurrent_positions: int
     capital_per_trade: Decimal
+    min_signal_score: int | None = None
 
 
 def _touch(bot: OptionsBot) -> None:
@@ -101,12 +102,27 @@ async def create_options_bot(
             "has no live path (D122)."
         )
 
-    try:
-        structure = OptionStructureType(spec.structure_type)
-    except ValueError:
-        raise OptionsBotError(
-            f"BAD_STRUCTURE: expected one of {[s.value for s in BOT_STRUCTURES]}."
-        ) from None
+    from apps.api.app.options_bot.signal import DEFAULT_MIN_SIGNAL_SCORE, SIGNAL_MODE
+
+    signal_mode = spec.structure_type == SIGNAL_MODE
+    min_signal_score: int | None = None
+    if signal_mode:
+        # Phase 107 (D134): the scan picks a bull put or bear call spread,
+        # so the bot is validated as a credit spread.
+        structure = OptionStructureType.BULL_PUT
+        min_signal_score = (
+            DEFAULT_MIN_SIGNAL_SCORE if spec.min_signal_score is None else spec.min_signal_score
+        )
+        if not 0 <= min_signal_score <= 10:
+            raise OptionsBotError("BAD_SCORE: the minimum signal score is 0-10.")
+    else:
+        try:
+            structure = OptionStructureType(spec.structure_type)
+        except ValueError:
+            raise OptionsBotError(
+                f"BAD_STRUCTURE: expected one of "
+                f"{[s.value for s in BOT_STRUCTURES] + [SIGNAL_MODE]}."
+            ) from None
     if structure not in BOT_STRUCTURES:
         raise OptionsBotError(
             f"BAD_STRUCTURE: the bot opens {[s.value for s in BOT_STRUCTURES]}; "
@@ -147,7 +163,8 @@ async def create_options_bot(
         broker_id=spec.broker_id,
         status=OptionsBotStatus.PENDING_APPROVAL,
         underlying=underlying,
-        structure_type=structure.value,
+        structure_type=SIGNAL_MODE if signal_mode else structure.value,
+        min_signal_score=min_signal_score,
         target_delta=spec.target_delta,
         dte_min=spec.dte_min,
         dte_max=spec.dte_max,

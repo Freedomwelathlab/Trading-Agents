@@ -1,5 +1,6 @@
 "use client";
 
+import OptionsScanDashboard from "@/components/bots/OptionsScanDashboard";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { handleExpiredSession } from "@/lib/session";
 import { classifyWithAbsences, useKeyedFetch } from "@/lib/useKeyedFetch";
@@ -81,6 +82,7 @@ type BrokerRow = { id: string; name: string; kind: string };
 
 const STRUCTURES = [
   ["bull_put", "Bull put (credit)"],
+  ["signal", "Signal-driven: scan picks bull put / bear call"],
   ["bear_call", "Bear call (credit)"],
   ["iron_condor", "Iron condor (credit)"],
   ["bull_call", "Bull call (debit)"],
@@ -102,7 +104,16 @@ async function readJson(res: Response): Promise<Record<string, unknown> | null> 
   return (await res.json().catch(() => null)) as Record<string, unknown> | null;
 }
 
-export default function OptionsBotPanel({ underlying }: { underlying: string }) {
+export default function OptionsBotPanel({
+  underlying,
+  defaultStructure = "bull_put",
+  showDashboard = false,
+}: {
+  underlying: string;
+  defaultStructure?: string;
+  /** Phase 107: render the selected bot's scan dashboard (the Bots page). */
+  showDashboard?: boolean;
+}) {
   const classifyBrokers = useMemo(
     () => classifyWithAbsences<{ brokers: BrokerRow[] }>([404], "No brokers."),
     [],
@@ -117,7 +128,8 @@ export default function OptionsBotPanel({ underlying }: { underlying: string }) 
   const [name, setName] = useState("Options bot");
   const [brokerId, setBrokerId] = useState("");
   const [symbol, setSymbol] = useState(underlying);
-  const [structure, setStructure] = useState("bull_put");
+  const [structure, setStructure] = useState(defaultStructure);
+  const [minSignal, setMinSignal] = useState("5");
   const [delta, setDelta] = useState("0.30");
   const [dteMin, setDteMin] = useState("3");
   const [dteMax, setDteMax] = useState("14");
@@ -194,6 +206,7 @@ export default function OptionsBotPanel({ underlying }: { underlying: string }) 
           stop_pct: stop,
           max_concurrent_positions: Number(maxOpen),
           capital_per_trade: capital,
+          min_signal_score: structure === "signal" ? Number(minSignal) : null,
         }),
       });
       const data = await readJson(res);
@@ -268,6 +281,11 @@ export default function OptionsBotPanel({ underlying }: { underlying: string }) 
               ))}
             </select>
           </Field>
+          {structure === "signal" ? (
+            <Field label="Minimum signal score" hint="The underlying's best setup must score at least this (0–10) before a spread is opened on its side.">
+              <input id="ob-minsignal" type="number" min={0} max={10} value={minSignal} onChange={(e) => setMinSignal(e.target.value)} className={monoInputClass} />
+            </Field>
+          ) : null}
           <Field label="Target delta" hint="|delta| of the bought leg (debit) or the sold leg(s) (credit), from the vendor's Greeks.">
             <input id="ob-delta" type="number" step="0.01" min={0.01} max={0.99} value={delta} onChange={(e) => setDelta(e.target.value)} className={monoInputClass} />
           </Field>
@@ -363,6 +381,10 @@ export default function OptionsBotPanel({ underlying }: { underlying: string }) 
           Stop is final but closes nothing — open structures stay on the paper book, can be closed by hand, and settle at intrinsic from the underlying&rsquo;s close at expiry.
         </p>
       </Panel>
+
+      {current && showDashboard ? (
+        <OptionsScanDashboard botId={current.id} botName={current.name} />
+      ) : null}
 
       {current ? (
         <Panel

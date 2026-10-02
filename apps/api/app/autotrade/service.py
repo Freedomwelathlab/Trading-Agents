@@ -163,18 +163,24 @@ async def create_bot(session: AsyncSession, spec: BotSpec, *, user_id: uuid.UUID
     if not symbols:
         raise AutotradeError("NO_SYMBOLS: pick at least one symbol (or a non-empty watchlist).")
 
-    # Phase 103 (D123): fail closed on FX. The bot's scanner, bracket
-    # manager and sizing run on the US equity clock and bps costs; an FX
-    # pair through them would be scanned in the wrong session, sized in
-    # whole "shares" and priced without its spread. No FX setup survived
-    # walk-forward (docs/RESEARCH_FX.md), so an FX bot is deferred rather
-    # than half-supported.
-    fx = [s for s in symbols if is_fx_symbol(s)]
-    if fx:
+    # Phase 107 (D133): one asset class per bot - a crypto bot, a forex bot
+    # or an equity bot - so each runs on one clock and one dashboard.
+    from apps.api.app.bots.scanboard import asset_class_of
+
+    classes = {asset_class_of(s) for s in symbols}
+    if len(classes) > 1:
         raise AutotradeError(
-            f"FX_NOT_SUPPORTED: the autotrade bot does not trade FX pairs yet ({', '.join(fx)}). "
-            "No FX price feed is connected (the IG demo key is on hold) and no FX setup "
-            "survived spread costs (D123). The 24-hour clock is ready for when both change (D130)."
+            f"MIXED_ASSET_CLASSES: a bot trades one asset class; these symbols span "
+            f"{sorted(classes)}. Create a separate crypto, forex or equity bot."
+        )
+    # Phase 103 (D123) refused FX outright: the bot ran on the US equity
+    # clock. Since D130 it has a 24-hour FX clock, so an FX bot is allowed
+    # on that clock only (paper, priced from stored mid bars - D133).
+    fx = [s for s in symbols if is_fx_symbol(s)]
+    if fx and spec.market_type != "24h":
+        raise AutotradeError(
+            f"FX_NEEDS_24H: forex pairs ({', '.join(fx)}) trade on the 24-hour clock; "
+            "set the market to '24 hours'."
         )
 
     if spec.market_type not in MARKET_TYPES:

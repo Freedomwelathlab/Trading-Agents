@@ -8,6 +8,7 @@ export type Bot = {
   status: "pending_approval" | "active" | "paused" | "stopped";
   watchlist_id: string | null;
   symbols: string[];
+  asset_class?: "crypto" | "forex" | "equity" | "mixed";
   market_type: string;
   bar_interval: string;
   max_trades_per_session: number;

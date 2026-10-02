@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.api.schemas_scan import SymbolBoardResponse
 from apps.api.app.auth.dependencies import get_current_user, require_permission
 from apps.api.app.auth.permissions import Permission
 from apps.api.app.core.config import get_settings
@@ -78,6 +79,8 @@ class CreateOptionsBotRequest(BaseModel):
     stop_pct: Decimal = Field(gt=0)
     max_concurrent_positions: int = Field(ge=1, le=20)
     capital_per_trade: Decimal = Field(gt=0)
+    min_signal_score: int | None = Field(default=None, ge=0, le=10)
+    """Only for structure `signal` (D134); defaults to 5."""
 
 
 class PauseRequest(BaseModel):
@@ -104,10 +107,12 @@ class OptionsBotResponse(BaseModel):
     stopped_at: datetime | None
     last_evaluated_at: datetime | None
     created_at: datetime
+    min_signal_score: int | None = None
 
     @classmethod
     def from_row(cls, b: OptionsBot) -> OptionsBotResponse:
         return cls(
+            min_signal_score=b.min_signal_score,
             id=b.id, name=b.name, broker_id=b.broker_id, status=b.status.value,
             underlying=b.underlying, structure_type=b.structure_type,
             target_delta=b.target_delta, dte_min=b.dte_min, dte_max=b.dte_max,
@@ -253,6 +258,7 @@ async def create_bot(
         profit_target_pct=payload.profit_target_pct, stop_pct=payload.stop_pct,
         max_concurrent_positions=payload.max_concurrent_positions,
         capital_per_trade=payload.capital_per_trade,
+        min_signal_score=payload.min_signal_score,
     )
     try:
         bot = await create_options_bot(session, spec, user_id=current_user.id)
@@ -276,6 +282,158 @@ async def list_bots(
         )
     ).scalars().all()
     return ListOptionsBotsResponse(bots=[OptionsBotResponse.from_row(b) for b in rows])
+
+
+class ProposalLegResponse(BaseModel):
+    contract_symbol: str
+    right: str
+    strike: Decimal
+    side: str
+    bid: Decimal
+    ask: Decimal
+    fill_price: Decimal
+    delta: Decimal | None
+
+
+class OptionsProposalResponse(BaseModel):
+    structure_type: str
+    expiry: date
+    legs: list[ProposalLegResponse]
+    net_price: Decimal
+    """Per share: + debit paid, - credit received (modelled fill)."""
+    max_loss_per_contract: Decimal
+    max_profit_per_contract: Decimal | None
+    quantity: int
+    capital_at_risk: Decimal
+    quote_source: str
+
+
+class OptionsBotScanResponse(BaseModel):
+    bot_id: uuid.UUID
+    name: str
+    underlying: str
+    mode: str
+    """`signal` (the scan picks the side) or the bot's fixed structure."""
+    min_signal_score: int | None
+    generated_at: datetime
+    board: SymbolBoardResponse
+    structure_type: str | None
+    proposal: OptionsProposalResponse | None
+    proposal_note: str
+    evidence: list[str]
+
+
+OPTIONS_EVIDENCE = [
+    "TQQQ options walk-forward (D119): short put spreads modelled at +0.10R per trade, "
+    "but the model leans on a one-day volatility estimate - not yet an edge.",
+    "Chains are Cboe's 15-minute delayed quotes; fills are modelled at the mid moved half "
+    "the spread against you.",
+]
+
+
+@router.get("/{bot_id}/scan", response_model=OptionsBotScanResponse)
+async def scan_options_bot(
+    bot_id: uuid.UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> OptionsBotScanResponse:
+    """Phase 107 (D133/D134): the options bot's dashboard - the underlying's
+    scan board, the structure it points to, and the exact spread the bot
+    would open now, priced from the live (delayed) chain. Read-only."""
+    from datetime import UTC
+    from decimal import ROUND_FLOOR
+
+    from apps.api.app.api.schemas_scan import SymbolBoardResponse as _Board
+    from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
+    from apps.api.app.options.paper_book import fetch_chain, new_york_date
+    from apps.api.app.options.paper_orders import (
+        OptionOrderError,
+        OptionStructureType,
+        price_open,
+    )
+    from apps.api.app.options_bot.selection import (
+        SelectionRefused,
+        build_candidate,
+        pick_expiry,
+    )
+    from apps.api.app.options_bot.signal import (
+        DEFAULT_MIN_SIGNAL_SCORE,
+        SIGNAL_MODE,
+        structure_for,
+        underlying_board,
+    )
+
+    bot = await _load_owned(session, bot_id, current_user)
+    now = datetime.now(UTC)
+    min_score = bot.min_signal_score if bot.min_signal_score is not None else (
+        DEFAULT_MIN_SIGNAL_SCORE
+    )
+    board = await underlying_board(
+        session, bot.underlying, min_score=min_score,
+        bar_router=getattr(request.app.state, "market_data_bar_backfill_provider", None),
+        now=now,
+    )
+    if bot.structure_type == SIGNAL_MODE:
+        structure = structure_for(board.recommendation)
+    else:
+        structure = OptionStructureType(bot.structure_type)
+
+    proposal: OptionsProposalResponse | None = None
+    note = ""
+    provider = getattr(request.app.state, "option_chain_provider", None)
+    settings = get_settings()
+    if structure is None:
+        note = f"No spread proposed: {board.headline}"
+    else:
+        try:
+            expiries = await provider.get_expiries(bot.underlying) if provider else []
+            expiry = pick_expiry(
+                expiries, today=new_york_date(now), dte_min=bot.dte_min, dte_max=bot.dte_max
+            )
+            chain = await fetch_chain(provider, bot.underlying, expiry)
+            candidate = build_candidate(
+                structure, chain, target_delta=bot.target_delta, spread_width=bot.spread_width
+            )
+            econ = price_open(
+                structure, candidate.legs, chain, k=settings.options_paper_fill_haircut_k
+            )
+            qty = int(
+                (bot.capital_per_trade / econ.max_loss_per_contract).to_integral_value(
+                    rounding=ROUND_FLOOR
+                )
+            )
+            proposal = OptionsProposalResponse(
+                structure_type=structure.value, expiry=expiry,
+                legs=[
+                    ProposalLegResponse(
+                        contract_symbol=leg.contract_symbol, right=leg.right.value,
+                        strike=leg.strike, side=leg.side.value, bid=leg.bid, ask=leg.ask,
+                        fill_price=leg.fill_price, delta=leg.delta,
+                    )
+                    for leg in econ.legs
+                ],
+                net_price=econ.net_price,
+                max_loss_per_contract=econ.max_loss_per_contract,
+                max_profit_per_contract=econ.max_profit_per_contract,
+                quantity=max(qty, 0),
+                capital_at_risk=econ.max_loss_per_contract * max(qty, 0),
+                quote_source=getattr(chain, "source", "chain"),
+            )
+            note = (
+                f"{structure.value} on {bot.underlying} expiring {expiry.isoformat()}"
+                + ("" if qty >= 1 else " - capital per trade is below one spread's max loss")
+            )
+        except (SelectionRefused, OptionOrderError, DataUnavailableError, VendorError) as exc:
+            note = f"No spread priced: {exc}"
+    return OptionsBotScanResponse(
+        bot_id=bot.id, name=bot.name, underlying=bot.underlying,
+        mode="signal" if bot.structure_type == SIGNAL_MODE else "fixed",
+        min_signal_score=bot.min_signal_score, generated_at=now,
+        board=_Board.of(board, calibration="not computed for options"),
+        structure_type=structure.value if structure else None,
+        proposal=proposal, proposal_note=note, evidence=OPTIONS_EVIDENCE,
+    )
 
 
 @router.get("/{bot_id}", response_model=OptionsBotResponse)

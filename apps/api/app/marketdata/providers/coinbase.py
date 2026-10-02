@@ -165,6 +165,15 @@ class CoinbaseBarProvider:
 
         window_start = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
         window_end = datetime.combine(end_date, datetime.max.time(), tzinfo=UTC)
+        # Phase 107: never ask for candles after now - Coinbase refuses a page
+        # that starts in the future ("Start cannot be in the future"), which
+        # failed the WHOLE fetch whenever end_date was a caller's local today
+        # running ahead of UTC.
+        window_end = min(window_end, datetime.now(UTC))
+        if window_start > window_end:
+            raise DataUnavailableError(
+                f"Coinbase window for {symbol!r} starts after now ({start_date.isoformat()})."
+            )
 
         # De-duplicated by timestamp: consecutive pages can overlap at their
         # boundary, and `market_data_bars`' composite primary key would

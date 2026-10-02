@@ -12080,3 +12080,55 @@ is set; never picks IG on its own. FX charts refresh on read at most every
 demo key: 713 EUR/USD 5m bars. Singapore: the Longbridge account has US
 LV1 and HK entitlements only, and no free SGX API exists.
 Status: Done; FX charts start working once the key is set.
+
+## D133 — Separate crypto, forex and options bots, each with a scan dashboard (Phase 107)
+Date: 2026-10-02
+
+The operator asked for separate bots per asset class, built on the
+strategies already researched, each with a dashboard of the recommendation
+and the scan score.
+
+**One asset class per Autotrade bot.** Creation refuses mixed symbols
+(`MIXED_ASSET_CLASSES`). A crypto bot and a forex bot are Autotrade bots on
+the 24-hour clock (D130) with the same 13 setups, Risk Engine and exit
+rules. Forex was refused since D123; it is now allowed on the 24h clock
+only (`FX_NEEDS_24H`), priced from stored Twelve Data mid bars, and a run
+without an FX vendor ends `NOT_CONFIGURED`. Crypto positions are sized in
+fractional coins (1e-8, rounded down) - whole-unit sizing meant a $1,000
+bot could never buy BTC. Forex pairs refresh at most every 15 minutes
+(Twelve Data free plan: 800 requests/day). A 24h crypto/FX symbol no longer
+gets the equity extended-hours score premium, which mis-fired at night.
+
+**The scan board** (`bots/scanboard.py`) evaluates EVERY setup on each
+symbol's latest bar through the bot's own context builder
+(`build_latest_context`, refactored out of `scan_latest_bar`), so a
+dashboard can never show a score the bot would not compute. Per setup: the
+score, side, entry, stop, 1R target, verdict (would trade / score too low /
+side not allowed / stop rejected / setup off / no signal) and MEASURED
+confidence - the setup/side/score bucket's +1R-before-stop rate over the
+symbol's last 60 sessions on its own clock (n >= 10, else none). The best
+qualifying signal is the BUY/SELL recommendation; otherwise WAIT says why.
+The 60-session replay takes over a minute for a 24h market, so it runs in
+the background once per symbol per day and the board says "calculating"
+until it lands. Each dashboard shows the asset class's research evidence
+beside the score, because no setup has shown a significant edge.
+`GET /autotrade/bots/{id}/scan`. Read-only.
+
+Found while building it: Coinbase refused a candle page starting after
+"now", failing the whole fetch whenever a caller's end date ran ahead of
+UTC; the window is now clamped to the current time.
+Status: Done, tested.
+
+## D134 — Signal-driven options bot (Phase 107, migration 0039)
+Date: 2026-10-02
+
+An options bot with structure `signal` scans its underlying with the same
+board (regular session, both sides) before each entry: BUY opens a bull put
+spread, SELL a bear call spread, WAIT nothing - credit spreads because the
+options research modelled short put spreads (D119) and because they profit
+from direction or time. `options_bots.min_signal_score` (default 5) is the
+score the best setup must reach. Validated as a credit spread; paper only;
+same Risk Engine path. `GET /options-bots/{id}/scan` shows the board, the
+structure it points to and that spread priced from the live delayed chain
+(legs, credit/debit, max loss, max profit, quantity).
+Status: Done, tested.

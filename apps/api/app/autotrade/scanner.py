@@ -76,6 +76,78 @@ def _phase_allowed(phase: SessionPhase | None, market_type: str) -> bool:
     }.get(market_type) is phase
 
 
+@dataclass(frozen=True)
+class LatestContext:
+    """Everything knowable at the last bar, built exactly as the bot builds
+    it (Phase 107 shares this with the scan dashboards so a dashboard can
+    never show a score the bot itself would not compute)."""
+
+    ctx: BarContext
+    phase: SessionPhase
+    last_close: Decimal
+    last_ts: object
+
+
+def build_latest_context(
+    bars: Sequence,
+    *,
+    market_type: str,
+    swing_strength: int = 3,
+    calendar: SessionCalendar | None = None,
+) -> LatestContext | str:
+    """The detector context at the last bar, or the reason there is none."""
+    if not bars:
+        return "no_bars"
+    # Phase 106 (D130): a 24-hour bot scans on the symbol's own clock
+    # (crypto: every hour of a UTC day; FX: Sunday to Friday). Everything
+    # else keeps the US equity clock, exactly as before.
+    cal = calendar or US_EQUITY_CALENDAR
+    ordered = sorted(bars, key=lambda b: b.ts)
+    last = ordered[-1]
+    phase = cal.session_phase(last.ts)
+    if phase is None or not _phase_allowed(phase, market_type):
+        return f"phase_{phase.value if phase else 'closed'}_not_allowed"
+
+    levels_by_session = build_session_levels(ordered, calendar=cal)
+    sessions = group_by_session(ordered, calendar=cal)
+    day = cal.session_date(last.ts)
+    session_bars = sessions.get(day, [])
+    # The bot evaluates on the phase it is allowed to trade in. For the
+    # regular session that is exactly the backtest's `regular` list; for
+    # `auto` it is the whole extended day, which the backtest never
+    # traded — a documented difference, not a hidden one.
+    if market_type == "regular":
+        phase_bars = [b for b in session_bars if cal.session_phase(b.ts) is SessionPhase.REGULAR]
+    else:
+        phase_bars = [b for b in session_bars if cal.session_phase(b.ts) is not None]
+    if len(phase_bars) < MIN_SESSION_BARS:
+        return f"only_{len(phase_bars)}_bars_in_phase"
+    if phase_bars[-1].ts != last.ts:
+        return "last_bar_outside_phase"
+
+    levels = levels_by_session.get(day)
+    if levels is None:
+        return "no_session_levels"
+    vwap_points = {p.ts: p for p in session_vwap(session_bars, calendar=cal)}
+    swings = find_swings(phase_bars, strength=swing_strength)
+
+    i = len(phase_bars) - 1
+    window = phase_bars[max(0, i - _INDICATOR_LOOKBACK) : i + 1]
+    closes = [b.close for b in window]
+    ctx = BarContext(
+        bars=phase_bars,
+        index=i,
+        levels=levels,
+        swings=swings,
+        vwap=vwap_points.get(last.ts),
+        atr=_indicator(atr, window, 14),
+        rsi=_indicator(rsi, closes, 14),
+        ema_fast=_indicator(ema, closes, 9),
+        ema_slow=_indicator(ema, closes, 21),
+    )
+    return LatestContext(ctx=ctx, phase=phase, last_close=last.close, last_ts=last.ts)
+
+
 def scan_latest_bar(
     symbol: str,
     bars: Sequence,
@@ -103,57 +175,16 @@ def scan_latest_bar(
     """
     if not bars:
         return ScanOutcome(None, "no_bars")
-    # Phase 106 (D130): a 24-hour bot scans on the symbol's own clock
-    # (crypto: every hour of a UTC day; FX: Sunday to Friday). Everything
-    # else keeps the US equity clock, exactly as before.
-    cal = calendar or US_EQUITY_CALENDAR
-    ordered = sorted(bars, key=lambda b: b.ts)
-    last = ordered[-1]
-    phase = cal.session_phase(last.ts)
-    if not _phase_allowed(phase, market_type):
-        return ScanOutcome(None, f"phase_{phase.value if phase else 'closed'}_not_allowed")
-
     detectors = [(name, SETUPS[name]) for name in setups if name in SETUPS]
+    built = build_latest_context(
+        bars, market_type=market_type, swing_strength=swing_strength, calendar=calendar
+    )
+    if isinstance(built, str):
+        return ScanOutcome(None, built)
     if not detectors:
         return ScanOutcome(None, "no_known_setups")
-
-    levels_by_session = build_session_levels(ordered, calendar=cal)
-    sessions = group_by_session(ordered, calendar=cal)
-    day = cal.session_date(last.ts)
-    session_bars = sessions.get(day, [])
-    # The bot evaluates on the phase it is allowed to trade in. For the
-    # regular session that is exactly the backtest's `regular` list; for
-    # `auto` it is the whole extended day, which the backtest never
-    # traded — a documented difference, not a hidden one.
-    if market_type == "regular":
-        phase_bars = [b for b in session_bars if cal.session_phase(b.ts) is SessionPhase.REGULAR]
-    else:
-        phase_bars = [b for b in session_bars if cal.session_phase(b.ts) is not None]
-    if len(phase_bars) < MIN_SESSION_BARS:
-        return ScanOutcome(None, f"only_{len(phase_bars)}_bars_in_phase")
-    if phase_bars[-1].ts != last.ts:
-        return ScanOutcome(None, "last_bar_outside_phase")
-
-    levels = levels_by_session.get(day)
-    if levels is None:
-        return ScanOutcome(None, "no_session_levels")
-    vwap_points = {p.ts: p for p in session_vwap(session_bars, calendar=cal)}
-    swings = find_swings(phase_bars, strength=swing_strength)
-
-    i = len(phase_bars) - 1
-    window = phase_bars[max(0, i - _INDICATOR_LOOKBACK) : i + 1]
-    closes = [b.close for b in window]
-    ctx = BarContext(
-        bars=phase_bars,
-        index=i,
-        levels=levels,
-        swings=swings,
-        vwap=vwap_points.get(last.ts),
-        atr=_indicator(atr, window, 14),
-        rsi=_indicator(rsi, closes, 14),
-        ema_fast=_indicator(ema, closes, 9),
-        ema_slow=_indicator(ema, closes, 21),
-    )
+    ctx, phase = built.ctx, built.phase
+    last_close, last_ts = built.last_close, built.last_ts
 
     best: SetupSignal | None = None
     rejected: list[str] = []
@@ -177,14 +208,13 @@ def scan_latest_bar(
 
     if best is None:
         return ScanOutcome(None, "no_signal" if not rejected else "rejected:" + ",".join(rejected))
-    assert phase is not None
     return ScanOutcome(
         ScanHit(
             symbol=symbol,
             signal=best,
             atr=ctx.atr,
-            last_close=last.close,
-            last_ts=last.ts,
+            last_close=last_close,
+            last_ts=last_ts,
             phase=phase,
         ),
         "signal",

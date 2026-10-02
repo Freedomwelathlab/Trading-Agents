@@ -4112,3 +4112,22 @@ Shipped 2026-09-30. Decisions D127-D132. Migration 0038 (data only).
 
 **Operator**: set `TWELVEDATA_API_KEY` for FX charts; optionally set
 `LLM_PROVIDER_MODEL` to an exact id. Nothing traded; no live flag touched.
+
+## Phase 107 — Crypto, forex and options bots with scan dashboards
+
+Shipped 2026-10-02. Decisions D133, D134. Migration 0039. Paper only.
+
+* `bots/scanboard.py`: per-symbol board - every setup scored, verdicts,
+  1R targets, measured confidence (background daily replay), BUY/SELL/WAIT.
+* `autotrade/scanner.py`: `build_latest_context` shared by bot and board.
+* Autotrade: one asset class per bot; FX on the 24h clock; fractional
+  crypto sizing; 15-minute FX refresh throttle; no equity score premium on
+  24h crypto/FX; `GET /autotrade/bots/{id}/scan`; `asset_class` on bots.
+* Options bot: structure `signal`, `min_signal_score`;
+  `GET /options-bots/{id}/scan` with the priced proposal.
+* `signal_calibration.scan_signals(calendar=...)`.
+* Coinbase candle window clamped to now.
+* Web `/bots`: Crypto / Forex / Options tabs, create forms, bot lists and
+  dashboards (recommendation, score meters, verdicts, evidence, cycles).
+
+**Operator**: forex bots need `TWELVEDATA_API_KEY`. Nothing traded.

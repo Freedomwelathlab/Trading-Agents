@@ -59,12 +59,15 @@ class ScannedSignal:
     outcome: Literal["win", "loss", "open"]
 
 
-def _phase_bars(day_bars: Sequence[Any], market_type: MarketType) -> list[Any]:
+def _phase_bars(
+    day_bars: Sequence[Any], market_type: MarketType, phase_of: Any = None
+) -> list[Any]:
     from apps.api.app.marketdata.sessions import SessionPhase
 
+    phase_of = phase_of or session_phase
     if market_type == "regular":
-        return [b for b in day_bars if session_phase(b.ts) is SessionPhase.REGULAR]
-    return [b for b in day_bars if session_phase(b.ts) is not None]
+        return [b for b in day_bars if phase_of(b.ts) is SessionPhase.REGULAR]
+    return [b for b in day_bars if phase_of(b.ts) is not None]
 
 
 def _outcome(bars: Sequence[Any], i: int, signal: SetupSignal) -> Literal["win", "loss", "open"]:
@@ -94,15 +97,18 @@ def scan_signals(
     levels_by_day: dict[Any, Any],
     by_day: dict[Any, list[Any]],
     vwap_for_day: Any,
+    calendar: Any = None,
 ) -> tuple[list[ScannedSignal], int]:
     """Replay the detectors over the last `sessions` sessions, the way the
     bot's scanner builds its context (Phase 88), and follow each signal
     forward to its outcome. Returns (signals, bars scanned)."""
+    # Phase 107: a crypto or FX symbol is replayed on its own clock.
+    phase_of = calendar.session_phase if calendar is not None else session_phase
     out: list[ScannedSignal] = []
     scanned = 0
     for day in sorted(by_day)[-sessions:]:
         day_bars = by_day[day]
-        phase_bars = _phase_bars(day_bars, market_type)
+        phase_bars = _phase_bars(day_bars, market_type, phase_of)
         levels = levels_by_day.get(day)
         if levels is None or len(phase_bars) < MIN_SESSION_BARS:
             continue
@@ -123,7 +129,7 @@ def scan_signals(
                 ema_fast=_indicator(ema, closes, 9),
                 ema_slow=_indicator(ema, closes, 21),
             )
-            phase = session_phase(phase_bars[i].ts)
+            phase = phase_of(phase_bars[i].ts)
             for name in names:
                 signal = SETUPS[name](ctx)
                 if signal is None:

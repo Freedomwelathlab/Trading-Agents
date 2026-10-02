@@ -108,7 +108,7 @@ chart refreshes at most every five minutes - under 300 requests a day."""
 _last_crypto_refresh: dict[tuple[str, str], float] = {}
 
 
-async def _refresh_crypto_bars(
+async def refresh_live_bars(
     session: AsyncSession,
     backfill: BarBackfillRouter,
     symbol: str,
@@ -202,10 +202,10 @@ async def get_bars(
         )
 
     if BarBackfillRouter.is_crypto_symbol(symbol) and bar_interval in CRYPTO_READ_THROUGH_INTERVALS:
-        await _refresh_crypto_bars(session, backfill, symbol, bar_interval, start_date, end_date)
+        await refresh_live_bars(session, backfill, symbol, bar_interval, start_date, end_date)
     elif is_fx_symbol(symbol) and "fx" in backfill.configured_roles:
         # Phase 106 (D132): FX charts fill the same way once a vendor is set.
-        await _refresh_crypto_bars(session, backfill, symbol, bar_interval, start_date, end_date)
+        await refresh_live_bars(session, backfill, symbol, bar_interval, start_date, end_date)
 
     bars = await MarketDataStore(session).get_bars(
         symbol, bar_interval=bar_interval, start_date=start_date, end_date=end_date

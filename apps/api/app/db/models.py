@@ -2596,6 +2596,9 @@ class OptionsBot(Base):
     stop_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     """Close when unrealised P&L falls to -this % of the entry premium."""
     max_concurrent_positions: Mapped[int] = mapped_column(Integer, nullable=False)
+    min_signal_score: Mapped[int | None] = mapped_column(Integer)
+    """Phase 107 (D134): only for structure `signal` - the underlying scan
+    score a setup must reach before the bot opens a spread on its side."""
     capital_per_trade: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     """Maximum LOSS committed per new structure; contracts =
     floor(capital_per_trade / max loss per contract)."""

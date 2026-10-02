@@ -194,9 +194,11 @@ async def test_guardrails_are_specific_4xx():
         assert r.status_code == 400 and "UNKNOWN_SETUP" in r.json()["detail"]
         r = await post(symbols=[])
         assert r.status_code == 400 and "NO_SYMBOLS" in r.json()["detail"]
-        # Phase 103 (D123): the bot runs the equity clock; FX fails closed.
+        # Phase 107 (D133): one asset class per bot, and FX only on the 24h clock.
         r = await post(symbols=["TQQQ.US", "EURUSD.FX"])
-        assert r.status_code == 400 and "FX_NOT_SUPPORTED" in r.json()["detail"]
+        assert r.status_code == 400 and "MIXED_ASSET_CLASSES" in r.json()["detail"]
+        r = await post(symbols=["EURUSD.FX"], market_type="regular")
+        assert r.status_code == 400 and "FX_NEEDS_24H" in r.json()["detail"]
         r = await client.post("/autotrade/bots", json=body(uuid.uuid4()), headers=_h(token))
         assert r.status_code == 404
 
@@ -275,3 +277,43 @@ async def test_unused_bots_are_deleted_by_tick_box_and_an_active_one_is_refused(
             "/autotrade/bots/delete", json={"bot_ids": [active]}, headers=_h(token)
         )
         assert r.json()["results"][0]["outcome"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_crypto_and_forex_bots_have_a_scan_dashboard():
+    """Phase 107 (D133): separate crypto and forex bots, each with a scan
+    board per symbol - every setup scored, a BUY/SELL/WAIT recommendation
+    and the asset class's research evidence. Read-only."""
+    async with (
+        db_session() as session,
+        deploy_user(session) as (uid, email),
+        granted_paper_broker(session, uid) as broker_id,
+        api_client() as client,
+    ):
+        token = await _get_token(client, email)
+        r = await client.post(
+            "/autotrade/bots",
+            json=body(broker_id, name="Crypto 24h", symbols=["BTC-USD", "ETH-USD"],
+                      market_type="24h", capital_per_trade="500"),
+            headers=_h(token),
+        )
+        assert r.status_code == 201, r.text
+        crypto = r.json()
+        assert crypto["asset_class"] == "crypto"
+        r = await client.post(
+            "/autotrade/bots",
+            json=body(broker_id, name="FX 24h", symbols=["EURUSD.FX"], market_type="24h"),
+            headers=_h(token),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["asset_class"] == "forex"
+
+        r = await client.get(f"/autotrade/bots/{crypto['id']}/scan", headers=_h(token))
+        assert r.status_code == 200, r.text
+        scan = r.json()
+        assert scan["asset_class"] == "crypto" and len(scan["boards"]) == 2
+        assert scan["evidence"]
+        for board in scan["boards"]:
+            assert board["recommendation"] in ("BUY", "SELL", "WAIT")
+            assert board["headline"]
+            assert board["calibration"].split(":")[0] in ("ready", "calculating", "unavailable")

@@ -242,3 +242,39 @@ async def test_engine_refusals_each_leave_a_terminal_run_row():
         )).scalars().all()
         assert len(runs) == 5 and all(r.completed_at is not None for r in runs)
         assert all(r.status is not OptionsBotRunStatus.FAILED for r in runs)
+
+
+@pytest.mark.asyncio
+async def test_a_signal_bot_and_its_scan_dashboard():
+    """Phase 107 (D134): structure `signal` lets the underlying's scan pick
+    a bull put or bear call spread; the scan endpoint shows the board and
+    the spread it points to (or why there is none)."""
+    async with (
+        db_session() as session,
+        options_user(session) as (uid, email),
+        granted_broker(session, uid) as broker_id,
+        api_client() as client,
+    ):
+        token = await _get_token(client, email)
+        r = await client.post(
+            "/options-bots", json=body(broker_id, structure_type="signal", min_signal_score=6),
+            headers=_h(token),
+        )
+        assert r.status_code == 201, r.text
+        bot = r.json()
+        assert bot["structure_type"] == "signal" and bot["min_signal_score"] == 6
+        r = await client.post(
+            "/options-bots", json=body(broker_id, structure_type="signal", min_signal_score=11),
+            headers=_h(token),
+        )
+        assert r.status_code == 422
+        r = await client.get(f"/options-bots/{bot['id']}/scan", headers=_h(token))
+        assert r.status_code == 200, r.text
+        scan = r.json()
+        assert scan["mode"] == "signal" and scan["underlying"] == "TQQQ.US"
+        assert scan["board"]["recommendation"] in ("BUY", "SELL", "WAIT")
+        assert scan["proposal_note"]
+        if scan["board"]["recommendation"] == "WAIT":
+            assert scan["structure_type"] is None and scan["proposal"] is None
+        else:
+            assert scan["structure_type"] in ("bull_put", "bear_call")

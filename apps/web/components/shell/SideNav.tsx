@@ -23,6 +23,7 @@ type Item = {
     | "/strategies/history"
     | "/strategies/leaderboard"
     | "/autotrade"
+    | "/bots"
     | "/admin";
   label: string;
   icon: React.ReactNode;
@@ -187,6 +188,7 @@ const ITEMS: Item[] = [
   { href: "/strategies/history", label: "Backtest history", icon: <IconClock /> },
   { href: "/strategies/leaderboard", label: "Leaderboard", icon: <IconTrophy /> },
   { href: "/autotrade", label: "Autotrade", icon: <IconBot /> },
+  { href: "/bots", label: "Crypto · FX · Options bots", icon: <IconBot /> },
   { href: "/admin", label: "Administration", icon: <IconShield /> },
 ];
 
