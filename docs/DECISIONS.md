@@ -12132,3 +12132,49 @@ same Risk Engine path. `GET /options-bots/{id}/scan` shows the board, the
 structure it points to and that spread priced from the live delayed chain
 (legs, credit/debit, max loss, max profit, quantity).
 Status: Done, tested.
+
+## D135 — Strategy Library: published daily strategies, measured not asserted (Phase 108)
+Date: 2026-11-16
+
+A benchmark against QuantConnect, MetaTrader 5, Freqtrade/3Commas, Option
+Alpha and India's AlgoTest/Tradetron/Streak found Trading OS had intraday
+setups, options structures and a Strategy Lab for user-written expressions,
+but no library of ready, published, portfolio-level daily strategies - the
+first thing every one of those platforms offers. Every intraday setup
+measured here so far has had no edge (D118, D120, D125), so the library
+starts from rules with a published track record instead.
+
+**Data: Yahoo's public chart endpoint, for daily research only.** Nothing
+already wired covers twenty years of US, SG and India history with
+dividend-adjusted closes. Yahoo does, keyless. It is unofficial, so it is
+fenced: daily bars only, `source="yahoo"` on everything, never used for a
+quote or an order price, off with `LIBRARY_DATA_PROVIDER=none`, and every
+failure is a coded refusal. History is held in a bounded in-process cache,
+not Postgres - the database is the service that dominates the Railway bill.
+
+**The data is screened before use.** Measured: US, SG, crypto and FX series
+were clean; Indian series held bad ticks (`NIFTYBEES.NS` -90% for two
+sessions in December 2019; `BAJFINANCE.NS` +10,849% for one). A spike that
+reverts within ten sessions is dropped and listed. A jump that does not
+revert is not trusted: everything before it is discarded and the symbol
+starts later. Nothing is repaired or interpolated.
+
+**No look-ahead, conservative costs.** A decision on close `t` trades on
+close `t+1`. Costs per side: US 3 bps, SG 15, India 15, crypto 40, FX 2.
+Cash earns nothing. Parameters are the published defaults; none was tuned
+here.
+
+**In-sample and out-of-sample are split at the publication date**, and the
+verdict is judged on the period after it. The verdict is a fixed rule: a
+strategy "beats" buy-and-hold only when ahead on both return and Sharpe. A
+universe of today's index members can never get that verdict - it is
+labelled `survivorship_biased`.
+
+**Found while building it:** the engine's first version held one pending
+decision, so a strategy deciding every day never traded with a one-session
+lag; pending decisions are now queued. The Donchian rule used "at or
+above", which flapped on a flat price; it is now strictly above/below.
+
+Not built: shorting costs and FX financing (warned on every affected
+report), T-bill hurdle for dual momentum (zero is used and stated).
+Status: Done, tested. Results in docs/RESEARCH_LIBRARY.md.

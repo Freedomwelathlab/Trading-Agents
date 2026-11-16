@@ -29,6 +29,7 @@ from apps.api.app.api.routes.emergency_stop import router as emergency_stop_rout
 from apps.api.app.api.routes.emergency_stop import status_router as emergency_stop_status_router
 from apps.api.app.api.routes.health import router as health_router
 from apps.api.app.api.routes.leaderboard import router as leaderboard_router
+from apps.api.app.api.routes.library import router as library_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
 from apps.api.app.api.routes.monte_carlo import router as monte_carlo_router
 from apps.api.app.api.routes.monte_carlo import (
@@ -557,6 +558,7 @@ app.include_router(option_snapshots_admin_router)
 # registration order is not load-bearing) and the options paper bot.
 app.include_router(option_orders_router)
 app.include_router(options_bots_router)
+app.include_router(library_router)
 app.include_router(brokers_router)
 # Phase 50: user-scoped, not broker-scoped - registered next to the
 # market-data router it shares a resolution path with rather than with the

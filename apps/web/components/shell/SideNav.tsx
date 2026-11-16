@@ -22,6 +22,7 @@ type Item = {
     | "/strategies"
     | "/strategies/history"
     | "/strategies/leaderboard"
+    | "/library"
     | "/autotrade"
     | "/bots"
     | "/admin";
@@ -187,6 +188,7 @@ const ITEMS: Item[] = [
   { href: "/strategies", label: "Strategy Lab", icon: <IconFlask /> },
   { href: "/strategies/history", label: "Backtest history", icon: <IconClock /> },
   { href: "/strategies/leaderboard", label: "Leaderboard", icon: <IconTrophy /> },
+  { href: "/library", label: "Strategy library", icon: <IconFlask /> },
   { href: "/autotrade", label: "Autotrade", icon: <IconBot /> },
   { href: "/bots", label: "Crypto · FX · Options bots", icon: <IconBot /> },
   { href: "/admin", label: "Administration", icon: <IconShield /> },

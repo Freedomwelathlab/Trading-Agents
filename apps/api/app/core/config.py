@@ -626,6 +626,13 @@ class Settings(BaseSettings):
     picks IG on its own, because an IG login attempt can extend a key
     suspension."""
 
+    library_data_provider: Literal["yahoo", "none"] = "yahoo"
+    """Phase 108 (D135): where the Strategy Library reads adjusted daily
+    history. `yahoo` is Yahoo Finance's public chart endpoint - keyless,
+    unofficial, end-of-day, research only. `none` switches the library's
+    backtests off (they answer 503 NOT_CONFIGURED). It never feeds a
+    quote, an intraday bot or an order price."""
+
     twelvedata_api_key: str | None = None
     """Phase 106 (D132): a Twelve Data API key (free Basic plan: 8 requests
     a minute, 800 a day, personal use). Serves FX and spot-metal bars."""

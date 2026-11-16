@@ -4131,3 +4131,38 @@ Shipped 2026-10-02. Decisions D133, D134. Migration 0039. Paper only.
   dashboards (recommendation, score meters, verdicts, evidence, cycles).
 
 **Operator**: forex bots need `TWELVEDATA_API_KEY`. Nothing traded.
+
+## Phase 108 — Strategy Library: published daily strategies on real history
+
+Shipped 2026-11-16. Decision D135. No migration. Research only - no order
+path touched.
+
+* `marketdata/providers/yahoo.py`: adjusted DAILY history for US, SG
+  (`.SG`), India (`.IN`), HK, crypto and FX. Keyless and unofficial;
+  labelled `source="yahoo"`; never feeds a quote, an intraday bot or an
+  order price. `LIBRARY_DATA_PROVIDER=none` switches it off.
+* `library/quality.py`: reverting bad ticks dropped and listed; history
+  before an unexplained one-session jump discarded; refused if too little
+  remains.
+* `library/engine.py`: weights-based daily backtest - decision on close
+  `t`, traded on `t+1`, per-market costs, cash earns nothing, union
+  calendar with last-close marks.
+* `library/strategies.py`: 200-day trend filter, 12-month time-series
+  momentum, Donchian 55/20, dual momentum, cross-sectional momentum
+  rotation, RSI(2) pullback - each with citations, publication date,
+  published default parameters and caveats; 13 universes.
+* `library/service.py`: report split before/after publication, fixed-rule
+  verdict (`beats_benchmark`, `survivorship_biased`, `lower_risk`,
+  `no_edge`, `insufficient_history`), bounded in-memory caches (no rows).
+* `GET /library/strategies`, `POST /library/backtest` (`strategy:backtest`).
+* Web `/library`: strategy list, rule / evidence / weaknesses, universe and
+  parameters, verdict, log equity chart, strategy vs buy-and-hold table,
+  current holdings with reasons, year table, warnings, data screen.
+* `scripts/library_report.py` -> `docs/research/library_results.json`;
+  results written up in `docs/RESEARCH_LIBRARY.md`.
+
+**Measured (after publication, net of costs)**: trend rules cut drawdowns
+but trail buy-and-hold on return in US, SG and India; momentum rotation
+beat buy-and-hold on US asset classes and sectors; RSI(2) with next-session
+entry has no edge; FX majors show nothing; crypto trend/breakout results are
+on survivor coins. Nothing here is a deployment recommendation.

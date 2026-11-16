@@ -2477,3 +2477,10 @@ null, "providers": {"ibkr": "ready" | "NOT_CONNECTED: ..." |
   token: `NOT_CONFIGURED`; without a fresh heartbeat: `NOT_CONNECTED`
   immediately, nothing queued.
 * `GET /health` gains `bridge_agent`: `configured` or `NOT_CONFIGURED: ...`.
+
+### Strategy Library (Phase 108, D135)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/library/strategies` | `strategy:backtest`. `{ strategies: [{ id, name, family, cadence, summary, rules[], evidence[{authors, year, title, venue, url}], published_year, params[{key, label, default, minimum, maximum, help, integer}], caveats[], min_symbols }], presets: [{ id, label, market, symbols[], benchmark[], strategies[], note, survivorship }], cost_bps, data_source, max_symbols, disclaimer }`. |
+| POST | `/library/backtest` | `strategy:backtest`. `{ strategy_id, preset_id?, symbols?[], benchmark?[], params?{}, lag? (0-5, default 1), start?, cost_bps? }` → `{ segments: [{ label, strategy, benchmark }] (whole / before publication / after publication; each metrics object has cagr, volatility, sharpe, sortino, max_drawdown, calmar, t_stat, best_year, worst_year - null when too short), verdict { code, headline, detail }, curve[{d, s, b}], years[], trades, turnover_per_year, cost_drag_per_year, avg_exposure, target[{symbol, weight, note}], decided_on, data[{symbol, vendor_symbol, first, last, bars, last_close, cost_bps, removed[], truncated_before}], warnings[], source, as_of }`. 404 unknown strategy or universe; 422 `INVALID_REQUEST` / `INVALID_SYMBOL` / `INSUFFICIENT_DATA` / `DATA_QUALITY`; 503 `DATA_UNAVAILABLE` (vendor) or `NOT_CONFIGURED` (`LIBRARY_DATA_PROVIDER=none`). Writes nothing. |
