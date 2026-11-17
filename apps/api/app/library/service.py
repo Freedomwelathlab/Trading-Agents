@@ -18,7 +18,11 @@ from typing import Any, Protocol
 
 from apps.api.app.library.engine import PriceTable, RunResult, run_strategy
 from apps.api.app.library.metrics import Metrics, compute_metrics, segment, yearly_returns
-from apps.api.app.library.quality import DataQualityError, screen_history
+from apps.api.app.library.quality import (
+    DataQualityError,
+    completed_sessions,
+    screen_history,
+)
 from apps.api.app.library.strategies import (
     BASELINE,
     LibraryStrategy,
@@ -99,15 +103,21 @@ def reset_caches() -> None:
 
 
 async def load_histories(
-    provider: DailyHistoryProvider, symbols: list[str], *, cache: HistoryCache | None = None
+    provider: DailyHistoryProvider,
+    symbols: list[str],
+    *,
+    cache: HistoryCache | None = None,
+    now: datetime | None = None,
 ) -> list[DailyHistory]:
+    """Screened histories of COMPLETED sessions, in the order asked for."""
     cache = cache or _HISTORY
     gate = asyncio.Semaphore(FETCH_CONCURRENCY)
+    moment = now or datetime.now(UTC)
 
     async def one(symbol: str) -> DailyHistory:
         async with gate:
             try:
-                return await cache.get(provider, symbol)
+                history = completed_sessions(await cache.get(provider, symbol), moment)
             except DataQualityError as exc:
                 raise LibraryError("DATA_QUALITY", str(exc)) from None
             except DataUnavailableError as exc:
@@ -116,6 +126,9 @@ async def load_histories(
                 raise LibraryError("DATA_UNAVAILABLE", f"{symbol}: {exc}") from None
             except ValueError as exc:
                 raise LibraryError("INVALID_SYMBOL", str(exc)) from None
+            if len(history) == 0:
+                raise LibraryError("DATA_UNAVAILABLE", f"{symbol}: no completed session yet.")
+            return history
 
     return list(await asyncio.gather(*(one(s) for s in symbols)))
 

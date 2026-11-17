@@ -177,6 +177,30 @@ def test_longbridge_and_binance_are_implemented_and_refuse_an_incomplete_set():
     assert "app_secret" in str(err.value) and "access_token" in str(err.value)
 
 
+def test_zerodha_is_implemented_equity_only_and_builds_validate_only_by_default():
+    # Phase 110 (D137): the first India venue. Kite has no sandbox, so a
+    # credential set that does not ask for real orders cannot place one.
+    entry = get_provider("zerodha")
+    assert entry.adapter_status == "implemented"
+    assert entry.asset_classes == frozenset({AssetClass.EQUITY})
+    assert not entry.supports_short and not entry.supports_fractional
+    secret = {f.name: f.kind.value for f in entry.credential_fields}
+    assert secret["access_token"] == "secret"
+
+    adapter = build_adapter("zerodha", {"api_key": "k", "access_token": "t"})
+    assert adapter._validate_only is True  # type: ignore[attr-defined]
+    armed = build_adapter("zerodha", {"api_key": "k", "access_token": "t", "live_orders": "true"})
+    assert armed._validate_only is False  # type: ignore[attr-defined]
+
+    with pytest.raises(Exception, match="NOT_CONFIGURED") as err:
+        build_adapter("zerodha", {"api_key": "k"})
+    assert "access_token" in str(err.value)
+    with pytest.raises(BrokerCannotError):
+        check_supported("zerodha", order=order(quantity=D("0.5")), asset_class=AssetClass.EQUITY)
+    with pytest.raises(BrokerCannotError):
+        check_supported("zerodha", asset_class=AssetClass.OPTION)
+
+
 # --- Phase 106 (D128): provider names are case-insensitive, with aliases ----
 
 

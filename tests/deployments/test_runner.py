@@ -118,7 +118,11 @@ async def test_a_buy_signal_places_and_fills_a_paper_order_linked_to_the_run() -
             .all()
         )
         # all_in is risk-rejected once, retried at the engine's cap, filled.
-        assert orders[-1].status is OrderStatus.FILLED
+        # Counted, not read off the end of the list: `submitted_at` is a
+        # server-side `now()`, which Postgres pins to the transaction start,
+        # so both orders of one cycle carry the same timestamp and their
+        # relative order is not defined.
+        assert sum(o.status is OrderStatus.FILLED for o in orders) == 1
         assert all(o.deployment_run_id == run.id for o in orders)
 
         position = (

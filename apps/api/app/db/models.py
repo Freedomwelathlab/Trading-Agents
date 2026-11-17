@@ -2863,3 +2863,115 @@ class BridgeAgentHeartbeat(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     agent_version: Mapped[str | None] = mapped_column(String(32))
     gateways: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+
+
+class LibraryBotStatus(str, enum.Enum):  # noqa: UP042 (str mixin matches this codebase)
+    PENDING_APPROVAL = "pending_approval"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    STOPPED = "stopped"
+
+
+class LibraryBotRunStatus(str, enum.Enum):  # noqa: UP042
+    SUCCEEDED = "succeeded"
+    """The cycle ran to the end. `orders_filled` may be zero: holding the
+    target already, or every quote being stale, is a completed cycle."""
+    FAILED = "failed"
+    SKIPPED_NOT_ACTIVE = "skipped_not_active"
+    SKIPPED_EMERGENCY_STOP = "skipped_emergency_stop"
+    SKIPPED_LIVE_NOT_SUPPORTED = "skipped_live_not_supported"
+    SKIPPED_NOT_CONFIGURED = "skipped_not_configured"
+
+
+class LibraryBot(Base):
+    """A paper robot that holds what one Strategy Library rule says to hold
+    (Phase 109, D136, migration 0040).
+
+    The bot is a SUB-ACCOUNT of a paper broker: it starts with `capital` in
+    `cash`, and `positions` records only what this bot bought. Several bots
+    and a person can share one paper broker without one rebalancing away
+    another's holdings. Every order still goes through the Risk Engine
+    against the WHOLE broker account.
+    """
+
+    __tablename__ = "library_bots"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    broker_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[LibraryBotStatus] = mapped_column(
+        _str_enum(LibraryBotStatus, 24), nullable=False, default=LibraryBotStatus.PENDING_APPROVAL
+    )
+    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbols: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    capital: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    """What the bot was given to manage. Never changes; `cash` and
+    `positions` are what it has become."""
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    """Kill switch. When the bot's own equity falls this far below its peak
+    it sells what it holds and pauses itself. NULL = no kill switch."""
+
+    cash: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    positions: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    """`{symbol: quantity-as-string}` - this bot's own holdings."""
+    target: Mapped[dict | None] = mapped_column(JSONB)
+    """The weights the strategy last decided, `{symbol: weight}`."""
+    last_decision_date: Mapped[date | None] = mapped_column(Date)
+    """The session whose close produced `target`. A cycle that sees the
+    same date again has nothing new to act on."""
+    last_equity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    peak_equity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_reason: Mapped[str | None] = mapped_column(String(500))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LibraryBotRun(Base):
+    """One cycle of one library bot. Append-only; always resolves to a
+    terminal status, and says why when nothing was traded."""
+
+    __tablename__ = "library_bot_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    bot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("library_bots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[LibraryBotRunStatus] = mapped_column(
+        _str_enum(LibraryBotRunStatus, 32), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    orders_filled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orders_rejected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    equity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    """The bot's own equity at the end of the cycle, marked at the quotes
+    the cycle used. NULL when the cycle could not value it."""
+    decision_date: Mapped[date | None] = mapped_column(Date)
+    target: Mapped[dict | None] = mapped_column(JSONB)
+    orders: Mapped[list | None] = mapped_column(JSONB)
+    """Every order the cycle attempted: symbol, side, quantity, price,
+    quote time and source, outcome, and the `orders.id` when one was made."""
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

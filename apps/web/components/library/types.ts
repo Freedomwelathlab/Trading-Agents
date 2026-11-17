@@ -112,6 +112,59 @@ export type BacktestResult = {
   generated_at: string;
 };
 
+export type LibraryBot = {
+  id: string;
+  name: string;
+  broker_id: string;
+  status: "pending_approval" | "active" | "paused" | "stopped";
+  strategy_id: string;
+  symbols: string[];
+  params: Record<string, number>;
+  capital: string;
+  max_drawdown_pct: string | null;
+  cash: string;
+  positions: Record<string, string>;
+  target_weights: Record<string, number> | null;
+  target_explain: Record<string, string>;
+  target_refused: Record<string, string>;
+  data_as_of: string | null;
+  last_decision_date: string | null;
+  last_equity: string | null;
+  peak_equity: string | null;
+  return_pct: string | null;
+  approved_at: string | null;
+  paused_reason: string | null;
+  stopped_at: string | null;
+  last_evaluated_at: string | null;
+  created_at: string;
+};
+
+export type LibraryBotOrder = {
+  symbol: string;
+  side: string;
+  quantity: string;
+  price: string;
+  quote_as_of: string;
+  quote_source: string;
+  outcome: string;
+  detail: string | null;
+  order_id: string | null;
+};
+
+export type LibraryBotRun = {
+  id: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  orders_filled: number;
+  orders_rejected: number;
+  equity: string | null;
+  decision_date: string | null;
+  target: Record<string, number> | null;
+  orders: LibraryBotOrder[];
+  detail: string | null;
+};
+
 export function pct(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   const v = value * 100;

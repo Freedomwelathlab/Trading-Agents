@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from apps.api.app.marketdata.providers.yahoo import DailyHistory
@@ -140,9 +140,28 @@ class PriceTable:
         return math.sqrt(var) * math.sqrt(self.periods_per_year())
 
     def is_month_end(self, i: int) -> bool:
-        """The last session of a calendar month. The final row of the table
-        is never one: the month it belongs to may not be over yet."""
-        return i + 1 < len(self.dates) and self.dates[i + 1].month != self.dates[i].month
+        """The last session of a calendar month.
+
+        For every row but the last that is simply "the next row is in
+        another month". The last row has no next row, so the calendar
+        answers instead: it is a month end when the next day this table
+        would trade (the next weekday, or the next day for a seven-day
+        market) falls in another month. That lets a live bot see a
+        month-end decision on the session it is made, as the backtest
+        does, rather than a session late. A holiday on the true last
+        weekday is the one case it misses, by one session.
+        """
+        if i + 1 < len(self.dates):
+            return self.dates[i + 1].month != self.dates[i].month
+        last = self.dates[i]
+        nxt = last + timedelta(days=1)
+        if not self._trades_weekends():
+            while nxt.weekday() >= 5:
+                nxt += timedelta(days=1)
+        return nxt.month != last.month
+
+    def _trades_weekends(self) -> bool:
+        return any(d.weekday() >= 5 for d in self.dates[-10:])
 
     def periods_per_year(self) -> float:
         span = (self.dates[-1] - self.dates[0]).days

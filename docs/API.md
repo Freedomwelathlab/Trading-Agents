@@ -2484,3 +2484,46 @@ null, "providers": {"ibkr": "ready" | "NOT_CONNECTED: ..." |
 |---|---|---|
 | GET | `/library/strategies` | `strategy:backtest`. `{ strategies: [{ id, name, family, cadence, summary, rules[], evidence[{authors, year, title, venue, url}], published_year, params[{key, label, default, minimum, maximum, help, integer}], caveats[], min_symbols }], presets: [{ id, label, market, symbols[], benchmark[], strategies[], note, survivorship }], cost_bps, data_source, max_symbols, disclaimer }`. |
 | POST | `/library/backtest` | `strategy:backtest`. `{ strategy_id, preset_id?, symbols?[], benchmark?[], params?{}, lag? (0-5, default 1), start?, cost_bps? }` → `{ segments: [{ label, strategy, benchmark }] (whole / before publication / after publication; each metrics object has cagr, volatility, sharpe, sortino, max_drawdown, calmar, t_stat, best_year, worst_year - null when too short), verdict { code, headline, detail }, curve[{d, s, b}], years[], trades, turnover_per_year, cost_drag_per_year, avg_exposure, target[{symbol, weight, note}], decided_on, data[{symbol, vendor_symbol, first, last, bars, last_close, cost_bps, removed[], truncated_before}], warnings[], source, as_of }`. 404 unknown strategy or universe; 422 `INVALID_REQUEST` / `INVALID_SYMBOL` / `INSUFFICIENT_DATA` / `DATA_QUALITY`; 503 `DATA_UNAVAILABLE` (vendor) or `NOT_CONFIGURED` (`LIBRARY_DATA_PROVIDER=none`). Writes nothing. |
+
+### Strategy Library paper bots (Phase 109, D136)
+
+PAPER brokers only. Every order goes through the Risk Engine and OMS.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/library/bots` | `strategy:deploy`. `{ name?, broker_id, strategy_id, symbols[], params?{}, capital, max_drawdown_pct? (1-90) }` → bot, status `pending_approval`. 422 `LIVE_NOT_SUPPORTED` (not a paper broker), `BAD_LIMITS`, unknown strategy or symbol. |
+| GET | `/library/bots` | The caller's bots (admin: all). `{ items: [...], limit, offset }`. |
+| GET | `/library/bots/{id}` | `{ id, name, broker_id, status, strategy_id, symbols[], params, capital, max_drawdown_pct, cash, positions{}, target_weights{}?, target_explain{}, target_refused{}, data_as_of, last_decision_date, last_equity?, peak_equity?, return_pct?, approved_at, paused_reason, stopped_at, last_evaluated_at, created_at }`. `last_equity` / `return_pct` are null until the first cycle. |
+| POST | `/library/bots/{id}/approve` | `strategy:approve_deployment`. `pending_approval` → `active`. |
+| POST | `/library/bots/{id}/pause` · `/resume` · `/stop` | `strategy:deploy`. Resume resets the drawdown peak. Stop is final. |
+| POST | `/library/bots/{id}/run` | `strategy:deploy`. One cycle now; works with the unattended loop off. `{ status, run_status, run_detail, orders_filled, orders_rejected, equity }`. Sends an alert if a channel is configured (D138). |
+| POST | `/library/bots/{id}/delete` | `strategy:deploy`. Refused while `active` / `paused` or while the bot still holds a position. |
+| GET | `/library/bots/{id}/runs` | `{ items: [{ id, status, started_at, completed_at, orders_filled, orders_rejected, equity, decision_date, target, orders[{symbol, side, quantity, price, quote_as_of, quote_source, outcome, detail, order_id}], detail }], limit, offset }`. |
+
+Settings: `LIBRARY_BOT_RUNNER_ENABLED` (default `false`),
+`LIBRARY_BOT_RUNNER_INTERVAL_SECONDS` (900),
+`LIBRARY_BOT_MAX_QUOTE_AGE_SECONDS` (1200),
+`LIBRARY_BOT_RUNNER_CYCLE_LOCK_ENABLED` (`true`).
+
+### Zerodha provider (Phase 110, D137)
+
+No new route. `GET /brokers/providers` gains `zerodha` (`adapter_status:
+implemented`, `asset_classes: ["equity"]`, credential fields `api_key`
+(masked), `access_token` (secret), `live_orders`). Env vars `ZERODHA_*`.
+`POST /brokers/providers/zerodha/connection-check` reads funds, holdings
+and positions and places nothing; an expired daily token answers
+`TOKEN_EXPIRED`. Orders use symbols as `NSE:INFY` / `BSE:SBIN`; without
+`live_orders=true` every order is priced by Kite and refused with
+`VALIDATE_ONLY`.
+
+### Operator alerts (Phase 111, D138)
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/admin/alerts/test` | `admin:manage`. Sends one fixed test message to the configured channel. 200 `{ channel, delivered: true, detail }` only when the channel accepted it; 503 `NOT_CONFIGURED`; 502 `ALERT_NOT_DELIVERED: <the channel's reason>`. |
+
+Settings: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (both or neither;
+unset by default). Library bots alert on a fill, a rejection, a
+kill-switch pause and a failed cycle; autotrade and options bots on a
+trade opened or closed and on a failed cycle (at most hourly per bot). An
+idle cycle sends nothing. Outbound only.

@@ -683,6 +683,7 @@ async def run_autotrade_bot_now(
             bar_router=getattr(request.app.state, "market_data_bar_backfill_provider", None),
             news_provider=getattr(request.app.state, "news_provider", None),
             only_bot_id=bot_id,
+            alerts=getattr(request.app.state, "alert_sink", None),
         )
     outcome = result.outcomes[0] if result.outcomes else None
     return RunNowResponse(

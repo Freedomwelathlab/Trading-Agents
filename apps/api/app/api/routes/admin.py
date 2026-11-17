@@ -25,6 +25,7 @@ surface, not a general admin panel.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +70,7 @@ from apps.api.app.db.models import (
 )
 from apps.api.app.marketdata.bar_router import BarBackfillRouter, UnroutableSymbolError
 from apps.api.app.marketdata.ingestion.backfill import run_backfill_job
+from apps.api.app.notifications.alerts import AlertError, AlertSink, get_alert_sink
 from apps.api.app.notifications.provider import EmailProvider, EmailProviderError
 
 router = APIRouter(
@@ -669,3 +671,33 @@ async def revoke_broker_grant(
 
     await session.delete(grant)
     await session.commit()
+
+
+class AlertTestResponse(BaseModel):
+    channel: str
+    delivered: bool
+    detail: str
+
+
+@router.post("/alerts/test", response_model=AlertTestResponse)
+async def send_test_alert(
+    current_user: User = Depends(require_permission(Permission.ADMIN)),
+    sink: AlertSink | None = Depends(get_alert_sink),
+) -> AlertTestResponse:
+    """Phase 111 (docs/DECISIONS.md D138): send one fixed test message to
+    the configured alert channel, so an operator can confirm it works
+    before relying on it. The text is fixed - this is not a way to send an
+    arbitrary message. 503 when no channel is configured; 502 when the
+    channel refused, with its own reason. `delivered: true` is returned
+    only when the channel accepted the message."""
+    if sink is None:
+        raise HTTPException(
+            status_code=503,
+            detail="NOT_CONFIGURED: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable alerts.",
+        )
+    try:
+        await sink.send("Trading OS: test alert. If you can read this, alerts are working.")
+    except AlertError as exc:
+        raise HTTPException(status_code=502, detail=f"ALERT_NOT_DELIVERED: {exc}") from exc
+    logger.info("alert_test_sent", channel=sink.name, user_id=str(current_user.id))
+    return AlertTestResponse(channel=sink.name, delivered=True, detail="accepted by the channel")

@@ -47,6 +47,7 @@ from apps.api.app.db.models import (
 )
 from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.marketdata.news_provider import NewsProvider
+from apps.api.app.notifications.alerts import AlertSink, alert_bot_cycle
 from apps.api.app.portfolio.cycle_lock import SnapshotCycleLock, SnapshotCycleLockDecision
 
 logger = get_logger(__name__)
@@ -101,6 +102,7 @@ async def run_bot_isolated(
     clock: Callable[[], datetime],
     bar_router: BarBackfillRouter | None,
     news_provider: NewsProvider | None,
+    alerts: AlertSink | None = None,
 ) -> BotCycleOutcome | None:
     """One bot, one transaction, always a terminal run row."""
     started = clock()
@@ -114,6 +116,7 @@ async def run_bot_isolated(
             and await _recent_closed_row(session, bot.id, started)
         ):
             return None  # market closed and already said so within the hour
+        bot_name = bot.name
         run = AutotradeBotRun(
             id=uuid.uuid4(),
             bot_id=bot.id,
@@ -129,6 +132,12 @@ async def run_bot_isolated(
                 bar_router=bar_router, news_provider=news_provider,
             )
             await session.commit()
+            # Phase 111 (D138): after the commit, best-effort.
+            await alert_bot_cycle(
+                alerts, kind="Autotrade bot", name=bot_name, key=str(bot_id),
+                opened=outcome.trades_opened, closed=outcome.trades_closed,
+                failed=outcome.status is AutotradeBotRunStatus.FAILED, detail=outcome.detail,
+            )
             return outcome
         except Exception as exc:  # noqa: BLE001 - the run row must resolve
             await session.rollback()
@@ -148,9 +157,14 @@ async def run_bot_isolated(
                 "autotrade_bot_cycle_failed",
                 bot_id=str(bot_id), error=str(exc), error_type=type(exc).__name__,
             )
+            detail = f"{type(exc).__name__}: {exc}"
+            await alert_bot_cycle(
+                alerts, kind="Autotrade bot", name=bot_name, key=str(bot_id),
+                opened=0, closed=0, failed=True, detail=detail,
+            )
             return BotCycleOutcome(
                 bot_id=bot_id, run_id=run.id, status=AutotradeBotRunStatus.FAILED,
-                detail=f"{type(exc).__name__}: {exc}",
+                detail=detail,
             )
 
 
@@ -179,6 +193,7 @@ async def run_autotrade_cycle(
     cycle_lock: SnapshotCycleLock | None = None,
     clock: Callable[[], datetime] = utc_now,
     only_bot_id: uuid.UUID | None = None,
+    alerts: AlertSink | None = None,
 ) -> AutotradeCycleResult:
     """One pass over every ACTIVE bot (or one bot, for the manual
     "scan now" route). Each bot is its own transaction."""
@@ -209,7 +224,7 @@ async def run_autotrade_cycle(
         for bot_id in bot_ids:
             outcome = await run_bot_isolated(
                 session_factory, bot_id, settings=settings, clock=clock,
-                bar_router=bar_router, news_provider=news_provider,
+                bar_router=bar_router, news_provider=news_provider, alerts=alerts,
             )
             if outcome is not None:
                 outcomes.append(outcome)
@@ -230,6 +245,7 @@ class AutotradeBotRunner:
         news_provider: NewsProvider | None = None,
         cycle_lock: SnapshotCycleLock | None = None,
         clock: Callable[[], datetime] = utc_now,
+        alerts: AlertSink | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive.")
@@ -242,6 +258,7 @@ class AutotradeBotRunner:
             cycle_lock if cycle_lock is not None else SnapshotCycleLock(enabled=False)
         )
         self._clock = clock
+        self._alerts = alerts
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -275,6 +292,7 @@ class AutotradeBotRunner:
             cycle_lock=self._cycle_lock,
             clock=self._clock,
             only_bot_id=only_bot_id,
+            alerts=self._alerts,
         )
 
     async def _run(self) -> None:

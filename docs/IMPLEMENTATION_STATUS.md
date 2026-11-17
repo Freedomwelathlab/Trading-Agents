@@ -4166,3 +4166,119 @@ but trail buy-and-hold on return in US, SG and India; momentum rotation
 beat buy-and-hold on US asset classes and sectors; RSI(2) with next-session
 entry has no edge; FX majors show nothing; crypto trend/breakout results are
 on survivor coins. Nothing here is a deployment recommendation.
+
+## Phase 109 — Strategy Library paper bots
+
+Built 2026-11-16. Decision D136. Migration `0040_library_bots`. PAPER
+brokers only; no live path was added and no live flag was touched.
+
+* `library/bot.py`: one cycle - target weights from COMPLETED daily
+  sessions, a quote per held/target symbol, the bot's own sub-account
+  valued (its cash + its positions), sells then buys through
+  `autotrade.engine._submit` (the Risk Engine and OMS path every other bot
+  uses). Buys are sized down to the per-position cap and the bot's cash;
+  a quote older than `LIBRARY_BOT_MAX_QUOTE_AGE_SECONDS` (default 1200) is
+  not traded on; a negative weight is left as cash; a symbol the Risk
+  Engine refused is left alone until the next decision. Drawdown kill
+  switch sells and pauses the bot.
+* `library/bot_service.py`: create (pending approval), approve, pause,
+  resume (fresh peak), stop. A live broker is refused at create and again
+  inside the cycle.
+* `library/bot_runner.py`: unattended loop, OFF by default
+  (`LIBRARY_BOT_RUNNER_ENABLED=false`), 15-minute wake-up, one run row an
+  hour for an idle bot, advisory cycle lock.
+* `marketdata/providers/yahoo.py`: `get_quote` (delayed, labelled
+  `source="yahoo-delayed"`) - used for library paper fills only.
+* `/library/bots` CRUD + approve / pause / resume / stop / run / delete /
+  runs. Web `/library`: "Paper-trade it" panel and a card per bot.
+* `scripts/library_paper_rehearsal.py`: end-to-end rehearsal on a
+  throwaway paper broker; cleans up after itself.
+
+**Rehearsal result (2026-11-16, local database, real data)**: 7 bots
+approved, two cycles. Filled on paper: ES3.SG 1509 @ 5.293, BTC-USD
+0.12358754 @ 64666.71, GBPUSD.FX 2273 @ 1.3196, AUDUSD.FX 4438 @ 0.6759.
+The US bots placed nothing: their quotes were ~58 hours old (market
+closed), and the bot refused to trade on them - the intended behaviour.
+The second cycle placed no duplicate orders. This proves the execution
+path, not profitability: a paper bot has no track record yet.
+
+Not done: the runner is not enabled in production; nothing is deployed.
+
+## Phase 110 — Zerodha (Kite Connect) connector: India, built and off
+
+Built 2026-11-16. Decision D137. No migration. No credential was written
+and no live flag was touched.
+
+* `execution/adapters/zerodha.py`: `ZerodhaAdapter` on the standard
+  `BrokerAdapter` port - delivery equity (`CNC`) on NSE/BSE, whole shares,
+  market and limit orders, cancel. VALIDATE-ONLY by default (Kite's
+  `/margins/orders` prices the order and places nothing). Fill read back
+  from the order's history; partial fills report the executed quantity; an
+  unexecuted order raises `OrderNotConfirmedError` with Kite's id; an
+  expired daily token is reported as `TOKEN_EXPIRED`.
+* `execution/registry.py`: `zerodha` provider, `adapter_status:
+  implemented`, equity only, no shorting, no fractional. It appears in
+  `GET /brokers/providers` and the connection check with no further code.
+* `scripts/zerodha_login.py`: shows the Kite login link and exchanges the
+  pasted `request_token` for the day's access token.
+* Tests: `tests/execution/test_zerodha_adapter.py` (28) and one registry
+  test, against a stub shaped like Zerodha's documented responses.
+
+**NOT verified against a real Kite account** - no key was available. Three
+things stand between this and a real order, and none is code:
+1. A Zerodha account with a Kite Connect app (the user's to create).
+2. The access token expires daily at 06:00 IST and needs a browser login.
+3. SEBI's retail algo framework requires API orders from a static IP
+   registered with the broker; the Railway service has none by default.
+
+## Phase 111 — Operator alerts over Telegram
+
+Built 2026-11-16. Decision D138. No migration. Off until the operator sets
+both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; neither was set here.
+
+* `notifications/alerts.py`: `AlertSink` port, `TelegramAlertSink`
+  (delivery claimed only on HTTP 200 with `ok: true`; the bot token, which
+  is part of the request URL, never reaches an error or a log line),
+  `build_alert_sink` (both values or no channel), `notify` (best-effort,
+  never raises).
+* `library/bot_runner.py`: one message when a library bot fills or is
+  refused an order, is paused by its kill switch, or fails a cycle. Sent
+  after the commit. An idle cycle is silent.
+* `autotrade/runner.py` (stock, crypto and forex bots) and
+  `options_bot/runner.py`: one message when a cycle opens or closes a
+  trade, or fails. A bot failing every cycle is reported once an hour
+  (`AlertThrottle`, in process memory), not once a minute.
+* `POST /admin/alerts/test`: fixed test message; 503 `NOT_CONFIGURED`,
+  502 with the channel's own reason, 200 only on acceptance.
+* Startup log reports `alerts: telegram | NOT_CONFIGURED`.
+
+Not done: strategy deployments and manual orders do not alert. No
+inbound commands (by design).
+Web: admin page gains an "Alert channel" panel with a "Send test alert"
+button (`components/admin/AlertsAdmin.tsx`).
+
+## Server usage review (2026-11-16)
+
+Measured from Railway's own metrics, production, last 7 days:
+
+| Service | CPU (vCPU, avg) | Memory (GB, avg) | Disk (GB) |
+|---|---|---|---|
+| API (`Trading-Agents`) | 0.0014 | 0.342 (flat, 0.338-0.347) | - |
+| Postgres (TimescaleDB) | 0.0011 | 0.448 (0.401-0.495) | 0.364 |
+
+Memory is essentially the whole usage bill; CPU, disk and network are
+rounding errors. Postgres is the larger half and is already started with
+`shared_buffers=256MB`, `max_connections=40`, capped at 1 vCPU / 1 GB.
+
+What Phases 108-111 add:
+* Library history: in-process cache, measured 0.72 MB per symbol (5
+  symbols, 5.5k-8.5k bars each = 3.6 MB). Cap is 80 symbols, 6-hour TTL, so
+  at most ~58 MB, and nothing in Postgres. A backtest result is 260 curve
+  points - negligible.
+* Library bots: loop off by default; when on, a 15-minute wake-up and one
+  small run row per idle bot per hour.
+* Zerodha adapter and Telegram alerts: no loop, no table, lazy imports.
+
+Only lever left that is worth anything: Postgres `shared_buffers` 256MB ->
+128MB (the whole database is 0.36 GB on disk). It is a production start
+command change, so it is the operator's to make. Not changed.

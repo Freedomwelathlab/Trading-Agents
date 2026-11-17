@@ -28,7 +28,8 @@ mistaken for an error.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from apps.api.app.library.strategies import market_of
 from apps.api.app.marketdata.providers.yahoo import DailyHistory
@@ -61,6 +62,43 @@ class DataQualityError(Exception):
         self.symbol = symbol
         self.day = day
         self.move = move
+
+
+_MARKET_ZONES: dict[str, str] = {
+    "US": "America/New_York",
+    "SG": "Asia/Singapore",
+    "IN": "Asia/Kolkata",
+    "HK": "Asia/Hong_Kong",
+    "AU": "Australia/Sydney",
+    "UK": "Europe/London",
+}
+
+
+def market_today(symbol: str, now: datetime) -> date:
+    """Today's date where the symbol trades (UTC for crypto and FX)."""
+    zone = _MARKET_ZONES.get(market_of(symbol))
+    return now.astimezone(ZoneInfo(zone)).date() if zone else now.date()
+
+
+def completed_sessions(history: DailyHistory, now: datetime) -> DailyHistory:
+    """The history without the session still in progress.
+
+    A vendor's daily series includes today's bar while today is still
+    trading, and its "close" is just the last price so far. A rule
+    evaluated on that would decide on a close that has not happened. So
+    any bar dated today (or later) in the market's own timezone is left
+    out; it comes back as a completed session tomorrow.
+    """
+    today = market_today(history.symbol, now)
+    keep = sum(1 for d in history.dates if d < today)
+    if keep == len(history.dates):
+        return history
+    return replace(
+        history,
+        dates=history.dates[:keep],
+        closes=history.closes[:keep],
+        adj_closes=history.adj_closes[:keep],
+    )
 
 
 def limits_for(symbol: str) -> tuple[float, float]:

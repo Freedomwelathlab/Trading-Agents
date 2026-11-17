@@ -30,6 +30,8 @@ from apps.api.app.api.routes.emergency_stop import status_router as emergency_st
 from apps.api.app.api.routes.health import router as health_router
 from apps.api.app.api.routes.leaderboard import router as leaderboard_router
 from apps.api.app.api.routes.library import router as library_router
+from apps.api.app.api.routes.library_bots import get_bot_feeds
+from apps.api.app.api.routes.library_bots import router as library_bots_router
 from apps.api.app.api.routes.marketdata import router as marketdata_router
 from apps.api.app.api.routes.monte_carlo import router as monte_carlo_router
 from apps.api.app.api.routes.monte_carlo import (
@@ -88,6 +90,10 @@ from apps.api.app.execution.reconciliation import (
     LiveOrderReconciler,
     build_reconciler_cycle_lock,
 )
+from apps.api.app.library.bot_runner import (
+    LibraryBotRunner,
+    build_library_bot_runner_cycle_lock,
+)
 from apps.api.app.marketdata.bar_router import BarBackfillRouter
 from apps.api.app.marketdata.depth_provider import RoutedDepthProvider
 from apps.api.app.marketdata.providers.cboe import (
@@ -111,6 +117,7 @@ from apps.api.app.marketdata.providers.longbridge import (
 )
 from apps.api.app.marketdata.providers.twelvedata import build_twelvedata_fx_bar_provider
 from apps.api.app.marketdata.router import MarketDataRouter
+from apps.api.app.notifications.alerts import build_alert_sink
 from apps.api.app.notifications.transactional_email import build_email_provider
 from apps.api.app.options.snapshot_scheduler import (
     OptionSnapshotScheduler,
@@ -216,6 +223,10 @@ async def lifespan(app: FastAPI):
     # hand through POST /admin/users/{id}/password-reset. Nothing ever
     # reports an email as sent when this is None.
     app.state.email_provider = build_email_provider(settings)
+
+    # Phase 111 (D138): operator alerts over Telegram. None unless both
+    # TELEGRAM_* values are set; nothing reports an alert as sent when it is.
+    app.state.alert_sink = build_alert_sink(settings)
 
     llm_provider = build_llm_provider(settings)
     app.state.trader_agent = build_trader_agent(llm_provider)
@@ -337,6 +348,7 @@ async def lifespan(app: FastAPI):
             interval_seconds=settings.autotrade_runner_interval_seconds,
             bar_router=app.state.market_data_bar_backfill_provider,
             news_provider=app.state.news_provider,
+            alerts=app.state.alert_sink,
             cycle_lock=build_autotrade_runner_cycle_lock(
                 enabled=settings.autotrade_runner_cycle_lock_enabled
             ),
@@ -377,12 +389,32 @@ async def lifespan(app: FastAPI):
             interval_seconds=settings.options_bot_runner_interval_seconds,
             provider=app.state.option_chain_provider,
             bar_router=app.state.market_data_bar_backfill_provider,
+            alerts=app.state.alert_sink,
             cycle_lock=build_options_bot_runner_cycle_lock(
                 enabled=settings.options_bot_runner_cycle_lock_enabled
             ),
         )
         options_runner.start()
         app.state.options_bot_runner = options_runner
+
+    # Phase 109 (D136): the Strategy Library bot loop. Opt-in, paper only,
+    # and slow by design - see library/bot_runner.py.
+    app.state.library_bot_runner = None
+    if settings.library_bot_runner_enabled:
+        library_provider, library_quotes = get_bot_feeds()
+        library_runner = LibraryBotRunner(
+            get_session_factory(),
+            settings=settings,
+            interval_seconds=settings.library_bot_runner_interval_seconds,
+            provider=library_provider,
+            quotes=library_quotes,
+            alerts=app.state.alert_sink,
+            cycle_lock=build_library_bot_runner_cycle_lock(
+                enabled=settings.library_bot_runner_cycle_lock_enabled
+            ),
+        )
+        library_runner.start()
+        app.state.library_bot_runner = library_runner
 
     logger.info(
         "trading_os_startup",
@@ -414,6 +446,7 @@ async def lifespan(app: FastAPI):
         # D063: NOT_CONFIGURED here does NOT disable password resets - it
         # means the link is delivered by an admin rather than by email.
         email_provider="configured" if app.state.email_provider else "NOT_CONFIGURED",
+        alerts="telegram" if app.state.alert_sink else "NOT_CONFIGURED",
         llm_provider="configured" if llm_provider else "NOT_CONFIGURED",
         technical_analyst="configured" if app.state.technical_analyst else "NOT_CONFIGURED",
         strategy_research_assistant=(
@@ -489,6 +522,8 @@ async def lifespan(app: FastAPI):
         await app.state.option_snapshot_scheduler.stop()
     if app.state.options_bot_runner is not None:
         await app.state.options_bot_runner.stop()
+    if app.state.library_bot_runner is not None:
+        await app.state.library_bot_runner.stop()
 
     # The engine created at import time in apps/api/app/db/base.py owns a
     # live asyncpg connection pool. Process exit reclaims those sockets
@@ -559,6 +594,7 @@ app.include_router(option_snapshots_admin_router)
 app.include_router(option_orders_router)
 app.include_router(options_bots_router)
 app.include_router(library_router)
+app.include_router(library_bots_router)
 app.include_router(brokers_router)
 # Phase 50: user-scoped, not broker-scoped - registered next to the
 # market-data router it shares a resolution path with rather than with the

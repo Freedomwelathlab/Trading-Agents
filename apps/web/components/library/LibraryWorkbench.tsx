@@ -12,6 +12,7 @@ import {
   monoInputClass,
 } from "@/components/ui/primitives";
 import BacktestReport from "./BacktestReport";
+import LibraryBots from "./LibraryBots";
 import type { BacktestResult, Catalogue, LibraryStrategy, Preset } from "./types";
 
 /**
@@ -85,6 +86,17 @@ export default function LibraryWorkbench() {
     [catalogue, strategyId],
   );
   const preset = presets.find((p) => p.id === presetId) ?? null;
+  const chosenSymbols = useMemo(
+    () => (presetId === CUSTOM ? symbols.split(/[\s,]+/).filter(Boolean) : (preset?.symbols ?? [])),
+    [presetId, symbols, preset],
+  );
+  const chosenParams = useMemo(() => {
+    const numeric: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(params)) {
+      if (raw.trim() !== "" && Number.isFinite(Number(raw))) numeric[key] = Number(raw);
+    }
+    return numeric;
+  }, [params]);
 
   function chooseStrategy(id: string) {
     setStrategyId(id);
@@ -284,6 +296,13 @@ export default function LibraryWorkbench() {
           </div>
         ) : null}
       </div>
+
+      <LibraryBots
+        strategies={catalogue.strategies}
+        strategy={strategy}
+        symbols={chosenSymbols}
+        params={chosenParams}
+      />
     </div>
   );
 }

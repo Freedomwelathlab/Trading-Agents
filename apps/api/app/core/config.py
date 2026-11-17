@@ -564,6 +564,26 @@ class Settings(BaseSettings):
     """Same cross-worker advisory-lock discipline as the other loops, on
     the options bot runner's own key."""
 
+    library_bot_runner_enabled: bool = False
+    """Phase 109 (D136): the unattended loop for Strategy Library paper
+    bots. OFF by default - switching it on is the operator's decision. A
+    bot still cannot act until a person creates AND approves it, and it
+    trades PAPER brokers only. "Run now" works with this off."""
+
+    library_bot_runner_interval_seconds: int = 900
+    """Seconds between library-bot wake-ups. These are DAILY strategies: a
+    decision changes at most once a session, and a bot that found nothing
+    to do is left alone for an hour whatever this is set to."""
+
+    library_bot_runner_cycle_lock_enabled: bool = True
+    """Same cross-worker advisory-lock discipline as the other loops."""
+
+    library_bot_max_quote_age_seconds: int = 1200
+    """A library bot will not trade on a quote older than this. Its quotes
+    are a delayed public feed, so the limit is looser than the Risk
+    Engine's own; past it the market is taken to be closed and the order
+    waits for the next cycle."""
+
     strategy_drift_min_round_trips: int = 10
     """Phase 66 (D084): a deployment's own closed round trips must reach
     this count before `evaluate_deployment_drift` will render a verdict at
@@ -682,6 +702,14 @@ class Settings(BaseSettings):
     is the app reporting an email as sent when no vendor exists to send it
     (docs/TRADING_SAFETY.md's no-fabrication rule, applied to
     notifications). Never commit real values."""
+
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    """Phase 111 (docs/DECISIONS.md D138): operator alerts over Telegram -
+    a bot's trades, refusals, kill-switch pauses and failures. Optional and
+    read whole or not at all: with either value unset there is no alert
+    channel and every caller reports NOT_CONFIGURED. Outbound only. The
+    token is a secret; never commit a real value."""
 
     auth_password_reset_token_ttl_minutes: int = 30
     """Phase 46 (D063): how long an issued reset token stays redeemable.
@@ -943,6 +971,10 @@ class Settings(BaseSettings):
             raise ValueError("OPTIONS_MAX_QUOTE_AGE_SECONDS must be positive.")
         if self.options_bot_runner_interval_seconds <= 0:
             raise ValueError("OPTIONS_BOT_RUNNER_INTERVAL_SECONDS must be positive.")
+        if self.library_bot_runner_interval_seconds <= 0:
+            raise ValueError("LIBRARY_BOT_RUNNER_INTERVAL_SECONDS must be positive.")
+        if self.library_bot_max_quote_age_seconds <= 0:
+            raise ValueError("LIBRARY_BOT_MAX_QUOTE_AGE_SECONDS must be positive.")
         return self
 
     @property

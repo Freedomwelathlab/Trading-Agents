@@ -44,6 +44,7 @@ from typing import Any
 from apps.api.app.core.logging import get_logger
 from apps.api.app.marketdata.bar_provider import Bar
 from apps.api.app.marketdata.fx import fx_pair, is_fx_symbol
+from apps.api.app.marketdata.models import MarketSnapshot
 from apps.api.app.marketdata.provider import DataUnavailableError, VendorError
 
 logger = get_logger(__name__)
@@ -230,6 +231,29 @@ class YahooDailyProvider:
             dates=tuple(days),
             closes=tuple(by_date[d][0] for d in days),
             adj_closes=tuple(by_date[d][1] for d in days),
+        )
+
+    async def get_quote(self, symbol: str) -> MarketSnapshot:
+        """The vendor's latest price with the vendor's own timestamp.
+
+        DELAYED for most exchanges (often 15 minutes) and labelled so. It is
+        offered for paper fills of daily strategies and for valuation; the
+        caller decides how old is too old - the timestamp is never
+        refreshed or rounded up to "now".
+        """
+        vendor_symbol = yahoo_symbol(symbol)
+        today = datetime.now(UTC).date()
+        result = await self._chart(vendor_symbol, today - timedelta(days=7), today)
+        meta = result.get("meta") or {}
+        price = _decimal(meta.get("regularMarketPrice"))
+        stamp = meta.get("regularMarketTime")
+        if price is None or price <= 0 or not isinstance(stamp, (int, float)):
+            raise DataUnavailableError(f"Yahoo returned no current price for {vendor_symbol}.")
+        return MarketSnapshot(
+            symbol=symbol,
+            price=price,
+            as_of=datetime.fromtimestamp(int(stamp), UTC),
+            source=f"{SOURCE}-delayed",
         )
 
     async def get_bars(

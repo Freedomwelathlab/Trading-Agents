@@ -12178,3 +12178,132 @@ above", which flapped on a flat price; it is now strictly above/below.
 Not built: shorting costs and FX financing (warned on every affected
 report), T-bill hurdle for dual momentum (zero is used and stated).
 Status: Done, tested. Results in docs/RESEARCH_LIBRARY.md.
+
+## D136 — Strategy Library paper bots: hold what the rule says, on paper only (Phase 109)
+Date: 2026-11-16
+
+D135 measures a strategy on history. The benchmark platforms also let a
+user run that strategy forward; this adds that, on paper.
+
+**Paper only, enforced twice.** A library bot can be created only on a
+`PAPER` broker (`LIVE_NOT_SUPPORTED` otherwise), and the cycle re-checks
+the broker kind before any order. There is no live branch to enable.
+
+**Same order path as everything else.** Orders go through
+`autotrade.engine._submit` - Risk Engine, OMS, paper broker. The bot sizes
+an order to fit the per-position cap and its own cash before submitting,
+because the Risk Engine rejects rather than resizes; whatever is still
+refused is recorded with the reason and not retried until the strategy
+decides again.
+
+**Its own sub-account.** Several bots share a paper broker, so each keeps
+its own cash and positions and is valued on those alone. Return is against
+its starting capital and is NULL, not zero, before the first cycle.
+
+**Timing matches the backtest.** The strategy sees completed sessions
+only, so a decision on one close trades during the next session.
+
+**Quotes: this narrows D135.** D135 said the Yahoo feed never supplies an
+order price. A library bot needs a price for SG and India symbols no
+wired quote source covers, so the same vendor's delayed quote is used for
+library PAPER fills only, labelled `yahoo-delayed`, and refused when older
+than 20 minutes (so a closed market produces a skip, not a fill at a
+stale price). It still never feeds a live order, an intraday bot or any
+other part of the platform.
+
+**Kill switch.** Optional per-bot drawdown limit from peak equity: sell
+everything, pause, say why. Resuming starts a new peak, or the bot would
+be killed again on its first cycle.
+
+**Cheap by construction.** Daily strategies decide once a session, so the
+loop wakes every 15 minutes and an idle bot writes one run row an hour.
+The loop is off by default; "Run now" works without it.
+
+Not built: shorting (a negative weight is held as cash and said so),
+fractional shares for equities, live execution.
+Status: Built, tested, rehearsed locally on real data. Not deployed.
+
+## D137 — Zerodha as the India venue, built validate-only (Phase 110)
+Date: 2026-11-16
+
+The registry reached US, Singapore and Hong Kong equities (Longbridge,
+IBKR, moomoo), FX (IG, IBKR) and crypto (Kraken, Binance). It reached no
+Indian venue, and India was one of the three markets asked for.
+
+**Why Zerodha.** It is India's largest retail broker and Kite Connect is
+the best documented of the Indian retail APIs. It also takes the exchange
+trading symbol directly, where Dhan and Angel One need a numeric security
+id looked up from a multi-megabyte instrument file - memory this service
+should not spend. If the operator's account is elsewhere, another adapter
+on the same port is a job of the same size.
+
+**Built from the documentation, not from an account.** The request and
+response shapes were read from kite.trade/docs/connect/v3 on the day; the
+tests replay those shapes. That proves the adapter's decisions, not
+Zerodha's behaviour, and the docs say so wherever it matters. One reading
+is an assumption: that a holding sold today is already taken out of
+`/portfolio/holdings`, so a negative net position is not subtracted again.
+The connection check will show a mismatch if that is wrong.
+
+**Validate-only is the default, as with Kraken (D111).** Kite has no
+sandbox. `/margins/orders` prices an order without placing it, so that is
+the rehearsal; `live_orders=true` is a deliberate credential field.
+
+**Delivery equity only, and an account outside that is refused.** An
+account holding an MIS or NRML position is not valued: this adapter has no
+margin model and a wrong equity figure feeds the Risk Engine.
+
+**Symbols are `EXCHANGE:TRADINGSYMBOL`.** A bare symbol is refused rather
+than defaulted to NSE (D109). The Strategy Library's `.IN` research
+symbols are deliberately NOT translated to it: library bots are paper only
+(D136).
+
+**Market orders carry `market_protection=-1`** (Kite's automatic price
+band), as Zerodha's current order documentation shows.
+
+Not built: F&O, intraday products, GTT orders, postbacks, an in-app login
+flow (the daily token is exchanged by a script and pasted in).
+Status: Built and stub-tested. Not run against a real account. Off.
+
+## D138 — Telegram as the alert channel, outbound only (Phase 111)
+Date: 2026-11-16
+
+Every platform in the D135 benchmark tells its user when a bot acts.
+Trading OS told nobody: the only outbound channel was password-reset
+email. A bot that can be paused by a kill switch at 3 a.m. needs a way to
+say so.
+
+**Telegram, because it costs nothing and needs no vendor account** beyond
+a bot token from BotFather: one HTTPS POST, no SDK, no new dependency, no
+table, no background task - which is also the cheapest thing this could be
+on the server.
+
+**Outbound only.** Several of the benchmark platforms take orders from
+chat or from TradingView webhooks. Not here: an inbound channel is a way
+to reach the order path that does not pass through a logged-in, permitted
+user, and no measured benefit justifies that. Nothing in this module reads
+a message.
+
+**An alert is best-effort; a claim of delivery is not.** Trading code
+calls `notify`, which cannot raise - a dead channel must not fail or roll
+back a cycle. The test endpoint calls `send`, and answers 200 only when
+Telegram returned `ok: true`.
+
+**The token never appears in an error.** Telegram puts the bot token in
+the URL path, and HTTP client exceptions quote the URL. So the sink
+discards the client's exception text and chain and reports the exception
+type only, plus Telegram's own `description` on a refusal.
+
+**Silence is the default.** A daily strategy wakes every 15 minutes and
+almost always has nothing to do; only a fill, a rejection, a kill-switch
+pause that happened in this cycle, or a failure is sent.
+
+**A failure is throttled, a trade never is.** The autotrade loop runs
+every minute; a vendor outage would otherwise send a message a minute. A
+failing bot is reported once an hour per bot from process memory - no
+table - and every occurrence is still in its run rows.
+
+Covers library, autotrade (stock/crypto/forex) and options bots. Not
+built: alerts from strategy deployments or manual orders, a second
+channel, per-user routing (one chat for the whole deployment).
+Status: Built and tested against a mock transport. Not configured.

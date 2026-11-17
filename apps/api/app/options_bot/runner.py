@@ -40,6 +40,7 @@ from apps.api.app.db.models import (
     OptionsBotStatus,
 )
 from apps.api.app.marketdata.option_chain_provider import OptionChainProvider
+from apps.api.app.notifications.alerts import AlertSink, alert_bot_cycle
 from apps.api.app.options_bot.engine import (
     OptionsBotCycleOutcome,
     market_open,
@@ -103,6 +104,7 @@ async def run_options_bot_isolated(
     provider: OptionChainProvider | None,
     bar_router: Any | None,
     throttle_closed: bool = True,
+    alerts: AlertSink | None = None,
 ) -> OptionsBotCycleOutcome | None:
     started = clock()
     async with session_factory() as session:
@@ -116,6 +118,7 @@ async def run_options_bot_isolated(
             and await _recent_closed_row(session, bot.id, started)
         ):
             return None
+        bot_name = bot.name
         run = OptionsBotRun(
             id=uuid.uuid4(),
             bot_id=bot.id,
@@ -130,6 +133,12 @@ async def run_options_bot_isolated(
                 bar_router=bar_router,
             )
             await session.commit()
+            # Phase 111 (D138): after the commit, best-effort.
+            await alert_bot_cycle(
+                alerts, kind="Options bot", name=bot_name, key=str(bot_id),
+                opened=outcome.trades_opened, closed=outcome.trades_closed,
+                failed=outcome.status is OptionsBotRunStatus.FAILED, detail=outcome.detail,
+            )
             return outcome
         except Exception as exc:  # noqa: BLE001 - the run row must resolve
             await session.rollback()
@@ -149,9 +158,14 @@ async def run_options_bot_isolated(
                 "options_bot_cycle_failed",
                 bot_id=str(bot_id), error=str(exc), error_type=type(exc).__name__,
             )
+            detail = f"{type(exc).__name__}: {exc}"
+            await alert_bot_cycle(
+                alerts, kind="Options bot", name=bot_name, key=str(bot_id),
+                opened=0, closed=0, failed=True, detail=detail,
+            )
             return OptionsBotCycleOutcome(
                 bot_id=bot_id, run_id=run.id, status=OptionsBotRunStatus.FAILED,
-                detail=f"{type(exc).__name__}: {exc}",
+                detail=detail,
             )
 
 
@@ -164,6 +178,7 @@ async def run_options_bot_cycle_all(
     cycle_lock: SnapshotCycleLock | None = None,
     clock: Callable[[], datetime] = utc_now,
     only_bot_id: uuid.UUID | None = None,
+    alerts: AlertSink | None = None,
 ) -> OptionsBotCycleResult:
     """One pass over every ACTIVE bot (or one bot, for "run now")."""
     lock = cycle_lock if cycle_lock is not None else SnapshotCycleLock(enabled=False)
@@ -181,7 +196,7 @@ async def run_options_bot_cycle_all(
         for bot_id in bot_ids:
             outcome = await run_options_bot_isolated(
                 session_factory, bot_id, settings=settings, clock=clock, provider=provider,
-                bar_router=bar_router, throttle_closed=only_bot_id is None,
+                bar_router=bar_router, throttle_closed=only_bot_id is None, alerts=alerts,
             )
             if outcome is not None:
                 outcomes.append(outcome)
@@ -202,6 +217,7 @@ class OptionsBotRunner:
         bar_router: Any | None = None,
         cycle_lock: SnapshotCycleLock | None = None,
         clock: Callable[[], datetime] = utc_now,
+        alerts: AlertSink | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive.")
@@ -214,6 +230,7 @@ class OptionsBotRunner:
             cycle_lock if cycle_lock is not None else SnapshotCycleLock(enabled=False)
         )
         self._clock = clock
+        self._alerts = alerts
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -247,6 +264,7 @@ class OptionsBotRunner:
             cycle_lock=self._cycle_lock,
             clock=self._clock,
             only_bot_id=only_bot_id,
+            alerts=self._alerts,
         )
 
     async def _run(self) -> None:

@@ -13,6 +13,7 @@ import {
   CreateBrokerForm,
 } from "@/components/admin/BrokerModeAdmin";
 import AdminGate from "@/components/admin/AdminGate";
+import { AlertChannelPanel } from "@/components/admin/AlertsAdmin";
 import BrokerAccountsAdmin from "@/components/admin/BrokerAccountsAdmin";
 import {
   BrokerCatalogue,
@@ -66,6 +67,11 @@ export default function AdminPage() {
           Market data
         </SectionHeading>
         <MarketDataBackfillPanel />
+
+        <SectionHeading note="a bot that trades unattended should say so">
+          Alerts
+        </SectionHeading>
+        <AlertChannelPanel />
 
         {/* Phase 90 (D109). Above Users deliberately: wiring a venue is
             the act that decides what this deployment can trade at all,

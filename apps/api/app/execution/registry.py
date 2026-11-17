@@ -107,6 +107,13 @@ def _build_binance(credentials: dict[str, str]) -> object:
     return build_binance_adapter(credentials)
 
 
+def _build_zerodha(credentials: dict[str, str]) -> object:
+    """Lazy import, same reasoning as `_build_kraken`."""
+    from apps.api.app.execution.adapters.zerodha import build_zerodha_adapter
+
+    return build_zerodha_adapter(credentials)
+
+
 def _build_ibkr(credentials: dict[str, str]) -> object:
     """Through the bridge agent (Phase 104, D124). Lazy import, same
     reasoning as `_build_kraken`."""
@@ -512,6 +519,51 @@ PROVIDERS: dict[str, BrokerProvider] = {
             "refused by location from Railway; the probe says so in those words."
         ),
         factory=_build_binance,
+    ),
+    "zerodha": BrokerProvider(
+        provider="zerodha",
+        display_name="Zerodha (Kite Connect)",
+        asset_classes=frozenset({AssetClass.EQUITY}),
+        order_types=frozenset({"market", "limit"}),
+        supports_short=False,
+        supports_extended_hours=False,
+        supports_fractional=False,
+        supports_cancel=True,
+        credential_fields=(
+            CredentialField(
+                "api_key",
+                "API key",
+                CredentialKind.PUBLIC,
+                "The Kite Connect app's key.",
+                masked=True,
+            ),
+            CredentialField(
+                "access_token",
+                "Access token",
+                CredentialKind.SECRET,
+                "Today's session token. Kite invalidates it at 06:00 IST every day; get a "
+                "new one with scripts/zerodha_login.py. Never shown again.",
+            ),
+            CredentialField(
+                "live_orders",
+                "Place real orders",
+                CredentialKind.PUBLIC,
+                "Leave empty to keep the adapter VALIDATE-ONLY: Kite prices each order's "
+                "margin and places nothing. Kite has no sandbox, so this is the only "
+                "rehearsal available - set it to `true` only when you mean it.",
+                required=False,
+            ),
+        ),
+        notes=(
+            "Indian delivery equity (NSE/BSE, product CNC), whole shares, INR. Symbols are "
+            "EXCHANGE:TRADINGSYMBOL (NSE:INFY). Built from Zerodha's published API and "
+            "tested against a stub; NOT yet run against a real account. The access token "
+            "expires daily at 06:00 IST and needs a browser login by the account holder, so "
+            "this venue cannot run unattended across days. SEBI's retail algo rules require "
+            "API orders to come from a static IP registered with the broker; this API's "
+            "host does not have one by default."
+        ),
+        factory=_build_zerodha,
     ),
 }
 
